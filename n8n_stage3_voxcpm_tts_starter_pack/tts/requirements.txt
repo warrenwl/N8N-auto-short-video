@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+numpy
+soundfile
+requests
+# VoxCPM must be installed from your local repo or pip in the venv.
+# Example:
+#   pip install -e "/Users/warrn/study/语音生成/VoxCPM"
+# or:
+#   pip install voxcpm

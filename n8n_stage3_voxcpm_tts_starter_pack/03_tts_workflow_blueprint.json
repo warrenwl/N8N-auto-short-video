@@ -1,0 +1,26 @@
+{
+  "name": "03_TTS_口播音频_升级第二工作流蓝图",
+  "description": "This is a blueprint, not a one-click import. Replace SQL and Code nodes in your existing enhanced render workflow.",
+  "nodes": [
+    "Manual Trigger",
+    "Postgres - Claim One SCRIPT_READY TTS",
+    "Code - Build Render Request TTS",
+    "HTTP Request - Render Multi-shot Video with TTS",
+    "Code - Parse Render Response TTS",
+    "Postgres - Update NEED_REVIEW TTS"
+  ],
+  "http_request": {
+    "method": "POST",
+    "url": "http://video-worker:8000/render",
+    "body": "={{$json}}",
+    "response_format": "json"
+  },
+  "sql_files": {
+    "claim": "sql/11_claim_one_script_ready_for_tts.sql",
+    "update": "sql/12_update_need_review_tts.sql"
+  },
+  "code_files": {
+    "build_request": "n8n/code/build_render_request_tts.js",
+    "parse_response": "n8n/code/parse_render_response_tts.js"
+  }
+}

@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: n8n-video-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${N8N_DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${N8N_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-video-n8n
+    restart: unless-stopped
+    ports:
+      - "${N8N_HOST_PORT}:5678"
+    environment:
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${GENERIC_TIMEZONE}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:${N8N_HOST_PORT}/
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_DB_NAME}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      GLM_API_KEY: ${GLM_API_KEY}
+      GLM_MODEL: ${GLM_MODEL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  video-worker:
+    build: ./worker
+    container_name: n8n-video-worker
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATA_DIR: /data
+      OUTPUT_ROOT: /data/output
+      TTS_BASE_URL: http://host.docker.internal:8010
+      VIDEO_WIDTH: "1080"
+      VIDEO_HEIGHT: "1920"
+      VIDEO_FPS: "30"
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+
+volumes:
+  postgres_data:
+    name: video_agent_postgres_data
+  n8n_data:
+    name: video_agent_n8n_data

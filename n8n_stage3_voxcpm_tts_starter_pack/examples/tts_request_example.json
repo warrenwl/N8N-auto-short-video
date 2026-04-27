@@ -1,0 +1,7 @@
+{
+  "task_id": "tts_test_001",
+  "text": "你好，这是 VoxCPM 本地口播测试。接下来我们会把这段语音合成到短视频里面。",
+  "cfg_value": 2.0,
+  "inference_timesteps": 10,
+  "max_chars": 120
+}
