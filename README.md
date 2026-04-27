@@ -43,12 +43,27 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| topic | TEXT | 选题 |
-| script | TEXT | 生成的脚本 |
-| shots_json | JSONB | 分镜数据 |
-| status | TEXT | 当前状态 |
+| id | UUID | 主键，自动生成 |
+| topic | TEXT | 选题内容 |
+| platform | TEXT | 发布平台，默认 `youtube` |
+| style | TEXT | 视频风格，默认 `口播科普` |
+| duration_seconds | INTEGER | 目标时长（秒），默认 45 |
+| language | TEXT | 语言，默认 `zh-CN` |
+| target_audience | TEXT | 目标受众 |
+| status | TEXT | 当前状态（见上方流转图） |
+| title | TEXT | 生成的标题 |
+| hook | TEXT | 开头钩子文案 |
+| script | TEXT | 生成的完整脚本 |
+| cover_text | TEXT | 封面文字 |
+| hashtags | JSONB | 标签列表，默认 `[]` |
+| shots_json | JSONB | 分镜数据，默认 `[]` |
+| risk_check | JSONB | 风险检查结果，默认 `{}` |
 | video_path | TEXT | 最终视频路径 |
 | cover_path | TEXT | 封面图路径 |
+| publish_url | TEXT | 发布后 URL |
+| error | TEXT | 错误信息 |
+| created_at | TIMESTAMPTZ | 创建时间 |
+| updated_at | TIMESTAMPTZ | 更新时间（自动更新） |
 
 ## n8n 工作流
 
