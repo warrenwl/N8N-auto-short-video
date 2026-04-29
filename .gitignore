@@ -7,6 +7,7 @@ n8n_second_workflow_enhanced_pack/
 n8n_second_workflow_starter_pack/
 n8n_stage3_voxcpm_tts_starter_pack/
 n8n_stage4_comfyui_starter_pack/
+n8n_stage5_review_buttons_starter_pack/
 logs/
 *.log
 .omx/

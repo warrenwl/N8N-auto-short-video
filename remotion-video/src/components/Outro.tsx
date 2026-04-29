@@ -38,7 +38,36 @@ export const Outro: React.FC<Props> = ({manifest, primaryColor, secondaryColor, 
       })
     : 0;
   const plusPop = spring({frame: Math.max(0, frame - summaryFrames), fps, config: {damping: 10, stiffness: 180}});
-  const plusScale = interpolate(plusPop, [0, 0.72, 1], [0.55, 1.2, 1], {
+  const followFrame = Math.max(0, frame - summaryFrames);
+  const clickFrame = Math.round(fps * 0.52);
+  const disappearFrame = clickFrame + Math.round(fps * 0.28);
+  const plusBaseScale = interpolate(plusPop, [0, 0.72, 1], [0.55, 1.2, 1], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const pressScale = interpolate(
+    followFrame,
+    [clickFrame - 5, clickFrame, clickFrame + 6, disappearFrame],
+    [1, 0.78, 1.08, 0.12],
+    {
+      extrapolateLeft: 'clamp',
+      extrapolateRight: 'clamp',
+    },
+  );
+  const plusScale = plusBaseScale * pressScale;
+  const plusOpacity = interpolate(followFrame, [disappearFrame - 8, disappearFrame], [1, 0], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const tapRippleScale = interpolate(followFrame, [clickFrame - 2, clickFrame + 13], [0.45, 1.85], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const tapRippleOpacity = interpolate(followFrame, [clickFrame - 2, clickFrame + 13], [0.52, 0], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const tapDotScale = interpolate(followFrame, [clickFrame - 6, clickFrame, clickFrame + 5], [0, 1, 0], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
@@ -163,12 +192,26 @@ export const Outro: React.FC<Props> = ({manifest, primaryColor, secondaryColor, 
               style={{
                 position: 'absolute',
                 top: 116,
+                width: 80,
+                height: 80,
+                borderRadius: 999,
+                border: '4px solid rgba(255,255,255,0.82)',
+                transform: `scale(${tapRippleScale})`,
+                opacity: tapRippleOpacity,
+                boxShadow: '0 0 30px rgba(255,255,255,0.32)',
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                top: 116,
                 width: 62,
                 height: 62,
                 borderRadius: 999,
                 background: '#FE2C55',
                 border: '4px solid #fff',
                 transform: `scale(${plusScale})`,
+                opacity: plusOpacity,
                 color: '#fff',
                 fontSize: 48,
                 lineHeight: '50px',
@@ -179,6 +222,18 @@ export const Outro: React.FC<Props> = ({manifest, primaryColor, secondaryColor, 
             >
               +
             </div>
+            <div
+              style={{
+                position: 'absolute',
+                top: 138,
+                width: 22,
+                height: 22,
+                borderRadius: 999,
+                background: 'rgba(255,255,255,0.96)',
+                transform: `scale(${tapDotScale})`,
+                boxShadow: '0 0 26px rgba(255,255,255,0.72)',
+              }}
+            />
           </div>
           <div
             style={{

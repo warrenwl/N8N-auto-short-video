@@ -128,7 +128,7 @@
     "follow_seconds": 0.8,
     "title": "记住这 3 个关键词",
     "cta": "先收藏，今晚复盘一次",
-    "follow_hint": "点击头像下方 + 关注",
+    "follow_hint": "点击头像关注",
     "show_follow_animation": true,
     // voice_enabled=true 时，worker 会在主旁白后追加账号关注语音；
     // 语音会等 recap 总结页结束、关注页出现时再播放。
