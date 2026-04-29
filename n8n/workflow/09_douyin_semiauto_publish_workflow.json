@@ -1,0 +1,755 @@
+{
+  "id": "videoAgentDouyinPublishMvp09",
+  "name": "09_抖音半自动发布",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "douyin-publish-start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-douyin-publish-start-09",
+      "name": "Webhook - Douyin Publish Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "webhookId": "douyin-publish-start-09"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Douyin Publish Start Params\n// Expected query: ?task_id=<video_topics.id>&token=<review_token>\n\nconst source = $json || {};\nconst query = source.query || source.params || source;\n\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\n\nif (!taskId) {\n  throw new Error('缺少 task_id 参数');\n}\n\nif (!token) {\n  throw new Error('缺少 token 参数');\n}\n\nreturn [\n  {\n    json: {\n      task_id: taskId,\n      token,\n      platform: 'douyin',\n      received_at: new Date().toISOString(),\n    },\n  },\n];\n"
+      },
+      "id": "validate-douyin-publish-start-09",
+      "name": "Code - Validate Douyin Publish Start Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Start or reuse a douyin semi-auto publishing job for one APPROVED video.\n-- Query parameters:\n-- $1 = video topic id\n-- $2 = review token\n\nWITH topic AS (\n  SELECT *\n  FROM video_topics\n  WHERE id = $1::uuid\n    AND review_token = $2\n  LIMIT 1\n), reusable_job AS (\n  SELECT j.*\n  FROM video_publish_jobs j\n  JOIN topic t ON t.id = j.video_topic_id\n  WHERE j.platform = 'douyin'\n    AND j.status IN ('PACKAGING', 'PACKAGE_READY', 'REMINDING', 'REMIND_SENT')\n  ORDER BY j.updated_at DESC\n  LIMIT 1\n), inserted_job AS (\n  INSERT INTO video_publish_jobs (\n    video_topic_id,\n    platform,\n    status,\n    title,\n    caption,\n    hashtags,\n    video_path,\n    cover_path,\n    manual_confirm_token,\n    created_at,\n    updated_at\n  )\n  SELECT\n    t.id,\n    'douyin',\n    'PACKAGING',\n    COALESCE(NULLIF(t.title, ''), NULLIF(t.topic, ''), '待发布视频'),\n    trim(\n      both E'\\n' FROM\n      COALESCE(NULLIF(t.title, ''), NULLIF(t.topic, ''), '待发布视频')\n      || E'\\n\\n'\n      || COALESCE((\n        SELECT string_agg(\n          CASE\n            WHEN tag_text LIKE '#%' THEN tag_text\n            ELSE '#' || tag_text\n          END,\n          ' '\n        )\n        FROM (\n          SELECT trim(both '\"' FROM value::text) AS tag_text\n          FROM jsonb_array_elements(COALESCE(t.hashtags, '[]'::jsonb)) AS value\n        ) tags\n        WHERE tag_text <> ''\n      ), '')\n    ),\n    COALESCE((\n      SELECT string_agg(\n        CASE\n          WHEN tag_text LIKE '#%' THEN tag_text\n          ELSE '#' || tag_text\n        END,\n        ' '\n      )\n      FROM (\n        SELECT trim(both '\"' FROM value::text) AS tag_text\n        FROM jsonb_array_elements(COALESCE(t.hashtags, '[]'::jsonb)) AS value\n      ) tags\n      WHERE tag_text <> ''\n    ), ''),\n    t.video_path,\n    t.cover_path,\n    md5(random()::text || clock_timestamp()::text || t.id::text),\n    NOW(),\n    NOW()\n  FROM topic t\n  WHERE t.status = 'APPROVED'\n    AND lower(COALESCE(t.platform, 'douyin')) IN ('douyin', '抖音')\n    AND NULLIF(t.video_path, '') IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM reusable_job)\n  ON CONFLICT DO NOTHING\n  RETURNING *\n), picked AS (\n  SELECT * FROM reusable_job\n  UNION ALL\n  SELECT * FROM inserted_job\n  LIMIT 1\n), topic_update AS (\n  UPDATE video_topics vt\n  SET\n    publish_status = CASE\n      WHEN p.status = 'REMIND_SENT' THEN 'REMIND_SENT'\n      WHEN p.status = 'PACKAGE_READY' THEN 'PACKAGE_READY'\n      ELSE 'PACKAGING_DOUYIN'\n    END,\n    updated_at = NOW()\n  FROM picked p\n  WHERE vt.id = p.video_topic_id\n  RETURNING vt.id\n), existing_topic AS (\n  SELECT\n    false AS success,\n    CASE\n      WHEN NOT EXISTS (SELECT 1 FROM topic) THEN 'INVALID_TASK_OR_TOKEN'\n      WHEN (SELECT status FROM topic) <> 'APPROVED' THEN 'INVALID_SOURCE_STATUS'\n      WHEN lower(COALESCE((SELECT platform FROM topic), 'douyin')) NOT IN ('douyin', '抖音') THEN 'INVALID_PLATFORM'\n      WHEN NULLIF((SELECT video_path FROM topic), '') IS NULL THEN 'MISSING_VIDEO_PATH'\n      ELSE 'NOT_CREATED'\n    END AS result_code,\n    NULL::bigint AS id,\n    (SELECT id FROM topic) AS video_topic_id,\n    'douyin'::text AS platform,\n    NULL::text AS status,\n    (SELECT title FROM topic) AS title,\n    NULL::text AS caption,\n    NULL::text AS hashtags,\n    (SELECT video_path FROM topic) AS video_path,\n    (SELECT cover_path FROM topic) AS cover_path,\n    NULL::text AS package_dir,\n    NULL::text AS video_url,\n    NULL::text AS cover_url,\n    NULL::text AS caption_url,\n    NULL::text AS metadata_url,\n    NULL::text AS download_page_url,\n    NULL::text AS video_download_url,\n    NULL::text AS manual_confirm_token,\n    NULL::text AS remind_channel,\n    NULL::text AS remind_status,\n    NULL::text AS remind_message,\n    NULL::jsonb AS remind_response,\n    NULL::timestamptz AS reminded_at,\n    NULL::text AS manual_publish_note,\n    NULL::text AS published_url,\n    NULL::timestamptz AS published_at,\n    NULL::text AS error_code,\n    NULL::text AS error_message,\n    NULL::timestamptz AS created_at,\n    NULL::timestamptz AS updated_at\n)\nSELECT\n  true AS success,\n  CASE WHEN status = 'PACKAGING' THEN 'JOB_READY_FOR_PACKAGING' ELSE 'JOB_ALREADY_EXISTS' END AS result_code,\n  picked.id,\n  picked.video_topic_id,\n  picked.platform,\n  picked.status,\n  picked.title,\n  picked.caption,\n  picked.hashtags,\n  picked.video_path,\n  picked.cover_path,\n  picked.package_dir,\n  picked.video_url,\n  picked.cover_url,\n  picked.caption_url,\n  picked.metadata_url,\n  picked.download_page_url,\n  picked.video_download_url,\n  picked.manual_confirm_token,\n  picked.remind_channel,\n  picked.remind_status,\n  picked.remind_message,\n  picked.remind_response,\n  picked.reminded_at,\n  picked.manual_publish_note,\n  picked.published_url,\n  picked.published_at,\n  picked.error_code,\n  picked.error_message,\n  picked.created_at,\n  picked.updated_at\nFROM picked\nUNION ALL\nSELECT * FROM existing_topic\nWHERE NOT EXISTS (SELECT 1 FROM picked);\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.task_id, $json.token ] }}"
+        }
+      },
+      "id": "start-douyin-publish-job-09",
+      "name": "Postgres - Start Douyin Publish Job",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Douyin Package Request\n// Input: one row from video_publish_jobs.\n// Output: JSON body for publish-helper /package/douyin.\n\nfunction env(name, fallback = '') {\n  try {\n    if (typeof $env !== 'undefined' && $env[name]) return $env[name];\n  } catch (error) {}\n  return fallback;\n}\n\nfunction normalizeHashtags(value) {\n  if (!value) return [];\n  if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);\n  return String(value)\n    .split(/[，,\\s]+/)\n    .map(s => s.trim())\n    .filter(Boolean)\n    .map(s => s.startsWith('#') ? s : `#${s}`)\n    .slice(0, 8);\n}\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\nconst publicFileBaseUrl = env('PUBLIC_FILE_BASE_URL', '').replace(/\\/$/, '');\n\nreturn inputItems.map(item => {\n  const row = item.json;\n  if (row.success === false || row.success === 'false') {\n    throw new Error(`无法启动抖音发布任务：${row.result_code || 'UNKNOWN'}`);\n  }\n\n  const hashtags = normalizeHashtags(row.hashtags);\n  const title = row.title || '抖音待发布视频';\n\n  let caption = row.caption || '';\n  if (!caption.trim()) {\n    caption = `${title}\\n\\n${hashtags.join(' ')}`.trim();\n  }\n\n  return {\n    json: {\n      job_id: String(row.id),\n      video_topic_id: row.video_topic_id,\n      title,\n      caption,\n      hashtags,\n      video_path: row.video_path,\n      cover_path: row.cover_path || '',\n      manual_confirm_token: row.manual_confirm_token,\n      public_file_base_url: publicFileBaseUrl\n    }\n  };\n});\n"
+      },
+      "id": "build-douyin-package-request-09",
+      "name": "Code - Build Douyin Package Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://publish-helper:8010/package/douyin",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "create-douyin-package-09",
+      "name": "HTTP Request - Create Douyin Package",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- publish-helper generated downloadable package files.\n-- $1 package_dir\n-- $2 video_url\n-- $3 cover_url\n-- $4 caption_url\n-- $5 metadata_url\n-- $6 download_page_url\n-- $7 video_download_url\n-- $8 job_id\n\nUPDATE video_publish_jobs\nSET\n  status = 'PACKAGE_READY',\n  package_dir = $1,\n  video_url = $2,\n  cover_url = NULLIF($3, ''),\n  caption_url = $4,\n  metadata_url = $5,\n  download_page_url = NULLIF($6, ''),\n  video_download_url = NULLIF($7, ''),\n  error_code = NULL,\n  error_message = NULL,\n  updated_at = NOW()\nWHERE id = $8::bigint\n  AND status IN ('PACKAGING', 'PACKAGE_READY', 'REMIND_SENT')\nRETURNING *;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.package_dir, $json.video_url, $json.cover_url || '', $json.caption_url, $json.metadata_url, $json.download_page_url || '', $json.video_download_url || '', $json.job_id ] }}"
+        }
+      },
+      "id": "update-douyin-package-ready-09",
+      "name": "Postgres - Update Douyin PACKAGE_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1400,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build ServerChan Message\n// Input: publish-helper package response.\n// Output: ServerChan title/desp and manual confirmation links.\n\nfunction env(name, fallback = '') {\n  // n8n Code 节点中通常可以通过 $env 读取环境变量。\n  try {\n    if (typeof $env !== 'undefined' && $env[name]) return $env[name];\n  } catch (e) {}\n  return fallback;\n}\n\nconst publicN8nBase = env('PUBLIC_N8N_BASE_URL', 'http://localhost:5678').replace(/\\/$/, '');\nconst serverchanSendKey = env('SERVERCHAN_SENDKEY', '').trim();\nconst serverchanUrl = serverchanSendKey ? `https://sctapi.ftqq.com/${serverchanSendKey}.send` : '';\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const data = item.json;\n  const rawJobId = data.job_id || data.id;\n  const jobId = encodeURIComponent(rawJobId);\n  const token = encodeURIComponent(data.manual_confirm_token || data.token || '');\n\n  const doneUrl = `${publicN8nBase}/webhook/douyin-manual-publish-action?action=published&job_id=${jobId}&token=${token}`;\n  const skipUrl = `${publicN8nBase}/webhook/douyin-manual-publish-action?action=skip&job_id=${jobId}&token=${token}`;\n  const downloadPageUrl = data.download_page_url || data.video_url || '';\n  const videoDownloadUrl = data.video_download_url || data.video_url || '';\n\n  const title = `🎬 抖音视频待发布：${data.title || '未命名视频'}`;\n  const hashtags = Array.isArray(data.hashtags) ? data.hashtags.join(' ') : (data.hashtags || '');\n\n  const desp = [\n    '# 🎬 抖音视频待发布',\n    '',\n    `**标题：** ${data.title || ''}`,\n    '',\n    '## 文案',\n    '',\n    data.caption || '',\n    '',\n    '## 话题',\n    '',\n    hashtags,\n    '',\n    '## 下载',\n    '',\n    downloadPageUrl ? `- [打开下载页面](${downloadPageUrl})` : '- 下载页面缺失',\n    videoDownloadUrl ? `- [直接下载视频 final.mp4](${videoDownloadUrl})` : '- 视频链接缺失',\n    data.cover_url ? `- [下载封面 cover.png](${data.cover_url})` : '- 封面链接缺失',\n    data.caption_url ? `- [下载文案 caption.txt](${data.caption_url})` : '',\n    '',\n    '## 操作步骤',\n    '',\n    '1. 在手机上打开下载页面，先预览确认视频。',\n    '2. 复制上面的文案和话题。',\n    '3. 打开抖音 App，手动上传并确认发布。',\n    '4. 发布完成后点击下面的“我已发布”。',\n    '',\n    '> 微信内如果只能播放不能保存，请点右上角选择“在浏览器打开”，再点下载视频文件。',\n    '',\n    `✅ [我已发布](${doneUrl})`,\n    '',\n    `⏸ [暂不发布](${skipUrl})`\n  ].filter(Boolean).join('\\n');\n\n  return {\n    json: {\n      ...data,\n      job_id: String(rawJobId),\n      manual_published_url: doneUrl,\n      manual_skip_url: skipUrl,\n      serverchan_title: title,\n      serverchan_desp: desp,\n      remind_message: desp,\n      serverchan_url: serverchanUrl || 'http://publish-helper:8010/serverchan-skip',\n      serverchan_enabled: Boolean(serverchanUrl)\n    }\n  };\n});\n"
+      },
+      "id": "build-serverchan-message-09",
+      "name": "Code - Build ServerChan Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.serverchan_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title",
+              "value": "={{ $json.serverchan_title }}"
+            },
+            {
+              "name": "desp",
+              "value": "={{ $json.serverchan_desp }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "send-serverchan-09",
+      "name": "HTTP Request - Send ServerChan Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Normalize ServerChan Response\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const res = item.json;\n  let remindMessage = '';\n  let serverchanEnabled = true;\n  try {\n    const messageNode = $('Code - Build ServerChan Message').first().json;\n    serverchanEnabled = messageNode.serverchan_enabled !== false;\n    remindMessage = String(messageNode.remind_message || '');\n  } catch (error) {}\n  const remindMessageBase64 = Buffer.from(remindMessage, 'utf8').toString('base64');\n\n  if (!serverchanEnabled) {\n    return {\n      json: {\n        ...res,\n        remind_status: 'SKIPPED_NO_SENDKEY',\n        remind_message_base64: remindMessageBase64,\n        remind_response_json: JSON.stringify(res || {}),\n      },\n    };\n  }\n\n  const ok = res && (res.code === 0 || res.errno === 0 || res.message === 'success' || res.data);\n  return {\n    json: {\n      ...res,\n      remind_status: ok ? 'SENT' : 'SENT_OR_UNKNOWN',\n      remind_message_base64: remindMessageBase64,\n      remind_response_json: JSON.stringify(res || {})\n    }\n  };\n});\n"
+      },
+      "id": "normalize-serverchan-response-09",
+      "name": "Code - Normalize ServerChan Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- ServerChan reminder was sent or skipped.\n-- $1 remind_status\n-- $2 remind_message\n-- $3 remind_response json\n-- $4 job_id\n\nWITH updated_job AS (\n  UPDATE video_publish_jobs\n  SET\n    status = 'REMIND_SENT',\n    remind_channel = 'serverchan',\n    remind_status = $1,\n    remind_message = NULLIF(convert_from(decode($2, 'base64'), 'UTF8'), ''),\n    remind_response = COALESCE(NULLIF($3, '')::jsonb, '{}'::jsonb),\n    reminded_at = NOW(),\n    updated_at = NOW()\nWHERE id = $4::bigint\n    AND status IN ('PACKAGE_READY', 'REMINDING', 'REMIND_SENT')\n  RETURNING *\n), updated_topic AS (\n  UPDATE video_topics vt\n  SET\n    publish_status = 'REMIND_SENT',\n    updated_at = NOW()\n  FROM updated_job uj\n  WHERE vt.id = uj.video_topic_id\n  RETURNING vt.id\n)\nSELECT * FROM updated_job;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.remind_status, $json.remind_message_base64, $json.remind_response_json, $('Code - Build ServerChan Message').first().json.job_id ] }}"
+        }
+      },
+      "id": "mark-douyin-remind-sent-09",
+      "name": "Postgres - Mark Douyin REMIND_SENT",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2520,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Douyin Publish Start Result\n\nconst row = $json || {};\nconst explicitSuccess = row.success;\nconst success = explicitSuccess === false || explicitSuccess === 'false'\n  ? false\n  : Boolean(row.id);\n\nreturn [\n  {\n    json: {\n      success,\n      response_status_code: success ? 200 : 409,\n      response_json: {\n        success,\n        result_code: row.result_code || (success ? 'OK' : 'INVALID_TASK_OR_TOKEN'),\n        job_id: row.id || null,\n        video_topic_id: row.video_topic_id || null,\n        status: row.status || null,\n        video_url: row.video_url || null,\n        download_page_url: row.download_page_url || null,\n        video_download_url: row.video_download_url || null,\n        cover_url: row.cover_url || null,\n        caption_url: row.caption_url || null,\n        metadata_url: row.metadata_url || null,\n        reminded_at: row.reminded_at || null,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "build-douyin-publish-start-result-09",
+      "name": "Code - Build Douyin Publish Start Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json.response_json) }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-douyin-publish-start-09",
+      "name": "Respond to Webhook - Douyin Publish Start",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3080,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "douyin-manual-publish-action",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-douyin-manual-action-09",
+      "name": "Webhook - Douyin Manual Publish Action",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        660
+      ],
+      "webhookId": "douyin-manual-publish-action-09"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code 节点：Validate Manual Publish Params\n * Webhook URL 示例：\n * /webhook/douyin-manual-publish-action?action=published&job_id=123&token=xxx\n * /webhook/douyin-manual-publish-action?action=skip&job_id=123&token=xxx&note=今天不发\n */\n\nconst query = $json.query || $json || {};\nconst actionRaw = String(query.action || '').toLowerCase();\nconst jobId = query.job_id || query.id;\nconst token = query.token;\nconst note = query.note || '';\nconst publishedUrl = query.published_url || '';\n\nif (!jobId) throw new Error('缺少 job_id');\nif (!token) throw new Error('缺少 token');\n\nlet actionResult;\nif (['published', 'done', 'yes', 'manual_published'].includes(actionRaw)) {\n  actionResult = 'MANUAL_PUBLISHED';\n} else if (['skip', 'skipped', 'no', 'later', 'manual_skipped'].includes(actionRaw)) {\n  actionResult = 'MANUAL_SKIPPED';\n} else {\n  throw new Error('action 只能是 published 或 skip');\n}\n\nreturn [{\n  json: {\n    job_id: String(jobId),\n    token: String(token),\n    action_result: actionResult,\n    note: String(note),\n    published_url: String(publishedUrl)\n  }\n}];\n"
+      },
+      "id": "validate-manual-publish-09",
+      "name": "Code - Validate Manual Publish Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- User clicked \"published\" or \"skip\" from the reminder link.\n-- $1 action_result: MANUAL_PUBLISHED or MANUAL_SKIPPED\n-- $2 note\n-- $3 published_url\n-- $4 job_id\n-- $5 manual_confirm_token\n\nWITH updated_job AS (\n  UPDATE video_publish_jobs\n  SET\n    status = $1,\n    manual_publish_note = NULLIF($2, ''),\n    published_url = NULLIF($3, ''),\n    published_at = CASE WHEN $1 = 'MANUAL_PUBLISHED' THEN NOW() ELSE published_at END,\n    updated_at = NOW()\n  WHERE id = $4::bigint\n    AND manual_confirm_token = $5\n    AND status IN ('REMIND_SENT', 'PACKAGE_READY', 'REMINDING')\n  RETURNING *\n), updated_topic AS (\n  UPDATE video_topics vt\n  SET\n    status = CASE\n      WHEN (SELECT status FROM updated_job) = 'MANUAL_PUBLISHED' THEN 'PUBLISHED'\n      ELSE 'APPROVED'\n    END,\n    publish_status = (SELECT status FROM updated_job),\n    publish_url = CASE\n      WHEN (SELECT status FROM updated_job) = 'MANUAL_PUBLISHED' THEN COALESCE(NULLIF((SELECT published_url FROM updated_job), ''), publish_url)\n      ELSE publish_url\n    END,\n    published_manually_at = CASE\n      WHEN (SELECT status FROM updated_job) = 'MANUAL_PUBLISHED' THEN NOW()\n      ELSE published_manually_at\n    END,\n    updated_at = NOW()\n  FROM updated_job uj\n  WHERE vt.id = uj.video_topic_id\n  RETURNING vt.id, vt.status AS topic_status\n)\nSELECT\n  updated_job.id,\n  updated_job.video_topic_id,\n  updated_job.platform,\n  updated_job.status,\n  updated_job.title,\n  updated_job.caption,\n  updated_job.hashtags,\n  updated_job.video_path,\n  updated_job.cover_path,\n  updated_job.package_dir,\n  updated_job.video_url,\n  updated_job.cover_url,\n  updated_job.caption_url,\n  updated_job.metadata_url,\n  updated_job.download_page_url,\n  updated_job.video_download_url,\n  updated_job.manual_confirm_token,\n  updated_job.remind_channel,\n  updated_job.remind_status,\n  updated_job.remind_message,\n  updated_job.remind_response,\n  updated_job.reminded_at,\n  updated_job.manual_publish_note,\n  updated_job.published_url,\n  updated_job.published_at,\n  updated_job.error_code,\n  updated_job.error_message,\n  updated_job.created_at,\n  updated_job.updated_at,\n  (SELECT topic_status FROM updated_topic LIMIT 1) AS topic_status,\n  true AS success,\n  'UPDATED'::text AS result_code\nFROM updated_job\nUNION ALL\nSELECT\n  NULL::bigint AS id,\n  NULL::uuid AS video_topic_id,\n  'douyin'::text AS platform,\n  NULL::text AS status,\n  NULL::text AS title,\n  NULL::text AS caption,\n  NULL::text AS hashtags,\n  NULL::text AS video_path,\n  NULL::text AS cover_path,\n  NULL::text AS package_dir,\n  NULL::text AS video_url,\n  NULL::text AS cover_url,\n  NULL::text AS caption_url,\n  NULL::text AS metadata_url,\n  NULL::text AS download_page_url,\n  NULL::text AS video_download_url,\n  NULL::text AS manual_confirm_token,\n  NULL::text AS remind_channel,\n  NULL::text AS remind_status,\n  NULL::text AS remind_message,\n  NULL::jsonb AS remind_response,\n  NULL::timestamptz AS reminded_at,\n  NULL::text AS manual_publish_note,\n  NULL::text AS published_url,\n  NULL::timestamptz AS published_at,\n  NULL::text AS error_code,\n  NULL::text AS error_message,\n  NULL::timestamptz AS created_at,\n  NULL::timestamptz AS updated_at,\n  NULL::text AS topic_status,\n  false AS success,\n  'INVALID_JOB_OR_TOKEN'::text AS result_code\nWHERE NOT EXISTS (SELECT 1 FROM updated_job);\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.action_result, $json.note, $json.published_url, $json.job_id, $json.token ] }}"
+        }
+      },
+      "id": "update-manual-publish-decision-09",
+      "name": "Postgres - Update Douyin Manual Publish Decision",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        660
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Manual Publish Result HTML\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const row = item.json || {};\n  const success = row.success === true || row.success === 'true';\n  if (!success) {\n    const html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>发布确认失败</title>\n  <style>\n    body { font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; background:#f6f7f9; margin:0; padding:28px; }\n    .card { max-width:720px; margin:0 auto; background:white; border-radius:18px; padding:28px; box-shadow:0 8px 30px rgba(0,0,0,.08); }\n    h1 { margin:0 0 16px; color:#dc2626; }\n    .row { line-height:1.9; color:#333; }\n  </style>\n</head>\n<body>\n  <div class=\"card\">\n    <h1>发布确认失败</h1>\n    <div class=\"row\"><strong>结果：</strong>${escapeHtml(row.result_code || 'UNKNOWN')}</div>\n    <div class=\"row\">常见原因：链接已过期、任务不存在，或 token 不匹配。</div>\n  </div>\n</body>\n</html>`;\n    return { json: { response_status_code: 409, response_html: html } };\n  }\n\n  const isPublished = row.status === 'MANUAL_PUBLISHED';\n  const title = isPublished ? '已标记为已发布' : '已标记为暂不发布';\n  const color = isPublished ? '#16a34a' : '#f59e0b';\n\n  const html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>${escapeHtml(title)}</title>\n  <style>\n    body { font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; background:#f6f7f9; margin:0; padding:28px; }\n    .card { max-width:720px; margin:0 auto; background:white; border-radius:18px; padding:28px; box-shadow:0 8px 30px rgba(0,0,0,.08); }\n    h1 { margin:0 0 16px; color:${color}; }\n    .row { line-height:1.9; color:#333; }\n    .muted { color:#777; font-size:14px; margin-top:16px; }\n  </style>\n</head>\n<body>\n  <div class=\"card\">\n    <h1>${escapeHtml(title)}</h1>\n    <div class=\"row\"><strong>发布任务 ID：</strong>${escapeHtml(row.id)}</div>\n    <div class=\"row\"><strong>视频任务 ID：</strong>${escapeHtml(row.video_topic_id)}</div>\n    <div class=\"row\"><strong>当前状态：</strong>${escapeHtml(row.status)}</div>\n    <div class=\"row\"><strong>标题：</strong>${escapeHtml(row.title)}</div>\n    <div class=\"muted\">你可以关闭这个页面，状态已回写到 PostgreSQL。</div>\n  </div>\n</body>\n</html>`;\n\n  return {\n    json: {\n      response_status_code: 200,\n      response_html: html\n    }\n  };\n});\n"
+      },
+      "id": "build-manual-publish-result-09",
+      "name": "Code - Build Manual Publish Result HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-manual-publish-result-09",
+      "name": "Respond to Webhook - Manual Publish Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "width": 1320,
+        "height": 190,
+        "color": 4,
+        "content": "## 抖音半自动发布开始路径\n\n审核中心“已通过”Tab 点击 **直接发布到抖音** 后，会调用 `/webhook/douyin-publish-start?task_id=<id>&token=<review_token>`。本路径只允许 `APPROVED` 视频，生成 `/data/publish/douyin/<job_id>/` 发布包并推送 Server酱微信提醒。若未配置 `SERVERCHAN_SENDKEY`，仍会生成发布包，提醒状态记录为 `SKIPPED_NO_SENDKEY`。"
+      },
+      "id": "note-douyin-start-path-09",
+      "name": "说明 - 抖音发布开始路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -150
+      ]
+    },
+    {
+      "parameters": {
+        "width": 1320,
+        "height": 190,
+        "color": 5,
+        "content": "## 抖音手动发布确认路径\n\n微信提醒里的链接会调用 `/webhook/douyin-manual-publish-action?action=published|skip&job_id=<job_id>&token=<manual_confirm_token>`。`published` 会把视频主题改为 `PUBLISHED`；`skip` 会让主题保持 `APPROVED`，方便之后再次发布。"
+      },
+      "id": "note-douyin-manual-path-09",
+      "name": "说明 - 手动发布确认路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        410
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "douyin-publish-withdraw",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-douyin-publish-withdraw-09",
+      "name": "Webhook - Douyin Publish Withdraw",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1220
+      ],
+      "webhookId": "douyin-publish-withdraw-09"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Douyin Publish Start Params\n// Expected query: ?task_id=<video_topics.id>&token=<review_token>\n\nconst source = $json || {};\nconst query = source.query || source.params || source;\n\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\n\nif (!taskId) {\n  throw new Error('缺少 task_id 参数');\n}\n\nif (!token) {\n  throw new Error('缺少 token 参数');\n}\n\nreturn [\n  {\n    json: {\n      task_id: taskId,\n      token,\n      platform: 'douyin',\n      received_at: new Date().toISOString(),\n    },\n  },\n];\n"
+      },
+      "id": "validate-douyin-publish-withdraw-09",
+      "name": "Code - Validate Douyin Publish Withdraw Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Withdraw an active douyin publish job and keep the video in APPROVED.\n-- $1 = video topic id\n-- $2 = review token\n\nWITH topic AS (\n  SELECT *\n  FROM video_topics\n  WHERE id = $1::uuid\n    AND review_token = $2\n  LIMIT 1\n), picked_job AS (\n  SELECT j.*\n  FROM video_publish_jobs j\n  JOIN topic t ON t.id = j.video_topic_id\n  WHERE j.platform = 'douyin'\n    AND j.status IN ('PACKAGING', 'PACKAGE_READY', 'REMINDING', 'REMIND_SENT')\n  ORDER BY j.updated_at DESC\n  LIMIT 1\n), updated_job AS (\n  UPDATE video_publish_jobs j\n  SET\n    status = 'MANUAL_SKIPPED',\n    manual_publish_note = '审核中心撤回发布',\n    updated_at = NOW()\n  FROM picked_job p\n  WHERE j.id = p.id\n  RETURNING j.*\n), updated_topic AS (\n  UPDATE video_topics vt\n  SET\n    status = 'APPROVED',\n    publish_status = NULL,\n    updated_at = NOW()\n  FROM topic t\n  WHERE vt.id = t.id\n    AND EXISTS (SELECT 1 FROM updated_job)\n  RETURNING vt.id\n)\nSELECT\n  true AS success,\n  'WITHDRAWN'::text AS result_code,\n  updated_job.id,\n  updated_job.video_topic_id,\n  updated_job.platform,\n  updated_job.status,\n  updated_job.title,\n  updated_job.caption,\n  updated_job.hashtags,\n  updated_job.video_path,\n  updated_job.cover_path,\n  updated_job.package_dir,\n  updated_job.video_url,\n  updated_job.cover_url,\n  updated_job.caption_url,\n  updated_job.metadata_url,\n  updated_job.download_page_url,\n  updated_job.video_download_url,\n  updated_job.manual_confirm_token,\n  updated_job.remind_channel,\n  updated_job.remind_status,\n  updated_job.remind_message,\n  updated_job.remind_response,\n  updated_job.reminded_at,\n  updated_job.manual_publish_note,\n  updated_job.published_url,\n  updated_job.published_at,\n  updated_job.error_code,\n  updated_job.error_message,\n  updated_job.created_at,\n  updated_job.updated_at\nFROM updated_job\nUNION ALL\nSELECT\n  false AS success,\n  CASE\n    WHEN NOT EXISTS (SELECT 1 FROM topic) THEN 'INVALID_TASK_OR_TOKEN'\n    WHEN NOT EXISTS (SELECT 1 FROM picked_job) THEN 'NO_ACTIVE_PUBLISH_JOB'\n    ELSE 'NOT_UPDATED'\n  END AS result_code,\n  NULL::bigint AS id,\n  (SELECT id FROM topic) AS video_topic_id,\n  'douyin'::text AS platform,\n  NULL::text AS status,\n  NULL::text AS title,\n  NULL::text AS caption,\n  NULL::text AS hashtags,\n  NULL::text AS video_path,\n  NULL::text AS cover_path,\n  NULL::text AS package_dir,\n  NULL::text AS video_url,\n  NULL::text AS cover_url,\n  NULL::text AS caption_url,\n  NULL::text AS metadata_url,\n  NULL::text AS download_page_url,\n  NULL::text AS video_download_url,\n  NULL::text AS manual_confirm_token,\n  NULL::text AS remind_channel,\n  NULL::text AS remind_status,\n  NULL::text AS remind_message,\n  NULL::jsonb AS remind_response,\n  NULL::timestamptz AS reminded_at,\n  NULL::text AS manual_publish_note,\n  NULL::text AS published_url,\n  NULL::timestamptz AS published_at,\n  NULL::text AS error_code,\n  NULL::text AS error_message,\n  NULL::timestamptz AS created_at,\n  NULL::timestamptz AS updated_at\nWHERE NOT EXISTS (SELECT 1 FROM updated_job);\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.task_id, $json.token ] }}"
+        }
+      },
+      "id": "withdraw-douyin-publish-job-09",
+      "name": "Postgres - Withdraw Douyin Publish Job",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        1220
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Douyin Publish Start Result\n\nconst row = $json || {};\nconst explicitSuccess = row.success;\nconst success = explicitSuccess === false || explicitSuccess === 'false'\n  ? false\n  : Boolean(row.id);\n\nreturn [\n  {\n    json: {\n      success,\n      response_status_code: success ? 200 : 409,\n      response_json: {\n        success,\n        result_code: row.result_code || (success ? 'OK' : 'INVALID_TASK_OR_TOKEN'),\n        job_id: row.id || null,\n        video_topic_id: row.video_topic_id || null,\n        status: row.status || null,\n        video_url: row.video_url || null,\n        download_page_url: row.download_page_url || null,\n        video_download_url: row.video_download_url || null,\n        cover_url: row.cover_url || null,\n        caption_url: row.caption_url || null,\n        metadata_url: row.metadata_url || null,\n        reminded_at: row.reminded_at || null,\n      },\n    },\n  },\n];\n"
+      },
+      "id": "build-douyin-withdraw-result-09",
+      "name": "Code - Build Douyin Withdraw Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json.response_json) }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-douyin-withdraw-09",
+      "name": "Respond to Webhook - Douyin Publish Withdraw",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        1220
+      ]
+    },
+    {
+      "parameters": {
+        "width": 1320,
+        "height": 180,
+        "color": 6,
+        "content": "## 抖音发布撤回路径\n\n审核中心发布中状态点击 **撤回发布** 后，会调用 `/webhook/douyin-publish-withdraw?task_id=<id>&token=<review_token>`。它把当前活跃发布任务标记为 `MANUAL_SKIPPED`，并让视频保持/回到 `APPROVED`，清空 `publish_status`，方便之后重新发布。"
+      },
+      "id": "note-douyin-withdraw-path-09",
+      "name": "说明 - 发布撤回路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "douyin-job-ready-success",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-douyin-publish-job-ready-09",
+      "name": "IF - Douyin Publish Job Ready",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -980,
+        -20
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Douyin Publish Start": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Douyin Publish Start Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Douyin Publish Start Params": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Start Douyin Publish Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Start Douyin Publish Job": {
+      "main": [
+        [
+          {
+            "node": "IF - Douyin Publish Job Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Douyin Package Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Create Douyin Package",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Create Douyin Package": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update Douyin PACKAGE_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Update Douyin PACKAGE_READY": {
+      "main": [
+        [
+          {
+            "node": "Code - Build ServerChan Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build ServerChan Message": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Send ServerChan Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Send ServerChan Reminder": {
+      "main": [
+        [
+          {
+            "node": "Code - Normalize ServerChan Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Normalize ServerChan Response": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Mark Douyin REMIND_SENT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Mark Douyin REMIND_SENT": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Douyin Publish Start Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Douyin Publish Start Result": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Douyin Publish Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Douyin Manual Publish Action": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Manual Publish Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Manual Publish Params": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update Douyin Manual Publish Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Update Douyin Manual Publish Decision": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Manual Publish Result HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Manual Publish Result HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Manual Publish Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Douyin Publish Withdraw": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Douyin Publish Withdraw Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Douyin Publish Withdraw Params": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Withdraw Douyin Publish Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Withdraw Douyin Publish Job": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Douyin Withdraw Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Douyin Withdraw Result": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Douyin Publish Withdraw",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Douyin Publish Job Ready": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Douyin Package Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code - Build Douyin Publish Start Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "09-douyin-semiauto-publish-workflow",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "description": "已通过视频的抖音半自动发布：生成发布包、Server酱提醒、手动发布确认回写。"
+}

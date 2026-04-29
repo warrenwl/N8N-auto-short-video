@@ -43,6 +43,9 @@ services:
       GLM_API_KEY: ${GLM_API_KEY}
       GLM_MODEL: ${GLM_MODEL}
       GLM_SCRIPT_PROMPT_CONFIG_PATH: /config/glm_script_prompt_config.jsonc
+      SERVERCHAN_SENDKEY: ${SERVERCHAN_SENDKEY:-}
+      PUBLIC_N8N_BASE_URL: ${PUBLIC_N8N_BASE_URL:-http://localhost}
+      PUBLIC_FILE_BASE_URL: ${PUBLIC_FILE_BASE_URL:-http://localhost/publish}
       NODE_FUNCTION_ALLOW_BUILTIN: fs
     volumes:
       - n8n_data:/home/node/.n8n
@@ -74,6 +77,22 @@ services:
       - ./data:/data
       - ./config:/config:ro
       - ./comfyui:/app/comfyui:ro
+
+  publish-helper:
+    build: ./publish_helper
+    container_name: n8n-publish-helper
+    restart: unless-stopped
+    ports:
+      - "80:8010"
+      - "8011:8010"
+    environment:
+      DATA_ROOT: /data
+      PUBLISH_ROOT: /data/publish
+      PUBLIC_FILE_BASE_URL: ${PUBLIC_FILE_BASE_URL:-http://localhost/publish}
+      N8N_INTERNAL_BASE_URL: http://n8n:5678
+      TZ: ${GENERIC_TIMEZONE}
+    volumes:
+      - ./data:/data
 
 volumes:
   postgres_data:

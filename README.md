@@ -73,11 +73,12 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 n8n/workflow/available/
 ```
 
-日常只需要使用 `01 -> 06 -> 08`：
+日常只需要使用 `01 -> 06 -> 08 -> 09`：
 
 - `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`。
 - `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；同时承接审核中心的已拒绝重渲染和仅重新合成视频。
 - `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染。
+- `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送 Server酱微信提醒。
 
 `02/02b/03/04/05` 是阶段演进留下的历史链路，保留用于回溯，不建议日常使用。
 
@@ -86,6 +87,7 @@ n8n/workflow/available/
 | `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库 |
 | `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；已拒绝视频可跳过封面重渲染，也可仅重新合成视频 |
 | `available/08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
+| `available/09_douyin_semiauto_publish_workflow.json` | 抖音半自动发布：发布包 → 微信提醒 → 手动确认回写 |
 | `01_postgres_script_workflow.json` | 当前可用工作流的根目录副本 |
 | `02_postgres_render_workflow.json` | 单镜头渲染 |
 | `02b_postgres_render_multishot_workflow.json` | 多镜头渲染 |
@@ -94,6 +96,7 @@ n8n/workflow/available/
 | `05_remotion_dynamic_render_workflow.json` | ComfyUI 封面 + VoxCPM + Remotion 动态版式 |
 | `06_split_render_workflow.json` | 当前可用工作流的根目录副本 |
 | `08_review_list_workflow.json` | 当前可用工作流的根目录副本 |
+| `09_douyin_semiauto_publish_workflow.json` | 当前可用工作流的根目录副本 |
 
 工作流通过 GLM API（OpenAI 兼容接口）生成脚本，`GLM_API_KEY` 和 `GLM_MODEL` 从 `.env` 读取。
 
@@ -297,9 +300,8 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 
 页面展示规则：
 
-- 顶部展示 `待审核/已通过/已拒绝/今日审核` 统计。
-- 顶部展示 `待审核/生成中/已通过/已拒绝/今日审核` 统计。
-- Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED` 和 `ALL`。
+- 顶部展示 `待审核/生成中/已通过/已拒绝/已发布/今日审核` 统计。
+- Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `ALL`。
 - `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
 - `GENERATING` Tab 会每 5 秒自动刷新，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
@@ -307,7 +309,8 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 - 视频预览读取 `video_path` 指向的本地文件，路径通常是 `/data/output/<task_id>/final.mp4`，对应宿主机目录 `data/output/<task_id>/final.mp4`。
 - 如果数据库记录还在，但本地 `final.mp4` 已被清理或移动，页面会显示“视频文件不可预览 / 本地文件可能已被清理”。这种记录需要重新渲染或恢复文件后才能预览。
 - Remotion renderer 的 `/asset` 静态资源接口支持 `HEAD` 和 `Range` 请求，浏览器 `<video>` 可以正常读取 metadata、拖动和播放已存在的视频文件。
-- `待审核`标签里的通过/拒绝会进入审核动作完成页，页面按最终状态上色并提供“返回对应列表 / 查看待审核 / 查看已通过 / 查看已拒绝”按钮；其他标签里的退回/重渲染/仅重新合成视频会在当前列表页内执行，成功后刷新当前页，不再展示二级结果页。
+- `待审核`标签里的通过/拒绝会进入审核动作完成页，页面按最终状态上色并提供“返回对应列表 / 查看待审核 / 查看已通过 / 查看已拒绝”按钮；其他标签里的退回/重渲染/仅重新合成视频/发布相关动作会在当前列表页内执行，成功后刷新当前页，不再展示二级结果页。
+- `APPROVED` 视频未进入发布链路时，显示“退回待审核 / 直接发布到抖音”；进入发布链路后，隐藏这两个按钮，显示“撤回发布 / 再次发送提醒”；确认已手动发布后，视频状态变为 `PUBLISHED`，进入“已发布”Tab 且不再显示操作按钮。
 
 导入/更新审核中心工作流：
 
@@ -315,6 +318,61 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 docker cp n8n/workflow/08_review_list_workflow.json n8n-video-n8n:/tmp/08_review_list_workflow.json
 docker exec n8n-video-n8n n8n import:workflow --input=/tmp/08_review_list_workflow.json --projectId=NGUCqFuUfTK6tdLq
 docker exec n8n-video-n8n n8n update:workflow --id=videoAgentReviewListMvp08 --active=true
+docker compose restart n8n
+```
+
+### 09 抖音半自动发布
+
+`09_抖音半自动发布` 为审核中心 `已通过` Tab 的“直接发布到抖音”按钮提供后端链路。它不会自动登录或代发抖音，而是生成手机可下载的发布包，并通过 Server酱推送微信提醒。
+
+发布链路：
+
+1. 审核中心点击“直接发布到抖音”，调用 `/webhook/douyin-publish-start?task_id=<任务ID>&token=<review_token>`。
+2. 09 校验视频仍是 `APPROVED`，创建或复用 `video_publish_jobs` 中的 douyin 发布任务。
+3. `publish-helper` 把 `final.mp4`、封面、文案和 metadata 复制到 `/data/publish/douyin/<job_id>/`，宿主机可通过 `http://localhost/publish/douyin/<job_id>/final.mp4` 访问。
+4. 09 通过 Server酱发送微信提醒，提醒里包含下载链接、文案、`我已发布` 和 `暂不发布` 链接。
+5. 点击 `我已发布` 后，发布任务变为 `MANUAL_PUBLISHED`，主题视频变为 `PUBLISHED`；点击 `暂不发布` 后，发布任务变为 `MANUAL_SKIPPED`，主题视频保持 `APPROVED`。
+
+发布任务状态：
+
+- `PACKAGING`：正在生成发布包。
+- `PACKAGE_READY`：发布包已生成。
+- `REMINDING`：正在发送提醒。
+- `REMIND_SENT`：提醒已发送，审核中心会显示“撤回发布 / 再次发送提醒”。
+- `MANUAL_PUBLISHED`：你已确认手动发布，主题视频变为 `PUBLISHED`。
+- `MANUAL_SKIPPED`：你暂不发布或在审核中心撤回发布，主题视频保持 `APPROVED`。
+
+初始化/升级发布表：
+
+```bash
+docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/25_create_video_publish_jobs.sql
+```
+
+发布服务端口：
+
+- 容器内：`http://publish-helper:8010`
+- 宿主机标准入口：`http://localhost`
+- 宿主机兼容入口：`http://localhost:8011`
+- 微信提醒默认使用标准 `80` 端口，不再显示 `:8011`；`8011` 仅保留给电脑本地调试。
+
+环境变量：
+
+```text
+SERVERCHAN_SENDKEY=你的 Server酱 SendKey
+PUBLIC_N8N_BASE_URL=http://你的Mac本地域名.local
+PUBLIC_FILE_BASE_URL=http://你的Mac本地域名.local/publish
+```
+
+如果手机要从微信里直接下载视频，`PUBLIC_*` 不要配置成 `localhost`。优先使用 Mac 的 Bonjour/mDNS 本地域名，例如 `http://warrndeMacBook-Air.local/publish`；这样换 WiFi 后通常不需要跟着改 IP。可用 `scutil --get LocalHostName` 查看本地域名前缀。若手机所在网络不支持 `.local` 解析，再临时改成当前 WiFi IP。发布确认链接也走标准 `80` 端口，由 publish-helper 代理到 n8n，避免微信提示非标准端口。
+
+微信提醒会优先发送 `http://你的Mac本地域名.local/download/douyin/<job_id>` 下载页，而不是只发裸 `final.mp4`。下载页包含视频预览、强制附件下载入口、封面下载和文案下载；如果微信内只能播放不能保存，点右上角“在浏览器打开”后再点“下载视频文件”。
+
+导入/更新 09 工作流：
+
+```bash
+docker cp n8n/workflow/09_douyin_semiauto_publish_workflow.json n8n-video-n8n:/tmp/09_douyin_semiauto_publish_workflow.json
+docker exec n8n-video-n8n n8n import:workflow --input=/tmp/09_douyin_semiauto_publish_workflow.json --projectId=NGUCqFuUfTK6tdLq
+docker exec n8n-video-n8n n8n update:workflow --id=videoAgentDouyinPublishMvp09 --active=true
 docker compose restart n8n
 ```
 

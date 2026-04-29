@@ -99,6 +99,7 @@ function statusLabel(status) {
     NEED_REVIEW: '待审核',
     APPROVED: '已通过',
     REJECTED: '已拒绝',
+    PUBLISHED: '已发布',
   }[status] || status || '未知';
 }
 
@@ -136,7 +137,7 @@ function getQuery() {
 
 const rejectReasons = ['脚本不行', '画面不行', '声音不行', '字幕不行', '整体重做'];
 const rejectOptions = rejectReasons.map((reason) => `<option value="${escapeHtml(reason)}">${escapeHtml(reason)}</option>`).join('');
-const allowedTabs = new Set(['NEED_REVIEW', 'GENERATING', 'APPROVED', 'REJECTED', 'ALL']);
+const allowedTabs = new Set(['NEED_REVIEW', 'GENERATING', 'APPROVED', 'REJECTED', 'PUBLISHED', 'ALL']);
 const query = getQuery();
 const activeStatus = allowedTabs.has(String(query.status || '').toUpperCase()) ? String(query.status).toUpperCase() : 'NEED_REVIEW';
 const allRows = $input.all().map((item) => item.json || {});
@@ -153,7 +154,7 @@ const counts = allRows.reduce((acc, row) => {
   }
   if (generatingStatuses.has(status)) acc.GENERATING += 1;
   return acc;
-}, {NEED_REVIEW: 0, GENERATING: 0, APPROVED: 0, REJECTED: 0, ALL: 0, TODAY: 0});
+}, {NEED_REVIEW: 0, GENERATING: 0, APPROVED: 0, REJECTED: 0, PUBLISHED: 0, ALL: 0, TODAY: 0});
 
 const rows = activeStatus === 'ALL'
   ? allRows
@@ -173,6 +174,23 @@ function inlineActionAttrs(redirectStatus, triggerPath = '') {
   return `data-inline-action="true" data-trigger-path="${escapeHtml(triggerPath)}"`;
 }
 
+const activePublishStatuses = new Set(['PACKAGING', 'PACKAGE_READY', 'REMINDING', 'REMIND_SENT']);
+
+function publishStatus(row) {
+  return String(row.publish_job_status || row.publish_status || '');
+}
+
+function publishStatusLabel(value) {
+  return {
+    PACKAGING: '正在生成发布包',
+    PACKAGE_READY: '发布包已生成',
+    REMINDING: '正在发送提醒',
+    REMIND_SENT: '已发送提醒',
+    MANUAL_PUBLISHED: '已确认发布',
+    MANUAL_SKIPPED: '已撤回/暂不发布',
+  }[value] || value;
+}
+
 function actionButtons(row) {
   const status = String(row.status || '');
   if (status === 'NEED_REVIEW') {
@@ -190,10 +208,30 @@ function actionButtons(row) {
     `;
   }
   if (status === 'APPROVED') {
+    const currentPublishStatus = publishStatus(row);
+    if (activePublishStatuses.has(currentPublishStatus)) {
+      return `
+        <form method="GET" action="/webhook/douyin-publish-withdraw" ${inlineActionAttrs('APPROVED')}>
+          <input type="hidden" name="task_id" value="${escapeHtml(row.id)}" />
+          <input type="hidden" name="token" value="${escapeHtml(row.review_token || '')}" />
+          <button class="withdraw" type="submit">撤回发布</button>
+        </form>
+        <form method="GET" action="/webhook/douyin-publish-start" ${inlineActionAttrs('APPROVED')}>
+          <input type="hidden" name="task_id" value="${escapeHtml(row.id)}" />
+          <input type="hidden" name="token" value="${escapeHtml(row.review_token || '')}" />
+          <button class="publish" type="submit">再次发送提醒</button>
+        </form>
+      `;
+    }
     return `
       <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('NEED_REVIEW')}>
         ${hiddenReviewFields(row, 'back_review')}
         <button class="secondary" type="submit">退回待审核</button>
+      </form>
+      <form method="GET" action="/webhook/douyin-publish-start" ${inlineActionAttrs('APPROVED')}>
+        <input type="hidden" name="task_id" value="${escapeHtml(row.id)}" />
+        <input type="hidden" name="token" value="${escapeHtml(row.review_token || '')}" />
+        <button class="publish" type="submit">直接发布到抖音</button>
       </form>
     `;
   }
@@ -255,6 +293,9 @@ const cards = rows.map((row) => {
   const coverUrl = assetUrl(coverPath);
   const status = String(row.status || '');
   const reviewNote = row.review_note || '';
+  const currentPublishStatus = publishStatus(row);
+  const publishStatusText = currentPublishStatus ? publishStatusLabel(currentPublishStatus) : '';
+  const remindedTime = formatLocalTime(row.publish_reminded_at || '');
   const progress = progressBlock(row);
 
   return `
@@ -273,6 +314,8 @@ const cards = rows.map((row) => {
           ${durationText ? `<dt>持续时间</dt><dd>${escapeHtml(durationText)}</dd>` : ''}
           ${reviewedTime ? `<dt>审核时间</dt><dd>${escapeHtml(reviewedTime)}</dd>` : ''}
           ${reviewNote ? `<dt>审核备注</dt><dd>${escapeHtml(reviewNote)}</dd>` : ''}
+          ${publishStatusText ? `<dt>发布状态</dt><dd>${escapeHtml(publishStatusText)}</dd>` : ''}
+          ${remindedTime ? `<dt>提醒时间</dt><dd>${escapeHtml(remindedTime)}</dd>` : ''}
         </dl>
         ${progress}
         <div class="actions">${actionButtons(row)}</div>
@@ -338,6 +381,8 @@ const html = `<!doctype html>
     .secondary { background: #4b5563; }
     .rerender { background: #2563eb; }
     .video-only { background: #7c3aed; }
+    .publish { background: #111827; }
+    .withdraw { background: #dc2626; }
     .reject-form { display: flex; gap: 8px; align-items: center; }
     select, input[name="extra_note"] { width: 150px; max-width: 44vw; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 14px; background: #fff; color: #111827; }
     input[name="extra_note"] { width: 220px; }
@@ -401,6 +446,7 @@ const html = `<!doctype html>
           <span class="metric">生成中 ${counts.GENERATING}</span>
           <span class="metric">已通过 ${counts.APPROVED}</span>
           <span class="metric">已拒绝 ${counts.REJECTED}</span>
+          <span class="metric">已发布 ${counts.PUBLISHED}</span>
           <span class="metric">今日审核 ${counts.TODAY}</span>
         </div>
       </div>
@@ -409,6 +455,7 @@ const html = `<!doctype html>
         ${tab('GENERATING', '生成中', counts.GENERATING)}
         ${tab('APPROVED', '已通过', counts.APPROVED)}
         ${tab('REJECTED', '已拒绝', counts.REJECTED)}
+        ${tab('PUBLISHED', '已发布', counts.PUBLISHED)}
         ${tab('ALL', '全部', counts.ALL)}
       </nav>
       ${activeStatus === 'GENERATING' ? '<div class="refresh-note">自动刷新中，每 5 秒更新一次生成状态。</div>' : ''}
