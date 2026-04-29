@@ -1,0 +1,50 @@
+{
+  "task_id": "demo_comfyui_001",
+  "title": "3个普通人也能做的副业方向",
+  "script": "普通人想做副业，第一步不是盲目找项目，而是先盘点自己的能力。第一，能不能把已有技能服务化。第二，能不能把经验内容化。第三，能不能把时间产品化。",
+  "cover_text": "普通人副业方向",
+  "cover_prompt": "竖屏短视频封面背景，年轻上班族在书桌前打开电脑思考副业方向，桌面有笔记本和手机，暖色台灯，干净高级，不要文字，不要logo，不要水印",
+  "shots": [
+    {
+      "shot_id": 1,
+      "duration": 5,
+      "subtitle": "普通人做副业，第一步不是找项目。",
+      "visual_prompt_cn": "一个普通上班族坐在电脑前思考副业方向，桌面有笔记本和咖啡，暖色室内光，真实摄影，竖屏构图"
+    },
+    {
+      "shot_id": 2,
+      "duration": 6,
+      "subtitle": "而是先判断自己有什么可复用能力。",
+      "visual_prompt_cn": "年轻人用笔记本整理技能清单，屏幕上是简单的待办事项界面，干净桌面，真实摄影，竖屏短视频画面"
+    },
+    {
+      "shot_id": 3,
+      "duration": 6,
+      "subtitle": "写作、设计、剪辑、编程、运营，都可以变成服务。",
+      "visual_prompt_cn": "多个数字工具图标和创作软件界面在笔记本屏幕上，旁边有手写技能清单，真实摄影，浅景深"
+    }
+  ],
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "enable_tts": true,
+  "tts_base_url": "http://host.docker.internal:8010",
+  "enable_comfyui": true,
+  "comfyui_options": {
+    "base_url": "http://host.docker.internal:8000",
+    "workflow_template_path": "/app/comfyui/zimage_text2image_api_template.json",
+    "prompt_node_id": "63",
+    "save_node_id": "9",
+    "sampler_node_id": "57:3",
+    "latent_node_id": "57:13",
+    "filename_prefix": "n8n-video",
+    "image_width": 720,
+    "image_height": 1280,
+    "timeout_seconds": 900,
+    "poll_interval_seconds": 2,
+    "fallback_to_placeholder": true,
+    "overlay_cover_text": true,
+    "prompt_prefix": "竖屏短视频画面，真实摄影，电影感光影，构图干净，手机竖屏，高清细节",
+    "negative_prompt": "多个人，过度锐化，塑料质感，畸形手指，多余的手，畸形肢体，文字乱码，logo，水印，低清晰度，模糊"
+  }
+}

@@ -6,8 +6,12 @@ n8n_postgres_starter_pack/
 n8n_second_workflow_enhanced_pack/
 n8n_second_workflow_starter_pack/
 n8n_stage3_voxcpm_tts_starter_pack/
+n8n_stage4_comfyui_starter_pack/
 logs/
 *.log
 .omx/
 __pycache__/
 *.pyc
+remotion-video/node_modules/
+remotion-video/dist/
+remotion-video/.cache/

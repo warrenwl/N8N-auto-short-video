@@ -73,8 +73,127 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 | `02_postgres_render_workflow.json` | 单镜头渲染 |
 | `02b_postgres_render_multishot_workflow.json` | 多镜头渲染 |
 | `03_voxcpm_tts_render_workflow.json` | TTS 语音合成 + 渲染合成 |
+| `04_comfyui_tts_render_workflow.json` | ComfyUI 封面/分镜图 + VoxCPM + FFmpeg |
+| `05_remotion_dynamic_render_workflow.json` | ComfyUI 封面 + VoxCPM + Remotion 动态版式 |
 
 工作流通过 GLM API（OpenAI 兼容接口）生成脚本，`GLM_API_KEY` 和 `GLM_MODEL` 从 `.env` 读取。
+
+### GLM 脚本提示词配置
+
+01 工作流的固定提示词已提取到：
+
+```text
+config/glm_script_prompt_config.jsonc
+```
+
+修改这个文件后，重新运行 01 工作流即可生效，不需要改 workflow JSON。配置支持注释，常用字段如下：
+
+```jsonc
+{
+  // GLM 模型和采样参数
+  "model": "glm-5.1",
+  "temperature": 0.7,
+  "max_tokens": 8000,
+
+  // 模型角色和全局约束
+  "system_prompt": "你是一个专业短视频编导...",
+
+  // 主提示词模板，{{...}} 会被当前数据库记录替换
+  "user_prompt_template": "选题：{{topic}}\n平台：{{platform}}\n目标时长：{{duration_seconds}} 秒"
+}
+```
+
+可用占位符：`{{topic}}`、`{{platform}}`、`{{style}}`、`{{duration_seconds}}`、`{{language}}`、`{{target_audience}}`。
+
+## Remotion 动态模板
+
+`05_ComfyUI封面_Remotion动态版式_VoxCPM_TTS` 使用 Remotion 动态版式生成正片。模板由数据库字段 `video_topics.template_type` 指定，01 工作流会让 GLM 从以下 4 个值里选择：
+
+| template_type | 选择依据 | 当前视觉效果 |
+|---|---|---|
+| `knowledge` | 概念解释、方法论、科普知识、观点展开；没有明显步骤/对比/故事线时默认使用 | 概念解释卡，关键词 chip，节奏稳定 |
+| `list` | 三步法、清单、避坑、操作流程、编号建议 | STEP 标签，编号关键词，逐项推进 |
+| `contrast` | 误区 vs 正解、前后对比、反常识观点、纠偏类内容 | VIEW 标签，误区/正解双栏，蓝橙对比色 |
+| `story` | 个人经历、案例、转折叙事、时间推进 | STORY 标签，时间线关键词，轻微漂移动效 |
+
+### 如何指定模板
+
+默认由 01 工作流的 GLM 输出决定：
+
+```json
+{
+  "template_type": "list"
+}
+```
+
+也可以在跑 05 前手动指定：
+
+```sql
+UPDATE video_topics
+SET template_type = 'contrast'
+WHERE id = '你的任务ID';
+```
+
+worker 会校验 `template_type` 是否存在于视觉配置；非法值会回退到 `knowledge`。
+
+### 视觉配置文件
+
+模板视觉参数集中在：
+
+```text
+config/remotion_visual_config.jsonc
+```
+
+这是带注释的 JSONC 文件。关键字段含义：
+
+| 字段 | 作用 |
+|---|---|
+| `selection_rule` | 给人和 GLM 看的模板选择依据，说明什么内容适合这个模板 |
+| `required_fields` | 这个模板依赖的 shot 字段，如 `headline/body/keywords/subtitle` |
+| `layout` | 主画面结构：`concept` 概念卡、`steps` 步骤卡、`contrast` 对比双栏、`timeline` 时间线 |
+| `keyword_style` | 关键词展示：`chips` 标签块、`numbered` 编号块、`split` A/B 对比块、`timeline` 单列时间线 |
+| `visual_behavior` | 对当前模板画面表现的中文说明，便于后续继续拆独立组件 |
+| `motion` | 背景推近、漂移、关键词入场节奏 |
+| `caption` | 字幕字号、换行宽度、透明度、关键词高亮延迟 |
+| `card` | 中间卡片透明度、边框、阴影、圆角、数字水印 |
+| `outro` | 结尾 recap 页文案和时长 |
+| `brand` | 账号角标显示策略，账号名和头像来自 `config/Account/mes.json` |
+| `platform_profiles` | 不同平台的字幕大小和节奏预设入口，如 `douyin/xiaohongshu/default` |
+
+配置改完后，重启 `video-worker` 和 `remotion_renderer`，再重新跑 05 才会对新视频生效。
+
+### 视频观感优化项
+
+当前 Remotion 版本已经按 1-8 顺序加入以下观感优化：
+
+1. 节奏感：`motion.transition_frames` 给每个 shot 增加入场/出场缓冲，`motion.emphasis_scale` 给重点画面轻微放大，减少硬切和 PPT 感。
+2. 字幕层级：`caption.max_chars_per_line/max_lines/bottom_px/emphasis_scale` 控制两行字幕、底部位置和轻微强调；关键词会做局部高亮。
+3. 模板视觉差异：`knowledge/list/contrast/story` 分别对应概念卡、步骤卡、对比双栏、时间线叙事。
+4. 背景动态：`motion.background_zoom/pan_px` 控制封面背景推近和漂移，正片继承封面主色。
+5. 信息密度：`card.max_body_chars/compact_body_chars` 会把过长正文压成画面摘要，完整口播仍由字幕和语音承载，避免正文卡片挤爆。
+6. 封面与正片统一：`auto_from_cover=true` 时会从 ComfyUI 封面提取主色，传给 Remotion 的标题、关键词、进度条和片尾。
+7. 片头片尾/账号资产：顶部账号小角标读取 `config/Account/mes.json` 并默认居中展示，片尾先展示 1-2 秒总结观点，再切到独立干净关注页展示头像下方点击 `+` 的关注动效。
+8. 音画联动/平台适配：`audio_reactive` 使用字幕边界驱动画面节奏；`platform_profiles` 预留平台差异化字幕大小和节奏。
+
+账号配置文件：
+
+```json
+{
+  "account_name": "雾夜看雪",
+  "account_logo": "account.jpg",
+  "follow_voice_text": "关注 {account_name}，带你把普通人的成长方法，练成每天都能用的小习惯。"
+}
+```
+
+头像文件放在同目录，例如：
+
+```text
+config/Account/account.jpg
+```
+
+worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_logo.*`，再由 Remotion renderer 通过 `/asset` 读取，避免容器路径和本机路径不一致。
+
+`follow_voice_text` 是片尾关注页的统一账号话术，支持 `{account_name}` 和 `{title}` 占位符。`config/remotion_visual_config.jsonc` 里的 `outro.voice_enabled` 控制是否追加这段片尾语音。
 
 ## 视频渲染流程
 

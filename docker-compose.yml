@@ -42,9 +42,12 @@ services:
       DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
       GLM_API_KEY: ${GLM_API_KEY}
       GLM_MODEL: ${GLM_MODEL}
+      GLM_SCRIPT_PROMPT_CONFIG_PATH: /config/glm_script_prompt_config.jsonc
+      NODE_FUNCTION_ALLOW_BUILTIN: fs
     volumes:
       - n8n_data:/home/node/.n8n
       - ./data:/data
+      - ./config:/config:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,13 +62,18 @@ services:
       DATA_DIR: /data
       OUTPUT_ROOT: /data/output
       TTS_BASE_URL: http://host.docker.internal:8010
+      REMOTION_VISUAL_CONFIG_PATH: /config/remotion_visual_config.jsonc
+      COMFYUI_BASE_URL: http://host.docker.internal:8000
+      REMOTION_RENDERER_URL: http://host.docker.internal:3001
       VIDEO_WIDTH: "1080"
       VIDEO_HEIGHT: "1920"
       VIDEO_FPS: "30"
       TZ: ${GENERIC_TIMEZONE}
     volumes:
+      - ./worker/app.py:/app/app.py:ro
       - ./data:/data
       - ./config:/config:ro
+      - ./comfyui:/app/comfyui:ro
 
 volumes:
   postgres_data:

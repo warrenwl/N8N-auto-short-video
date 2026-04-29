@@ -1,0 +1,174 @@
+{
+  // 是否启用 Remotion 视觉配置。设为 false 时，Remotion 会使用代码里的默认视觉参数。
+  "enabled": true,
+
+  // 1. 封面与正片风格统一：
+  // auto_from_cover=true 时，worker 会从 cover.png 提取一个主色，传给 Remotion 作为高亮色。
+  // 如果封面颜色太暗或提取失败，会回退到 fallback_primary_color。
+  "auto_from_cover": true,
+  "fallback_primary_color": "#F8D66D",
+  "secondary_color": "#FF8A5B",
+  "background_color": "#090A0C",
+
+  // 2. 多模板视觉分化：
+  // 这些配置控制不同 template_type 的显示名称、色彩倾向和版式节奏。
+  // template_type 来自 01 工作流输出，可选：knowledge/list/contrast/story。
+  "templates": {
+    "knowledge": {
+      "label": "知识口播",
+      // selection_rule 会写入 README/提示词语义：适合解释概念、方法论、科普知识。
+      "selection_rule": "适合概念解释、方法论、科普知识、观点展开；如果内容没有明显步骤、对比或故事线，默认选择它。",
+      // required_fields 表示这个模板最依赖的 shot 字段；缺失时 worker 会回退生成。
+      "required_fields": ["headline", "body", "keywords", "subtitle"],
+      "accent": "#F8D66D",
+      "layout": "concept",
+      "motion": "steady",
+      "keyword_style": "chips",
+      "visual_behavior": {
+        "main_card": "概念解释卡：突出 headline 和 body，用关键词 chip 辅助理解。",
+        "keywords": "普通标签块，适合展示概念词、方法词、结论词。",
+        "transition": "稳定上滑，节奏克制。"
+      }
+    },
+    "list": {
+      "label": "清单拆解",
+      "selection_rule": "适合三步法、清单、避坑、操作流程、编号建议；脚本里出现第一/第二/第三、几个方法、步骤时优先选择它。",
+      "required_fields": ["headline", "body", "keywords", "layout_hint", "subtitle"],
+      "accent": "#F8D66D",
+      "layout": "steps",
+      "motion": "step",
+      "keyword_style": "numbered",
+      "visual_behavior": {
+        "main_card": "步骤卡：标签显示 STEP，关键词用 1/2/3 编号强化顺序。",
+        "keywords": "编号关键词块，适合动作步骤和清单项。",
+        "transition": "逐项进入，强调推进感。"
+      }
+    },
+    "contrast": {
+      "label": "对比观点",
+      "selection_rule": "适合误区 vs 正解、前后对比、反常识观点、纠偏类内容；脚本里出现不是/而是、误区、真正、对比时优先选择它。",
+      "required_fields": ["headline", "body", "keywords", "layout_hint", "subtitle"],
+      "accent": "#58B6FF",
+      "layout": "contrast",
+      "motion": "snap",
+      "keyword_style": "split",
+      "visual_behavior": {
+        "main_card": "对比卡：显示“误区 / 正解”双栏，用蓝橙色制造反差。",
+        "keywords": "A/B 分裂式关键词，适合把错误理解和正确做法并列。",
+        "transition": "更干脆的切换节奏，适合纠偏表达。"
+      }
+    },
+    "story": {
+      "label": "故事口播",
+      "selection_rule": "适合个人经历、案例、转折叙事、时间推进；脚本里有起因/经过/转折/结果时优先选择它。",
+      "required_fields": ["headline", "body", "keywords", "layout_hint", "subtitle"],
+      "accent": "#FF8A5B",
+      "layout": "timeline",
+      "motion": "drift",
+      "keyword_style": "timeline",
+      "visual_behavior": {
+        "main_card": "时间线卡：关键词单列排列，弱化工具感，强调叙事推进。",
+        "keywords": "单列时间线项目，适合事件节点和情绪变化。",
+        "transition": "轻微漂移，节奏更叙事。"
+      }
+    }
+  },
+
+  // 3. 镜头运动：
+  // background_zoom 控制背景缓慢推近；pan_px 控制背景横向/纵向漂移像素。
+  // segment_zoom 控制每段内容轻微缩放，数值越大越有镜头感。
+  "motion": {
+    "background_zoom": 0.08,
+    "pan_px": 34,
+    "segment_zoom": 0.018,
+    // transition_frames 控制每个 shot 入场/出场缓冲，避免硬切。
+    "transition_frames": 8,
+    // emphasis_scale 控制重点内容出现时的轻微放大，数值不要过大。
+    "emphasis_scale": 1.018,
+    "keyword_stagger_frames": 6
+  },
+
+  // 4. 字幕样式：
+  // max_chars_per_line 控制字幕自动换行宽度；box_opacity 控制底部字幕背景深浅。
+  // highlight_delay_frames 控制关键词高亮延后出现，配合语音节奏更自然。
+  "caption": {
+    "max_chars_per_line": 18,
+    "max_lines": 2,
+    "box_opacity": 0.58,
+    "bottom_px": 154,
+    "emphasis_scale": 1.012,
+    "highlight_delay_frames": 6,
+    "font_size_short": 48,
+    "font_size_medium": 40,
+    "font_size_long": 34
+  },
+
+  // 5. 中间信息卡片：
+  // glass_opacity 越低越轻，border_opacity 越低越不像 PPT 卡片。
+  // number_watermark 控制右上角大数字水印是否显示。
+  "card": {
+    "glass_opacity": 0.62,
+    "border_opacity": 0.12,
+    "shadow_opacity": 0.28,
+    "corner_radius": 30,
+    // body 超过 max_body_chars 会自动截断为“画面摘要”，完整内容仍由字幕承载。
+    "max_body_chars": 64,
+    "compact_body_chars": 42,
+    "number_watermark": true
+  },
+
+  // 6. 结尾页：
+  // enabled=true 时，视频最后会自动添加一个总结页。
+  // duration_seconds 会额外增加到视频总时长中。
+  "outro": {
+    "enabled": true,
+    "duration_seconds": 1.8,
+    // 前半段展示总结观点，后半段切到独立干净关注页，展示头像下方点击“+”号的动效。
+    "summary_seconds": 1.0,
+    "follow_seconds": 0.8,
+    "title": "记住这 3 个关键词",
+    "cta": "先收藏，今晚复盘一次",
+    "follow_hint": "点击头像下方 + 关注",
+    "show_follow_animation": true,
+    // voice_enabled=true 时，worker 会在主旁白后追加账号关注语音；
+    // 语音会等 recap 总结页结束、关注页出现时再播放。
+    // 具体话术配置在 config/Account/mes.json 的 follow_voice_text。
+    "voice_enabled": true
+  },
+
+  // 7. 账号角标：
+  // account_name/account_logo 来自 config/Account/mes.json。
+  // enabled=false 可隐藏角标；position 可选 top-left/top-center/top-right。
+  "brand": {
+    "enabled": true,
+    "position": "top-center",
+    "show_avatar": true,
+    "show_name": true
+  },
+
+  // 8. 平台适配预留：
+  // 后续可按 platform 做不同字幕大小和节奏。当前先保留配置入口，默认 balanced。
+  "platform_profiles": {
+    "douyin": {
+      "caption_scale": 1.06,
+      "tempo": "fast"
+    },
+    "xiaohongshu": {
+      "caption_scale": 0.96,
+      "tempo": "calm"
+    },
+    "default": {
+      "caption_scale": 1.0,
+      "tempo": "balanced"
+    }
+  },
+
+  // 9. 音频驱动画面节奏：
+  // use_subtitle_boundaries=true 时，Remotion 会使用 worker 的字幕边界结果驱动关键词入场节奏。
+  // 目前是段落级节奏，不是逐字口型同步。
+  "audio_reactive": {
+    "use_subtitle_boundaries": true,
+    "keyword_pop_frames": 8,
+    "pause_emphasis_scale": 1.012
+  }
+}
