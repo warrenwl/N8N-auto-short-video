@@ -58,6 +58,9 @@ export const Caption: React.FC<Props> = ({text, keywords, primaryColor, visualCo
   const captionConfig = visualConfig.caption || {};
   const platformProfile =
     visualConfig.platform_profiles?.[platform || 'default'] || visualConfig.platform_profiles?.default || {};
+  const captionLeft = platformProfile.caption_left_px ?? captionConfig.left_px ?? 64;
+  const captionRight = platformProfile.caption_right_px ?? captionConfig.right_px ?? 64;
+  const captionBottom = platformProfile.caption_bottom_px ?? captionConfig.bottom_px ?? 154;
   const lines = wrapCaptionLines(text, captionConfig.max_chars_per_line ?? 18);
   const pages = paginateLines(lines, captionConfig.max_lines ?? 2);
   const pageFrameCount = Math.max(24, Math.floor((durationInFrames || 1) / pages.length));
@@ -85,9 +88,9 @@ export const Caption: React.FC<Props> = ({text, keywords, primaryColor, visualCo
     <div
       style={{
         position: 'absolute',
-        left: 64,
-        right: 64,
-        bottom: captionConfig.bottom_px ?? 154,
+        left: captionLeft,
+        right: captionRight,
+        bottom: captionBottom,
         padding: '22px 34px',
         borderRadius: 22,
         background: `rgba(0,0,0,${captionConfig.box_opacity ?? 0.58})`,

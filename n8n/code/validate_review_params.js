@@ -27,7 +27,7 @@ const nextStatusByAction = {
   approve: 'APPROVED',
   reject: 'REJECTED',
   back_review: 'NEED_REVIEW',
-  rerender: 'SCRIPT_READY',
+  rerender: 'MEDIA_READY',
 };
 const reviewStatusByAction = {
   approve: 'APPROVED',

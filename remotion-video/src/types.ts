@@ -58,6 +58,8 @@ export type RemotionVisualConfig = {
     font_size_long?: number;
     max_lines?: number;
     bottom_px?: number;
+    left_px?: number;
+    right_px?: number;
     emphasis_scale?: number;
   };
   card?: {
@@ -89,6 +91,12 @@ export type RemotionVisualConfig = {
   };
   platform_profiles?: Record<string, {
     caption_scale?: number;
+    caption_bottom_px?: number;
+    caption_left_px?: number;
+    caption_right_px?: number;
+    top_safe_px?: number;
+    bottom_safe_px?: number;
+    right_safe_px?: number;
     tempo?: 'fast' | 'balanced' | 'calm';
   }>;
   audio_reactive?: {

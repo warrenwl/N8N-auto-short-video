@@ -23,7 +23,8 @@ const statusMeta = {
   APPROVED: {label: '已通过', color: '#16a34a', tab: 'APPROVED'},
   REJECTED: {label: '已拒绝', color: '#dc2626', tab: 'REJECTED'},
   NEED_REVIEW: {label: '待审核', color: '#d97706', tab: 'NEED_REVIEW'},
-  SCRIPT_READY: {label: '等待重新渲染', color: '#2563eb', tab: 'ALL'},
+  MEDIA_READY: {label: '等待重新渲染', color: '#2563eb', tab: 'GENERATING'},
+  SCRIPT_READY: {label: '等待渲染', color: '#2563eb', tab: 'GENERATING'},
 };
 const meta = statusMeta[status] || {label: status, color: '#4b5563', tab: 'ALL'};
 
@@ -36,6 +37,14 @@ const helpText = success
   : '常见原因：任务不存在、token 不匹配，或当前状态不允许执行这个动作。';
 
 const primaryTab = success ? meta.tab : 'NEED_REVIEW';
+const rerenderTrigger = success && status === 'MEDIA_READY'
+  ? `
+    <script>
+      fetch('/webhook/video-rerender-split?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
+        .catch(() => {});
+    </script>
+  `
+  : '';
 const actionLinks = `
   <div class="links">
     <a class="primary" href="/webhook/video-review-list?status=${escapeHtml(primaryTab)}">返回对应列表</a>
@@ -85,6 +94,7 @@ const html = `<!doctype html>
       </div>
       <div class="tip">${escapeHtml(helpText)}</div>
       ${actionLinks}
+      ${rerenderTrigger}
     </div>
   </div>
 </body>

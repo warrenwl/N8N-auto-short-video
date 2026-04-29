@@ -56,6 +56,7 @@ function formatDurationSeconds(value) {
 function statusLabel(status) {
   return {
     SCRIPT_READY: '等待渲染',
+    MEDIA_READY: '等待重渲染',
     GENERATING_AUDIO: '生成语音中',
     AUDIO_READY: '语音完成',
     GENERATING_COVER: '生成封面中',
@@ -71,6 +72,7 @@ function statusLabel(status) {
 
 const generatingStatuses = new Set([
   'SCRIPT_READY',
+  'MEDIA_READY',
   'GENERATING_AUDIO',
   'AUDIO_READY',
   'GENERATING_COVER',
@@ -82,6 +84,7 @@ const generatingStatuses = new Set([
 
 const progressByStatus = {
   SCRIPT_READY: {percent: 5, text: '等待 06 工作流领取'},
+  MEDIA_READY: {percent: 8, text: '等待 06 重渲染入口领取'},
   GENERATING_AUDIO: {percent: 20, text: '正在生成语音'},
   AUDIO_READY: {percent: 35, text: '语音已完成'},
   GENERATING_COVER: {percent: 45, text: '正在生成封面'},

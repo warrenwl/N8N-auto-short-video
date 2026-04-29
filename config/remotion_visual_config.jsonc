@@ -146,19 +146,35 @@
     "show_name": true
   },
 
-  // 8. 平台适配预留：
-  // 后续可按 platform 做不同字幕大小和节奏。当前先保留配置入口，默认 balanced。
+  // 8. 平台适配：
+  // platform 来自数据库/工作流传入的 platform 字段，例如 douyin/xiaohongshu/default。
+  // caption_scale 控制该平台字幕整体字号倍率。
+  // caption_bottom_px 控制字幕离视频底部的距离；抖音底部有文案、音乐和底栏，建议 280-340。
+  // caption_left_px/caption_right_px 控制字幕框左右安全区；抖音右侧有点赞/评论/转发按钮，right 建议更大。
+  // top_safe_px/bottom_safe_px/right_safe_px 是平台 UI 安全区记录，给后续标题、卡片、角标继续适配用。
   "platform_profiles": {
     "douyin": {
-      "caption_scale": 1.06,
+      "caption_scale": 1.02,
+      "caption_bottom_px": 320,
+      "caption_left_px": 88,
+      "caption_right_px": 174,
+      "top_safe_px": 88,
+      "bottom_safe_px": 300,
+      "right_safe_px": 150,
       "tempo": "fast"
     },
     "xiaohongshu": {
       "caption_scale": 0.96,
+      "caption_bottom_px": 190,
+      "caption_left_px": 72,
+      "caption_right_px": 72,
       "tempo": "calm"
     },
     "default": {
       "caption_scale": 1.0,
+      "caption_bottom_px": 154,
+      "caption_left_px": 64,
+      "caption_right_px": 64,
       "tempo": "balanced"
     }
   },

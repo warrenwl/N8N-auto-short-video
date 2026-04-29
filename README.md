@@ -67,16 +67,33 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 
 ## n8n 工作流
 
+当前主线推荐使用的工作流统一放在：
+
+```text
+n8n/workflow/available/
+```
+
+日常只需要使用 `01 -> 06 -> 08`：
+
+- `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`。
+- `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；同时承接审核中心的已拒绝重渲染。
+- `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染。
+
+`02/02b/03/04/05` 是阶段演进留下的历史链路，保留用于回溯，不建议日常使用。
+
 | 文件 | 说明 |
 |------|------|
-| `01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库 |
+| `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库 |
+| `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；已拒绝视频可跳过封面重渲染 |
+| `available/08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
+| `01_postgres_script_workflow.json` | 当前可用工作流的根目录副本 |
 | `02_postgres_render_workflow.json` | 单镜头渲染 |
 | `02b_postgres_render_multishot_workflow.json` | 多镜头渲染 |
 | `03_voxcpm_tts_render_workflow.json` | TTS 语音合成 + 渲染合成 |
 | `04_comfyui_tts_render_workflow.json` | ComfyUI 封面/分镜图 + VoxCPM + FFmpeg |
 | `05_remotion_dynamic_render_workflow.json` | ComfyUI 封面 + VoxCPM + Remotion 动态版式 |
-| `06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成，便于单步重试 |
-| `08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
+| `06_split_render_workflow.json` | 当前可用工作流的根目录副本 |
+| `08_review_list_workflow.json` | 当前可用工作流的根目录副本 |
 
 工作流通过 GLM API（OpenAI 兼容接口）生成脚本，`GLM_API_KEY` 和 `GLM_MODEL` 从 `.env` 读取。
 
@@ -160,7 +177,7 @@ config/remotion_visual_config.jsonc
 | `card` | 中间卡片透明度、边框、阴影、圆角、数字水印 |
 | `outro` | 结尾 recap 页文案和时长 |
 | `brand` | 账号角标显示策略，账号名和头像来自 `config/Account/mes.json` |
-| `platform_profiles` | 不同平台的字幕大小和节奏预设入口，如 `douyin/xiaohongshu/default` |
+| `platform_profiles` | 不同平台的字幕大小、位置和安全区预设，如 `douyin/xiaohongshu/default` |
 
 配置改完后，重启 `video-worker` 和 `remotion_renderer`，再重新跑 05 才会对新视频生效。
 
@@ -175,7 +192,7 @@ config/remotion_visual_config.jsonc
 5. 信息密度：`card.max_body_chars/compact_body_chars` 会把过长正文压成画面摘要，完整口播仍由字幕和语音承载，避免正文卡片挤爆。
 6. 封面与正片统一：`auto_from_cover=true` 时会从 ComfyUI 封面提取主色，传给 Remotion 的标题、关键词、进度条和片尾。
 7. 片头片尾/账号资产：顶部账号小角标读取 `config/Account/mes.json` 并默认居中展示，片尾先展示 1-2 秒总结观点，再切到独立干净关注页展示头像下方点击 `+` 的关注动效。
-8. 音画联动/平台适配：`audio_reactive` 使用字幕边界驱动画面节奏；`platform_profiles` 预留平台差异化字幕大小和节奏。
+8. 音画联动/平台适配：`audio_reactive` 使用字幕边界驱动画面节奏；`platform_profiles` 支持平台差异化字幕大小、底部距离和左右安全区。当前 `douyin` 会把字幕上移到 `caption_bottom_px=320`，并用 `caption_right_px=174` 避让右侧点赞/评论/转发区。
 
 账号配置文件：
 
@@ -209,6 +226,11 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 ### 06 分段渲染流程
 
 `06_分段渲染_ComfyUI封面_Remotion动态版式_VoxCPM_TTS` 把 05 的大 worker 调用拆成 3 个可观察、可单独重试的 worker 阶段：
+
+画布分为两条路径：
+
+- 上半区“正常首渲染路径”：在 n8n 里点 `Execute workflow`，领取 `SCRIPT_READY` 记录，完整执行语音/字幕、ComfyUI 封面、Remotion 合成。
+- 下半区“已拒绝重渲染路径”：由审核中心“重新渲染视频”按钮自动调用 `/webhook/video-rerender-split`，领取 `MEDIA_READY + RERENDER_REQUESTED` 记录，只重新生成语音/字幕并 Remotion 合成，跳过 ComfyUI/封面生成。
 
 1. `Postgres - Claim SCRIPT_READY Split`：领取一条 `SCRIPT_READY`，状态改为 `GENERATING_AUDIO`。
 2. `HTTP Request - Generate Audio`：调用 `POST /render/audio`，生成 `voice_main.wav`、`voice_outro.wav`、`voice.wav`、`audio_manifest.json`，并完成字幕时长分配。
@@ -269,14 +291,14 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 | `approve` | `NEED_REVIEW` → `APPROVED` | 待审核卡片“通过”按钮 |
 | `reject` | `NEED_REVIEW` → `REJECTED` | 待审核卡片“拒绝”按钮 |
 | `back_review` | `APPROVED/REJECTED` → `NEED_REVIEW` | 已通过/已拒绝卡片“退回待审核”按钮 |
-| `rerender` | `REJECTED` → `SCRIPT_READY` | 已拒绝卡片“重新渲染视频”按钮，后续由 06 分段渲染重新领取 |
+| `rerender` | `REJECTED` → `MEDIA_READY` | 已拒绝卡片“重新渲染视频”按钮，自动触发 06 的重渲染入口；重新生成语音/字幕并合成视频，不重新生成封面 |
 
 页面展示规则：
 
 - 顶部展示 `待审核/已通过/已拒绝/今日审核` 统计。
 - 顶部展示 `待审核/生成中/已通过/已拒绝/今日审核` 统计。
 - Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED` 和 `ALL`。
-- `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，直到 06 工作流处理完成后回到 `NEED_REVIEW`。
+- `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；该重渲染链路跳过 ComfyUI/封面生成，直到处理完成后回到 `NEED_REVIEW`。
 - `GENERATING` Tab 会每 5 秒自动刷新，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
 - 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。
