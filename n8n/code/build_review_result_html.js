@@ -24,6 +24,7 @@ const statusMeta = {
   REJECTED: {label: '已拒绝', color: '#dc2626', tab: 'REJECTED'},
   NEED_REVIEW: {label: '待审核', color: '#d97706', tab: 'NEED_REVIEW'},
   MEDIA_READY: {label: '等待重新渲染', color: '#2563eb', tab: 'GENERATING'},
+  AUDIO_READY: {label: '等待重新合成视频', color: '#2563eb', tab: 'GENERATING'},
   SCRIPT_READY: {label: '等待渲染', color: '#2563eb', tab: 'GENERATING'},
 };
 const meta = statusMeta[status] || {label: status, color: '#4b5563', tab: 'ALL'};
@@ -41,6 +42,14 @@ const rerenderTrigger = success && status === 'MEDIA_READY'
   ? `
     <script>
       fetch('/webhook/video-rerender-split?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
+        .catch(() => {});
+    </script>
+  `
+  : '';
+const videoOnlyTrigger = success && status === 'AUDIO_READY' && row.review_status === 'VIDEO_RERENDER_REQUESTED'
+  ? `
+    <script>
+      fetch('/webhook/video-rerender-video-only?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
         .catch(() => {});
     </script>
   `
@@ -95,6 +104,7 @@ const html = `<!doctype html>
       <div class="tip">${escapeHtml(helpText)}</div>
       ${actionLinks}
       ${rerenderTrigger}
+      ${videoOnlyTrigger}
     </div>
   </div>
 </body>

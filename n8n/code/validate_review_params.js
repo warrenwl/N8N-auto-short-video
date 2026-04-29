@@ -1,6 +1,6 @@
 // n8n Code node: Validate Review Params
 // Expected webhook query params:
-// ?action=approve|reject|back_review|rerender&task_id=<id>&token=<review_token>&note=<reason>&extra_note=<optional>
+// ?action=approve|reject|back_review|rerender|rerender_video_only&task_id=<id>&token=<review_token>&note=<reason>&extra_note=<optional>
 
 const source = $json || {};
 const query = source.query || source.params || source;
@@ -19,8 +19,8 @@ if (!token) {
   throw new Error('缺少 token 参数');
 }
 
-if (!['approve', 'reject', 'back_review', 'rerender'].includes(rawAction)) {
-  throw new Error('action 只能是 approve、reject、back_review 或 rerender');
+if (!['approve', 'reject', 'back_review', 'rerender', 'rerender_video_only'].includes(rawAction)) {
+  throw new Error('action 只能是 approve、reject、back_review、rerender 或 rerender_video_only');
 }
 
 const nextStatusByAction = {
@@ -28,12 +28,14 @@ const nextStatusByAction = {
   reject: 'REJECTED',
   back_review: 'NEED_REVIEW',
   rerender: 'MEDIA_READY',
+  rerender_video_only: 'AUDIO_READY',
 };
 const reviewStatusByAction = {
   approve: 'APPROVED',
   reject: 'REJECTED',
   back_review: 'NEED_REVIEW',
   rerender: 'RERENDER_REQUESTED',
+  rerender_video_only: 'VIDEO_RERENDER_REQUESTED',
 };
 const nextStatus = nextStatusByAction[rawAction];
 const reviewStatus = reviewStatusByAction[rawAction];

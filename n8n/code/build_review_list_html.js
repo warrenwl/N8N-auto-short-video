@@ -53,6 +53,38 @@ function formatDurationSeconds(value) {
   return formatDuration(seconds * 1000);
 }
 
+function completedDuration(row) {
+  const started = row.render_started_at ? new Date(row.render_started_at) : null;
+  const finished = row.render_finished_at ? new Date(row.render_finished_at) : null;
+  if (
+    !started ||
+    !finished ||
+    Number.isNaN(started.getTime()) ||
+    Number.isNaN(finished.getTime())
+  ) {
+    return '';
+  }
+  return formatDuration(finished.getTime() - started.getTime());
+}
+
+function activeStartedAt(row) {
+  const status = String(row.status || '');
+  if (status === 'RENDERING_VIDEO') return row.render_started_at || row.updated_at;
+  if (status === 'GENERATING_AUDIO') return row.audio_started_at || row.updated_at;
+  if (status === 'GENERATING_COVER') return row.media_started_at || row.updated_at;
+  if (status === 'MEDIA_READY' || status === 'SCRIPT_READY' || status === 'AUDIO_READY' || status === 'COVER_READY') {
+    return row.updated_at;
+  }
+  return row.render_started_at || row.audio_started_at || row.media_started_at || row.updated_at;
+}
+
+function activeElapsed(row) {
+  const startedAt = activeStartedAt(row);
+  const started = startedAt ? new Date(startedAt) : null;
+  if (!started || Number.isNaN(started.getTime())) return '';
+  return formatDuration(Date.now() - started.getTime());
+}
+
 function statusLabel(status) {
   return {
     SCRIPT_READY: '等待渲染',
@@ -137,6 +169,10 @@ function hiddenReviewFields(row, action) {
   `;
 }
 
+function inlineActionAttrs(redirectStatus, triggerPath = '') {
+  return `data-inline-action="true" data-trigger-path="${escapeHtml(triggerPath)}"`;
+}
+
 function actionButtons(row) {
   const status = String(row.status || '');
   if (status === 'NEED_REVIEW') {
@@ -155,7 +191,7 @@ function actionButtons(row) {
   }
   if (status === 'APPROVED') {
     return `
-      <form method="GET" action="/webhook/video-review-action">
+      <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('NEED_REVIEW')}>
         ${hiddenReviewFields(row, 'back_review')}
         <button class="secondary" type="submit">退回待审核</button>
       </form>
@@ -163,13 +199,17 @@ function actionButtons(row) {
   }
   if (status === 'REJECTED') {
     return `
-      <form method="GET" action="/webhook/video-review-action">
+      <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('NEED_REVIEW')}>
         ${hiddenReviewFields(row, 'back_review')}
         <button class="secondary" type="submit">退回待审核</button>
       </form>
-      <form method="GET" action="/webhook/video-review-action">
+      <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('GENERATING', '/webhook/video-rerender-split')}>
         ${hiddenReviewFields(row, 'rerender')}
         <button class="rerender" type="submit">重新渲染视频</button>
+      </form>
+      <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('GENERATING', '/webhook/video-rerender-video-only')}>
+        ${hiddenReviewFields(row, 'rerender_video_only')}
+        <button class="video-only" type="submit">仅重新合成视频</button>
       </form>
     `;
   }
@@ -179,8 +219,11 @@ function actionButtons(row) {
 function progressBlock(row) {
   const status = String(row.status || '');
   if (!generatingStatuses.has(status)) return '';
-  const progress = progressByStatus[status] || {percent: 0, text: statusLabel(status)};
-  const elapsed = formatDurationSeconds(row.elapsed_seconds);
+  const isVideoOnlyRerender = status === 'AUDIO_READY' && row.review_status === 'VIDEO_RERENDER_REQUESTED';
+  const progress = isVideoOnlyRerender
+    ? {percent: 65, text: '等待仅重新合成视频入口领取'}
+    : progressByStatus[status] || {percent: 0, text: statusLabel(status)};
+  const elapsed = activeElapsed(row) || formatDurationSeconds(row.elapsed_seconds);
   const updated = formatLocalTime(row.updated_at || '');
   const error = row.error || '';
 
@@ -207,6 +250,7 @@ const cards = rows.map((row) => {
   const coverPath = row.cover_path || '';
   const displayTime = formatLocalTime(row.review_display_at || row.render_finished_at || row.media_finished_at || row.created_at || row.updated_at || '');
   const reviewedTime = formatLocalTime(row.reviewed_at || row.approved_at || row.rejected_at || '');
+  const durationText = completedDuration(row);
   const videoUrl = assetUrl(videoPath);
   const coverUrl = assetUrl(coverPath);
   const status = String(row.status || '');
@@ -226,6 +270,7 @@ const cards = rows.map((row) => {
           <dt>任务 ID</dt><dd>${escapeHtml(id)}</dd>
           <dt>视频路径</dt><dd>${escapeHtml(videoPath)}</dd>
           <dt>完成时间</dt><dd>${escapeHtml(displayTime)}</dd>
+          ${durationText ? `<dt>持续时间</dt><dd>${escapeHtml(durationText)}</dd>` : ''}
           ${reviewedTime ? `<dt>审核时间</dt><dd>${escapeHtml(reviewedTime)}</dd>` : ''}
           ${reviewNote ? `<dt>审核备注</dt><dd>${escapeHtml(reviewNote)}</dd>` : ''}
         </dl>
@@ -292,9 +337,11 @@ const html = `<!doctype html>
     .reject { background: #dc2626; }
     .secondary { background: #4b5563; }
     .rerender { background: #2563eb; }
+    .video-only { background: #7c3aed; }
     .reject-form { display: flex; gap: 8px; align-items: center; }
     select, input[name="extra_note"] { width: 150px; max-width: 44vw; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 14px; background: #fff; color: #111827; }
     input[name="extra_note"] { width: 220px; }
+    button:disabled { opacity: .66; cursor: progress; }
     .none { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 42px; text-align: center; color: #4b5563; font-weight: 800; }
     @media (max-width: 760px) {
       .topline { align-items: flex-start; flex-direction: column; }
@@ -305,6 +352,43 @@ const html = `<!doctype html>
       button { width: 100%; }
     }
   </style>
+  <script>
+    document.addEventListener('submit', async (event) => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement) || form.dataset.inlineAction !== 'true') return;
+      event.preventDefault();
+
+      const button = form.querySelector('button[type="submit"]');
+      if (button) {
+        button.disabled = true;
+        button.dataset.originalText = button.textContent || '';
+        button.textContent = '处理中...';
+      }
+
+      const params = new URLSearchParams(new FormData(form));
+      const formAction = form.getAttribute('action') || '/webhook/video-review-action';
+      const actionUrl = formAction + '?' + params.toString();
+      try {
+        const response = await fetch(actionUrl, {method: 'GET', cache: 'no-store'});
+        if (!response.ok) {
+          window.location.href = actionUrl;
+          return;
+        }
+
+        const triggerPath = form.dataset.triggerPath || '';
+        if (triggerPath) {
+          const taskId = params.get('task_id') || '';
+          const token = params.get('token') || '';
+          fetch(triggerPath + '?task_id=' + encodeURIComponent(taskId) + '&token=' + encodeURIComponent(token), {cache: 'no-store'})
+            .catch(() => {});
+        }
+
+        window.location.reload();
+      } catch (error) {
+        window.location.href = actionUrl;
+      }
+    });
+  </script>
   ${activeStatus === 'GENERATING' ? '<script>setTimeout(() => window.location.reload(), 5000);</script>' : ''}
 </head>
 <body>

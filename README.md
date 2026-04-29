@@ -76,7 +76,7 @@ n8n/workflow/available/
 日常只需要使用 `01 -> 06 -> 08`：
 
 - `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`。
-- `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；同时承接审核中心的已拒绝重渲染。
+- `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；同时承接审核中心的已拒绝重渲染和仅重新合成视频。
 - `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染。
 
 `02/02b/03/04/05` 是阶段演进留下的历史链路，保留用于回溯，不建议日常使用。
@@ -84,7 +84,7 @@ n8n/workflow/available/
 | 文件 | 说明 |
 |------|------|
 | `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库 |
-| `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；已拒绝视频可跳过封面重渲染 |
+| `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；已拒绝视频可跳过封面重渲染，也可仅重新合成视频 |
 | `available/08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
 | `01_postgres_script_workflow.json` | 当前可用工作流的根目录副本 |
 | `02_postgres_render_workflow.json` | 单镜头渲染 |
@@ -231,6 +231,7 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 
 - 上半区“正常首渲染路径”：在 n8n 里点 `Execute workflow`，领取 `SCRIPT_READY` 记录，完整执行语音/字幕、ComfyUI 封面、Remotion 合成。
 - 下半区“已拒绝重渲染路径”：由审核中心“重新渲染视频”按钮自动调用 `/webhook/video-rerender-split`，领取 `MEDIA_READY + RERENDER_REQUESTED` 记录，只重新生成语音/字幕并 Remotion 合成，跳过 ComfyUI/封面生成。
+- 第三条“仅重新合成视频路径”：由审核中心“仅重新合成视频”按钮自动调用 `/webhook/video-rerender-video-only`，领取 `AUDIO_READY + VIDEO_RERENDER_REQUESTED` 记录，复用已有语音/字幕/封面，只重新执行 Remotion 合成。
 
 1. `Postgres - Claim SCRIPT_READY Split`：领取一条 `SCRIPT_READY`，状态改为 `GENERATING_AUDIO`。
 2. `HTTP Request - Generate Audio`：调用 `POST /render/audio`，生成 `voice_main.wav`、`voice_outro.wav`、`voice.wav`、`audio_manifest.json`，并完成字幕时长分配。
@@ -292,20 +293,21 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 | `reject` | `NEED_REVIEW` → `REJECTED` | 待审核卡片“拒绝”按钮 |
 | `back_review` | `APPROVED/REJECTED` → `NEED_REVIEW` | 已通过/已拒绝卡片“退回待审核”按钮 |
 | `rerender` | `REJECTED` → `MEDIA_READY` | 已拒绝卡片“重新渲染视频”按钮，自动触发 06 的重渲染入口；重新生成语音/字幕并合成视频，不重新生成封面 |
+| `rerender_video_only` | `REJECTED` → `AUDIO_READY` | 已拒绝卡片“仅重新合成视频”按钮，自动触发 06 的仅重合成入口；复用已有语音/字幕/封面，只重新生成 `final.mp4` |
 
 页面展示规则：
 
 - 顶部展示 `待审核/已通过/已拒绝/今日审核` 统计。
 - 顶部展示 `待审核/生成中/已通过/已拒绝/今日审核` 统计。
 - Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED` 和 `ALL`。
-- `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；该重渲染链路跳过 ComfyUI/封面生成，直到处理完成后回到 `NEED_REVIEW`。
+- `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
 - `GENERATING` Tab 会每 5 秒自动刷新，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
 - 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。
 - 视频预览读取 `video_path` 指向的本地文件，路径通常是 `/data/output/<task_id>/final.mp4`，对应宿主机目录 `data/output/<task_id>/final.mp4`。
 - 如果数据库记录还在，但本地 `final.mp4` 已被清理或移动，页面会显示“视频文件不可预览 / 本地文件可能已被清理”。这种记录需要重新渲染或恢复文件后才能预览。
 - Remotion renderer 的 `/asset` 静态资源接口支持 `HEAD` 和 `Range` 请求，浏览器 `<video>` 可以正常读取 metadata、拖动和播放已存在的视频文件。
-- 审核动作完成页会按最终状态上色：已通过为绿色、已拒绝为红色、退回待审核为橙色、重新渲染为蓝色；页面提供“返回对应列表 / 查看待审核 / 查看已通过 / 查看已拒绝”按钮。
+- `待审核`标签里的通过/拒绝会进入审核动作完成页，页面按最终状态上色并提供“返回对应列表 / 查看待审核 / 查看已通过 / 查看已拒绝”按钮；其他标签里的退回/重渲染/仅重新合成视频会在当前列表页内执行，成功后刷新当前页，不再展示二级结果页。
 
 导入/更新审核中心工作流：
 
