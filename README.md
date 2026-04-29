@@ -75,6 +75,7 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 | `03_voxcpm_tts_render_workflow.json` | TTS 语音合成 + 渲染合成 |
 | `04_comfyui_tts_render_workflow.json` | ComfyUI 封面/分镜图 + VoxCPM + FFmpeg |
 | `05_remotion_dynamic_render_workflow.json` | ComfyUI 封面 + VoxCPM + Remotion 动态版式 |
+| `06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成，便于单步重试 |
 
 工作流通过 GLM API（OpenAI 兼容接口）生成脚本，`GLM_API_KEY` 和 `GLM_MODEL` 从 `.env` 读取。
 
@@ -203,6 +204,27 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 4. ffmpeg 将图片转为视频片段
 5. 合并片段 → 烧录字幕 → 混流音频 → 输出 `final.mp4`
 6. 写入 `manifest.json`，返回路径给 n8n
+
+### 06 分段渲染流程
+
+`06_分段渲染_ComfyUI封面_Remotion动态版式_VoxCPM_TTS` 把 05 的大 worker 调用拆成 3 个可观察、可单独重试的 worker 阶段：
+
+1. `Postgres - Claim SCRIPT_READY Split`：领取一条 `SCRIPT_READY`，状态改为 `GENERATING_AUDIO`。
+2. `HTTP Request - Generate Audio`：调用 `POST /render/audio`，生成 `voice_main.wav`、`voice_outro.wav`、`voice.wav`、`audio_manifest.json`，并完成字幕时长分配。
+3. `Postgres - Update AUDIO_READY`：回写 `voice_path/audio_duration/audio_engine/render_manifest`，状态改为 `AUDIO_READY`。
+4. `Postgres - Mark GENERATING_COVER`：封面生成开始，状态改为 `GENERATING_COVER`。
+5. `HTTP Request - Generate Cover`：调用 `POST /render/cover`，生成 ComfyUI 封面 `cover_base.png/cover.png`；如果关闭 ComfyUI 或失败且允许 fallback，则生成 placeholder 封面。
+6. `Postgres - Update COVER_READY`：回写 `cover_path/media_manifest/comfyui_prompt_ids`，状态改为 `COVER_READY`。
+7. `Postgres - Mark RENDERING_VIDEO`：视频合成开始，状态改为 `RENDERING_VIDEO`。
+8. `HTTP Request - Render Remotion Video`：调用 `POST /render/remotion`，读取前两步的 `audio_manifest.json` 和 `media_manifest.json`，生成 `subtitles.srt`、`subtitles.json`、`remotion_manifest.json`、`final.mp4`、`manifest.json`。
+9. `Postgres - Update NEED_REVIEW Split`：回写最终视频、字幕、manifest 等字段，状态改为 `NEED_REVIEW`。
+
+保留的兼容入口：
+
+- `POST /render`：05 工作流继续可用，一次性执行完整渲染。
+- `POST /render/audio`：只生成语音和字幕时间轴。
+- `POST /render/cover`：只生成封面。
+- `POST /render/remotion`：只做 Remotion 合成。
 
 ## TTS 语音配置
 

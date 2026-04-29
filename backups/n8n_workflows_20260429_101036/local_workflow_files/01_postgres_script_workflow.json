@@ -1,0 +1,224 @@
+{
+  "name": "01_生成短视频脚本包_PostgreSQL版",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  id,\n  topic,\n  platform,\n  style,\n  duration_seconds,\n  language,\n  target_audience,\n  status,\n  created_at,\n  updated_at\nFROM video_topics\nWHERE status = 'IDEA'\nORDER BY created_at ASC\nLIMIT 1;"
+      },
+      "id": "select-idea",
+      "name": "Postgres - Select One IDEA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE video_topics\nSET status = 'GENERATING_SCRIPT', error = NULL\nWHERE id = $1\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "mark-generating",
+      "name": "Postgres - Mark GENERATING_SCRIPT",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        500,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code 节点：Build LLM Request Body\n// 读取 /config/glm_script_prompt_config.jsonc 中的 GLM 提示词配置。\n\nconst fs = require('fs');\nconst item = $input.first().json;\nconst configPath = $env.GLM_SCRIPT_PROMPT_CONFIG_PATH || '/config/glm_script_prompt_config.jsonc';\n\nconst fallbackConfig = {\n  model: 'glm-5.1',\n  temperature: 0.7,\n  max_tokens: 8000,\n  system_prompt: '你是一个专业短视频编导、内容运营和平台风控助手。你的任务是生成可执行的短视频脚本包。必须只输出严格 JSON。',\n  user_prompt_template: '请根据选题生成短视频脚本包。\\n选题：{{topic}}\\n平台：{{platform}}\\n风格：{{style}}\\n目标时长：{{duration_seconds}} 秒\\n语言：{{language}}\\n目标用户：{{target_audience}}\\n必须输出严格 JSON，包含 title、hook、script、cover_text、template_type、hashtags、shots、risk_check。'\n};\n\nfunction stripJsonComments(text) {\n  return String(text || '')\n    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, '')\n    .replace(/(^|[^:])\\/\\/.*$/gm, '$1');\n}\n\nfunction readPromptConfig() {\n  try {\n    if (!fs.existsSync(configPath)) return fallbackConfig;\n    const data = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));\n    return { ...fallbackConfig, ...data };\n  } catch (error) {\n    throw new Error('读取 GLM 提示词配置失败：' + configPath + '；' + error.message);\n  }\n}\n\nfunction renderTemplate(template, values) {\n  return String(template || '').replace(/{{\\s*([a-zA-Z0-9_]+)\\s*}}/g, (_, key) => {\n    const value = values[key];\n    return value === undefined || value === null || value === '' ? '' : String(value);\n  });\n}\n\nconst values = {\n  topic: item.topic,\n  platform: item.platform,\n  style: item.style,\n  duration_seconds: item.duration_seconds,\n  language: item.language || 'zh-CN',\n  target_audience: item.target_audience || '普通短视频用户'\n};\nconst promptConfig = readPromptConfig();\nconst systemPrompt = renderTemplate(promptConfig.system_prompt, values);\nconst userPrompt = renderTemplate(promptConfig.user_prompt_template, values);\n\nreturn [\n  {\n    json: {\n      ...item,\n      prompt_config_path: configPath,\n      llm_request_body: {\n        model: promptConfig.model || 'glm-5.1',\n        temperature: promptConfig.temperature ?? 0.7,\n        max_tokens: promptConfig.max_tokens ?? 8000,\n        response_format: { type: 'json_object' },\n        messages: [\n          { role: 'system', content: systemPrompt },\n          { role: 'user', content: userPrompt }\n        ]\n      }\n    }\n  }\n];\n"
+      },
+      "id": "build-llm-request",
+      "name": "Code - Build LLM Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $env.GLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { ...$json.llm_request_body, model: $env.GLM_MODEL || $json.llm_request_body.model } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "specifyBody": "json"
+      },
+      "id": "http-llm",
+      "name": "HTTP Request - LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1020,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code 节点：Parse LLM Response\n// 作用：兼容 OpenAI-compatible HTTP Response / n8n AI 节点的常见输出格式，解析 JSON，并整理成 Postgres 更新字段。\n\nfunction extractText(json) {\n  if (!json || typeof json !== 'object') return '';\n\n  // 如果 HTTP Request 使用了 “Put Response in Field = llm_response”\n  if (json.llm_response?.choices?.[0]?.message?.content) {\n    return json.llm_response.choices[0].message.content;\n  }\n\n  // OpenAI-compatible 原始响应\n  if (json.choices?.[0]?.message?.content) {\n    return json.choices[0].message.content;\n  }\n\n  // 一些 n8n AI / LLM 节点常见字段\n  if (typeof json.output === 'string') return json.output;\n  if (typeof json.text === 'string') return json.text;\n  if (typeof json.response === 'string') return json.response;\n  if (typeof json.message?.content === 'string') return json.message.content;\n\n  // 万不得已：尝试把整个对象当作文本解析\n  return JSON.stringify(json);\n}\n\nfunction cleanJsonText(text) {\n  let s = String(text || '').trim();\n  s = s.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n\n  // 如果模型输出前后有废话，截取第一个 { 到最后一个 }\n  const start = s.indexOf('{');\n  const end = s.lastIndexOf('}');\n  if (start >= 0 && end > start) {\n    s = s.slice(start, end + 1);\n  }\n  return s;\n}\n\nconst input = $input.first().json;\nconst source = $('Postgres - Mark GENERATING_SCRIPT').first().json;\nconst raw = extractText(input);\nconst cleaned = cleanJsonText(raw);\n\nlet data;\ntry {\n  data = JSON.parse(cleaned);\n} catch (err) {\n  throw new Error(`LLM 输出不是合法 JSON：${err.message}\\n原始输出：${raw.slice(0, 1000)}`);\n}\n\nconst hashtags = Array.isArray(data.hashtags) ? data.hashtags : [];\nconst shots = Array.isArray(data.shots) ? data.shots : [];\nconst templateType = ['knowledge', 'list', 'contrast', 'story'].includes(data.template_type) ? data.template_type : 'knowledge';\nconst riskCheck = data.risk_check && typeof data.risk_check === 'object' ? data.risk_check : {};\n\nreturn [\n  {\n    json: {\n      id: source.id,\n      topic: source.topic,\n      platform: source.platform,\n      style: source.style,\n      duration_seconds: source.duration_seconds,\n      title: data.title || '',\n      hook: data.hook || '',\n      script: data.script || '',\n      cover_text: data.cover_text || '',\n      hashtags,\n      hashtags_json: JSON.stringify(hashtags),\n      shots,\n      shots_json: JSON.stringify(shots),\n      template_type: templateType,\n      risk_check: riskCheck,\n      risk_check_json: JSON.stringify(riskCheck),\n      status: 'SCRIPT_READY',\n      updated_at: new Date().toISOString()\n    }\n  }\n];\n"
+      },
+      "id": "parse-llm",
+      "name": "Code - Parse LLM Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE video_topics\nSET\n  title = $1,\n  hook = $2,\n  script = $3,\n  cover_text = $4,\n  template_type = $5,\n  hashtags = $6::jsonb,\n  shots_json = $7::jsonb,\n  risk_check = $8::jsonb,\n  status = 'SCRIPT_READY',\n  error = NULL\nWHERE id = $9\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.title, $json.hook, $json.script, $json.cover_text, $json.template_type, $json.hashtags_json, $json.shots_json, $json.risk_check_json, $json.id ] }}"
+        }
+      },
+      "id": "update-script-ready",
+      "name": "Postgres - Update SCRIPT_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1540,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Select One IDEA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Select One IDEA": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Mark GENERATING_SCRIPT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Mark GENERATING_SCRIPT": {
+      "main": [
+        [
+          {
+            "node": "Code - Build LLM Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build LLM Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - LLM": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse LLM Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse LLM Response": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update SCRIPT_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "meta": {
+    "description": "MVP: 从 video_agent.video_topics 读取 IDEA，调用 GLM-5.1 生成脚本包，再回写 SCRIPT_READY。导入后需要绑定 Postgres credential，并设置 GLM_API_KEY。",
+    "templateCredsSetupCompleted": false
+  },
+  "id": "videoAgentScriptMvp01",
+  "versionId": "94a7b2f4-17af-4023-b3e4-ec7cf6903e1e"
+}

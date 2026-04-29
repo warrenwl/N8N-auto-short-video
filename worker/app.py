@@ -834,6 +834,248 @@ def build_remotion_manifest(
     }
 
 
+def task_paths(task_id: str) -> Dict[str, Path]:
+    task_dir = OUTPUT_DIR / task_id
+    images_dir = task_dir / "images"
+    clips_dir = task_dir / "clips"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "task_dir": task_dir,
+        "images_dir": images_dir,
+        "clips_dir": clips_dir,
+        "audio_manifest": task_dir / "audio_manifest.json",
+        "media_manifest": task_dir / "media_manifest.json",
+        "cover_base": task_dir / "cover_base.png",
+        "cover": task_dir / "cover.png",
+        "subtitles_srt": task_dir / "subtitles.srt",
+        "subtitles_json": task_dir / "subtitles.json",
+        "remotion_manifest": task_dir / "remotion_manifest.json",
+        "manifest": task_dir / "manifest.json",
+        "concat": task_dir / "concat.txt",
+        "base_video": task_dir / "base_no_audio.mp4",
+        "final": task_dir / "final.mp4",
+    }
+
+
+def shot_dicts(shots: List[Shot]) -> List[Dict[str, Any]]:
+    return [shot.model_dump() for shot in shots]
+
+
+def load_audio_manifest(task_dir: Path) -> Optional[Dict[str, Any]]:
+    path = task_dir / "audio_manifest.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def generate_audio_stage(req: RenderRequest) -> Dict[str, Any]:
+    paths = task_paths(req.task_id)
+    task_dir = paths["task_dir"]
+    visual_config = load_remotion_visual_config()
+    account_brand = load_account_brand(task_dir)
+    main_voice_path, audio_duration = generate_main_voice(req, task_dir)
+    shots, durations, subtitle_alignment = normalize_shots(req, audio_duration, main_voice_path)
+    main_timeline_duration = sum(durations)
+    voice_path, voice_total_duration, outro_audio_duration, outro_voice_text_value = build_final_voice(
+        req,
+        task_dir,
+        main_voice_path,
+        audio_duration,
+        main_timeline_duration,
+        visual_config,
+        account_brand,
+    )
+    audio_manifest = {
+        "status": "ok",
+        "task_id": req.task_id,
+        "voice_path": str(voice_path) if voice_path else None,
+        "main_voice_path": str(main_voice_path) if main_voice_path else None,
+        "audio_duration": audio_duration,
+        "voice_total_duration": voice_total_duration,
+        "outro_audio_duration": outro_audio_duration,
+        "subtitle_alignment": subtitle_alignment,
+        "durations": durations,
+        "shots": shot_dicts(shots),
+        "audio_engine": "VoxCPM" if req.enable_tts else "none",
+        "tts_config_path": str(TTS_CONFIG_PATH),
+        "voice_prompt": merged_tts_options(req.tts_options).get("voice_prompt"),
+        "speech_text": speech_text_from_shots(req),
+        "outro_voice_text": outro_voice_text_value,
+    }
+    paths["audio_manifest"].write_text(json.dumps(audio_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return audio_manifest
+
+
+def generate_cover_stage(req: RenderRequest) -> Dict[str, Any]:
+    paths = task_paths(req.task_id)
+    task_dir = paths["task_dir"]
+    audio_manifest = load_audio_manifest(task_dir)
+    shots = [Shot(**item) for item in (audio_manifest or {}).get("shots", [])] or req.shots
+    normalized_shots = shots or [Shot(shot_id=1, duration=8, subtitle=req.cover_text or req.title, visual_prompt_cn=req.cover_text or req.title)]
+    prompt_ids: Dict[str, Any] = {}
+    media_errors: Dict[str, str] = {}
+    cover_base_path = paths["cover_base"]
+    cover_path = paths["cover"]
+    cover_prompt = build_image_prompt(req, None, is_cover=True)
+    if req.enable_comfyui:
+        try:
+            _, prompt_id = generate_comfy_image(
+                req,
+                cover_prompt,
+                cover_base_path,
+                prefix=f"{req.comfyui_options.filename_prefix}/{req.task_id}/cover",
+                seed=random.randint(1, 2**63 - 1),
+            )
+            prompt_ids["cover"] = prompt_id
+            if req.comfyui_options.overlay_cover_text:
+                overlay_cover_text(cover_base_path, cover_path, req.cover_text or req.title, req.width, req.height)
+            else:
+                Image.open(cover_base_path).convert("RGB").resize((req.width, req.height)).save(cover_path)
+        except Exception as exc:
+            if not req.comfyui_options.fallback_to_placeholder:
+                raise
+            media_errors["cover"] = str(exc)[:1000]
+            make_shot_image(cover_path, req.cover_text or req.title, normalized_shots[0], req.width, req.height)
+    else:
+        make_shot_image(cover_path, req.cover_text or req.title, normalized_shots[0], req.width, req.height)
+
+    media_manifest = {
+        "status": "ok",
+        "task_id": req.task_id,
+        "engine": "ComfyUI" if req.enable_comfyui else "placeholder",
+        "cover_path": str(cover_path),
+        "cover_base_path": str(cover_base_path) if cover_base_path.exists() else None,
+        "base_url": req.comfyui_options.base_url,
+        "workflow_template_path": req.comfyui_options.workflow_template_path,
+        "prompt_node_id": req.comfyui_options.prompt_node_id,
+        "save_node_id": req.comfyui_options.save_node_id,
+        "sampler_node_id": req.comfyui_options.sampler_node_id,
+        "latent_node_id": req.comfyui_options.latent_node_id,
+        "image_width": req.comfyui_options.image_width,
+        "image_height": req.comfyui_options.image_height,
+        "prompt_ids": prompt_ids,
+        "errors": media_errors,
+        "cover_prompt": cover_prompt,
+        "shot_images": [],
+    }
+    paths["media_manifest"].write_text(json.dumps(media_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return media_manifest
+
+
+def render_video_stage(req: RenderRequest) -> Dict[str, Any]:
+    paths = task_paths(req.task_id)
+    task_dir = paths["task_dir"]
+    audio_manifest = load_audio_manifest(task_dir)
+    if not audio_manifest:
+        audio_manifest = generate_audio_stage(req)
+    media_manifest_path = paths["media_manifest"]
+    media_manifest = json.loads(media_manifest_path.read_text(encoding="utf-8")) if media_manifest_path.exists() else generate_cover_stage(req)
+
+    visual_config = load_remotion_visual_config()
+    account_brand = load_account_brand(task_dir)
+    shots = [Shot(**item) for item in audio_manifest.get("shots", [])] or req.shots
+    durations = [float(item) for item in audio_manifest.get("durations", [])]
+    if not shots or not durations:
+        voice_candidate = Path(str(audio_manifest.get("voice_path"))) if audio_manifest.get("voice_path") else None
+        shots, durations, subtitle_alignment = normalize_shots(req, float(audio_manifest.get("audio_duration") or 0), voice_candidate)
+    else:
+        subtitle_alignment = audio_manifest.get("subtitle_alignment") or {}
+
+    cover_path = Path(str(media_manifest.get("cover_path") or paths["cover"]))
+    if not cover_path.exists():
+        cover_stage = generate_cover_stage(req)
+        media_manifest = cover_stage
+        cover_path = Path(str(cover_stage.get("cover_path") or paths["cover"]))
+
+    subtitle_path = paths["subtitles_srt"]
+    write_srt(subtitle_path, shots, durations)
+    subtitles_json_path = paths["subtitles_json"]
+    subtitles_json_path.write_text(
+        json.dumps(subtitle_entries(shots, durations), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    voice_path = Path(str(audio_manifest["voice_path"])) if audio_manifest.get("voice_path") else None
+    remotion_manifest = build_remotion_manifest(
+        req,
+        shots,
+        durations,
+        voice_path,
+        cover_path,
+        float(audio_manifest.get("audio_duration") or 0),
+        float(audio_manifest.get("voice_total_duration") or 0),
+        float(audio_manifest.get("outro_audio_duration") or 0),
+        str(audio_manifest.get("outro_voice_text") or ""),
+        subtitle_alignment,
+        visual_config,
+        account_brand,
+    )
+    paths["remotion_manifest"].write_text(json.dumps(remotion_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    remotion_result: Optional[Dict[str, Any]] = None
+    image_paths: List[str] = []
+    clip_paths: List[str] = []
+    if req.render_engine == "remotion":
+        remotion_result = render_with_remotion(req, paths["remotion_manifest"], paths["final"])
+    else:
+        if req.comfyui_mode == "all_shots":
+            for idx, (shot, duration) in enumerate(zip(shots, durations), start=1):
+                image_path = paths["images_dir"] / f"shot_{idx:03}.png"
+                clip_path = paths["clips_dir"] / f"clip_{idx:03}.mp4"
+                make_shot_image(image_path, req.title, shot, req.width, req.height)
+                render_clip(image_path, clip_path, duration, req.fps, req.width, req.height)
+                image_paths.append(str(image_path))
+                clip_paths.append(str(clip_path))
+        paths["concat"].write_text("".join([f"file '{p}'\n" for p in clip_paths]), encoding="utf-8")
+        concat_clips(paths["concat"], paths["base_video"])
+        mux_audio_and_subtitles(paths["base_video"], voice_path, subtitle_path, paths["final"])
+
+    manifest = {
+        "status": "ok",
+        "task_id": req.task_id,
+        "video_path": str(paths["final"]),
+        "base_video_path": str(paths["base_video"]) if paths["base_video"].exists() else None,
+        "voice_path": str(voice_path) if voice_path else None,
+        "audio_duration": float(audio_manifest.get("audio_duration") or 0),
+        "voice_total_duration": float(audio_manifest.get("voice_total_duration") or 0),
+        "outro_audio_duration": float(audio_manifest.get("outro_audio_duration") or 0),
+        "subtitle_alignment": subtitle_alignment,
+        "audio_engine": audio_manifest.get("audio_engine") or "VoxCPM",
+        "tts_config_path": str(TTS_CONFIG_PATH),
+        "remotion_visual_config_path": str(REMOTION_VISUAL_CONFIG_PATH),
+        "voice_prompt": audio_manifest.get("voice_prompt"),
+        "speech_text": audio_manifest.get("speech_text") or speech_text_from_shots(req),
+        "outro_voice_text": audio_manifest.get("outro_voice_text") or "",
+        "cover_path": str(cover_path),
+        "cover_base_path": media_manifest.get("cover_base_path"),
+        "subtitle_path": str(subtitle_path),
+        "subtitles_json_path": str(subtitles_json_path),
+        "audio_manifest_path": str(paths["audio_manifest"]),
+        "media_manifest_path": str(media_manifest_path),
+        "remotion_manifest_path": str(paths["remotion_manifest"]),
+        "images": image_paths or media_manifest.get("shot_images") or [],
+        "clips": clip_paths,
+        "durations": durations,
+        "concat_path": str(paths["concat"]) if paths["concat"].exists() else None,
+        "width": req.width,
+        "height": req.height,
+        "fps": req.fps,
+        "render_engine": "Remotion" if req.render_engine == "remotion" else "FFmpeg",
+        "template_type": remotion_manifest.get("template_type", req.template_type),
+        "visual_config": visual_config,
+        "remotion_manifest": remotion_manifest,
+        "remotion_result": remotion_result,
+        "media_engine": media_manifest.get("engine") or ("ComfyUI" if req.enable_comfyui else "placeholder"),
+        "comfyui_prompt_ids": media_manifest.get("prompt_ids") or {},
+        "media_errors": media_manifest.get("errors") or {},
+        "media_manifest": media_manifest,
+    }
+    paths["manifest"].write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    manifest["manifest_path"] = str(paths["manifest"])
+    return manifest
+
+
 def render_with_remotion(req: RenderRequest, remotion_manifest_path: Path, final_path: Path) -> Dict[str, Any]:
     payload = {
         "manifest_path": str(remotion_manifest_path),
@@ -910,6 +1152,30 @@ def health():
         "comfyui_base_url": COMFYUI_BASE_URL,
         "remotion_renderer_url": REMOTION_RENDERER_URL,
     }
+
+
+@app.post("/render/audio")
+def render_audio(req: RenderRequest):
+    try:
+        return generate_audio_stage(req)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/render/cover")
+def render_cover(req: RenderRequest):
+    try:
+        return generate_cover_stage(req)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/render/remotion")
+def render_remotion(req: RenderRequest):
+    try:
+        return render_video_stage(req)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/render")

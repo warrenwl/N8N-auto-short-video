@@ -1,0 +1,22 @@
+{
+  // 01 工作流的 GLM 脚本生成配置。
+  // 修改本文件后，重新运行 01 工作流即可生效；不需要修改 workflow JSON。
+  //
+  // 可用占位符：
+  // - {{topic}}：数据库 video_topics.topic
+  // - {{platform}}：目标平台
+  // - {{style}}：内容风格
+  // - {{duration_seconds}}：目标时长
+  // - {{language}}：语言，空值时由工作流兜底为 zh-CN
+  // - {{target_audience}}：目标用户，空值时由工作流兜底为 普通短视频用户
+  "model": "glm-5.1",
+  "temperature": 0.7,
+  "max_tokens": 8000,
+
+  // system_prompt 决定模型角色和全局输出约束。
+  "system_prompt": "你是一个专业短视频编导、内容运营和平台风控助手。你的任务是生成可执行的短视频脚本包。必须只输出严格 JSON。",
+
+  // user_prompt_template 是主要业务提示词。
+  // 其中的 {{...}} 会被 01 工作流替换成当前数据库记录的字段。
+  "user_prompt_template": "你是一个短视频编导与运营，请根据数据库里的选题生成一个“短视频脚本包”。\n\n输入字段：\n- 选题：{{topic}}\n- 平台：{{platform}}\n- 风格：{{style}}\n- 目标时长：{{duration_seconds}} 秒\n- 语言：{{language}}\n- 目标用户：{{target_audience}}\n\n要求：\n1. 只输出严格 JSON，不要输出 Markdown，不要输出解释。\n2. 文案必须适合短视频口播，前 3 秒要有强钩子。\n3. 标题不要过度标题党，不要承诺收益，不要虚假夸大。\n4. 分镜 shots 的 duration 总和尽量接近目标时长。\n5. hashtags 输出数组，不要带 # 号。\n6. 如存在风险，在 risk_check.notes 里提醒人工审核。\n7. 每个 shot 必须同时服务“口播”和“Remotion 动态版式”：subtitle/body 保持完整口播语义，headline 是画面主标题，keywords 是 1-4 个短关键词，layout_hint 是给版式的简短节奏提示。\n8. template_type 必须从 knowledge、list、contrast、story 中选择，不能输出其他值。选择依据：\n   - knowledge：概念解释、方法论、科普知识、观点展开；如果内容没有明显步骤、对比或故事线，默认选它。\n   - list：三步法、清单、避坑、操作流程、编号建议；脚本里出现第一/第二/第三、几个方法、步骤时优先选它。\n   - contrast：误区 vs 正解、前后对比、反常识观点、纠偏类内容；脚本里出现不是/而是、误区、真正、对比时优先选它。\n   - story：个人经历、案例、转折叙事、时间推进；脚本里有起因/经过/转折/结果时优先选它。\n9. template_type 决定 Remotion 动态版式：knowledge=概念解释卡，list=步骤编号卡，contrast=误区/正解双栏，story=时间线叙事卡。\n\n输出 JSON 结构如下：\n{\n  \"title\": \"短视频标题\",\n  \"hook\": \"前3秒钩子\",\n  \"script\": \"完整口播脚本，分段清晰\",\n  \"cover_text\": \"封面大字，不超过12个汉字\",\n  \"template_type\": \"knowledge\",\n  \"hashtags\": [\"标签1\", \"标签2\", \"标签3\"],\n  \"shots\": [\n    {\n      \"shot_id\": 1,\n      \"duration\": 5,\n      \"headline\": \"画面主标题，建议6到18个汉字\",\n      \"body\": \"完整正文，用于画面中部说明，语义必须和subtitle一致\",\n      \"keywords\": [\"关键词1\", \"关键词2\", \"关键词3\"],\n      \"layout_hint\": \"例如：强调反差 / 步骤推进 / 结论收束，不超过16个汉字\",\n      \"visual_prompt_cn\": \"中文封面或画面氛围提示词，不要包含文字水印要求\",\n      \"visual_prompt_en\": \"英文画面提示词\",\n      \"subtitle\": \"这一段完整口播字幕\"\n    }\n  ],\n  \"risk_check\": {\n    \"copyright_risk\": \"低/中/高\",\n    \"sensitive_risk\": \"低/中/高\",\n    \"factual_risk\": \"低/中/高\",\n    \"notes\": \"需要人工注意的点\"\n  }\n}"
+}

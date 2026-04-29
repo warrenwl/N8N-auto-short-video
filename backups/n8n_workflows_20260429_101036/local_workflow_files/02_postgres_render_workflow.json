@@ -1,0 +1,186 @@
+{
+  "id": "videoAgentRenderMvp02",
+  "name": "02_生成视频发布包_PostgreSQL版",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-02",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 原子领取 1 条 SCRIPT_READY 任务，避免多个工作流同时处理同一条。\n-- 领取后状态改为 MEDIA_READY：在本方案里表示“已进入素材/渲染阶段”。\n\nWITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE status = 'SCRIPT_READY'\n  ORDER BY updated_at ASC\n  LIMIT 1\n)\nUPDATE video_topics AS v\nSET\n  status = 'MEDIA_READY',\n  error = NULL,\n  updated_at = NOW()\nFROM picked\nWHERE v.id = picked.id\nRETURNING\n  v.id::text AS id,\n  v.topic,\n  v.platform,\n  v.style,\n  v.duration_seconds,\n  v.language,\n  v.target_audience,\n  v.title,\n  v.hook,\n  v.script,\n  v.cover_text,\n  v.hashtags,\n  v.shots_json,\n  v.risk_check,\n  v.status,\n  v.created_at,\n  v.updated_at;\n",
+        "options": {}
+      },
+      "id": "claim-script-ready",
+      "name": "Postgres - Claim One SCRIPT_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        260,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code 节点：Build Render Request\n * 输入：Postgres - Claim One SCRIPT_READY 的单条记录\n * 输出：给 video-worker /render 的请求体\n */\n\nfunction safeJson(value, fallback) {\n  if (value === null || value === undefined || value === '') return fallback;\n  if (typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (error) {\n    return fallback;\n  }\n}\n\nconst item = $input.first().json;\n\nif (!item.id) {\n  throw new Error('没有拿到任务 id。请确认 Postgres Claim 节点有返回 SCRIPT_READY 任务。');\n}\n\nconst hashtags = safeJson(item.hashtags, []);\nconst shots = safeJson(item.shots_json, []);\nconst riskCheck = safeJson(item.risk_check, {});\n\nconst body = {\n  task_id: item.id,\n  topic: item.topic || '',\n  platform: item.platform || 'youtube',\n  style: item.style || '口播科普',\n  duration_seconds: Number(item.duration_seconds || 45),\n  language: item.language || 'zh-CN',\n  title: item.title || item.topic || '未命名视频',\n  hook: item.hook || '',\n  script: item.script || '',\n  cover_text: item.cover_text || item.title || item.topic || '短视频',\n  hashtags,\n  shots,\n  risk_check: riskCheck,\n  // 第二版先用 Worker 内置封面生成，后面你可以改成 comfyui_cover_path\n  cover_image_path: item.cover_path || null\n};\n\nreturn [\n  {\n    json: {\n      id: item.id,\n      render_url: 'http://video-worker:8000/render',\n      body\n    }\n  }\n];\n"
+      },
+      "id": "build-render-request",
+      "name": "Code - Build Render Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.render_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-render-video",
+      "name": "HTTP Request - Render Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code 节点：Parse Render Response\n * 输入：HTTP Request - Render Video 的响应 JSON\n * 输出：Postgres Update NEED_REVIEW 需要的字段\n */\n\nconst response = $input.first().json;\n\nif (!response || response.status !== 'ok') {\n  const message = response?.error || response?.message || 'video-worker 未返回 ok 状态';\n  throw new Error(message);\n}\n\nif (!response.task_id) {\n  throw new Error('video-worker 响应缺少 task_id');\n}\n\nif (!response.video_path) {\n  throw new Error('video-worker 响应缺少 video_path');\n}\n\nconst renderResult = {\n  worker_status: response.status,\n  task_id: response.task_id,\n  cover_path: response.cover_path || null,\n  video_path: response.video_path,\n  subtitle_path: response.subtitle_path || null,\n  manifest_path: response.manifest_path || null,\n  rendered_at: new Date().toISOString()\n};\n\nreturn [\n  {\n    json: {\n      id: response.task_id,\n      cover_path: response.cover_path || null,\n      video_path: response.video_path,\n      subtitle_path: response.subtitle_path || null,\n      manifest_path: response.manifest_path || null,\n      render_result: renderResult,\n      render_result_json: JSON.stringify(renderResult)\n    }\n  }\n];\n"
+      },
+      "id": "parse-render-response",
+      "name": "Code - Parse Render Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Worker 成功生成视频后，把任务推进到 NEED_REVIEW。\n-- n8n Postgres 节点建议使用参数化查询。\n-- 参数顺序：\n-- $1 = cover_path\n-- $2 = video_path\n-- $3 = render_result JSON 字符串\n-- $4 = id\n\nUPDATE video_topics\nSET\n  cover_path = $1,\n  video_path = $2,\n  risk_check = COALESCE(risk_check, '{}'::jsonb) || jsonb_build_object('render_result', $3::jsonb),\n  status = 'NEED_REVIEW',\n  error = NULL,\n  updated_at = NOW()\nWHERE id = $4::uuid\nRETURNING\n  id::text AS id,\n  topic,\n  title,\n  cover_path,\n  video_path,\n  status,\n  updated_at;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.cover_path, $json.video_path, $json.render_result_json, $json.id ] }}"
+        }
+      },
+      "id": "update-need-review",
+      "name": "Postgres - Update NEED_REVIEW",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1300,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Claim One SCRIPT_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Claim One SCRIPT_READY": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Render Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Render Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Render Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Render Video": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Render Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Render Response": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update NEED_REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "02-render-mvp",
+  "meta": {
+    "description": "MVP: 读取 SCRIPT_READY，调用 video-worker 生成 final.mp4/cover/subtitles，再回写 NEED_REVIEW。"
+  }
+}
