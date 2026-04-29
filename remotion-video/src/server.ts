@@ -24,6 +24,19 @@ const json = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
+const contentTypeForPath = (filePath: string): string => {
+  const lower = filePath.toLowerCase();
+  return lower.endsWith('.wav')
+    ? 'audio/wav'
+    : lower.endsWith('.mp4')
+      ? 'video/mp4'
+      : lower.endsWith('.png')
+        ? 'image/png'
+        : lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : 'application/octet-stream';
+};
+
 const readJsonBody = async (req: IncomingMessage): Promise<Record<string, unknown>> => {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -65,15 +78,40 @@ const handleAsset = (req: IncomingMessage, res: ServerResponse) => {
   if (!existsSync(resolved) || !statSync(resolved).isFile()) {
     return json(res, 404, {status: 'error', error: `Asset not found: ${rawPath}`});
   }
-  const lower = resolved.toLowerCase();
-  const contentType = lower.endsWith('.wav')
-    ? 'audio/wav'
-    : lower.endsWith('.png')
-      ? 'image/png'
-      : lower.endsWith('.jpg') || lower.endsWith('.jpeg')
-        ? 'image/jpeg'
-        : 'application/octet-stream';
-  res.writeHead(200, {'content-type': contentType});
+  const contentType = contentTypeForPath(resolved);
+  const size = statSync(resolved).size;
+  const range = req.headers.range;
+  const baseHeaders = {
+    'content-type': contentType,
+    'accept-ranges': 'bytes',
+  };
+
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match) {
+      res.writeHead(416, {...baseHeaders, 'content-range': `bytes */${size}`});
+      return res.end();
+    }
+    const requestedStart = match[1] ? Number(match[1]) : 0;
+    const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+    const start = Math.max(0, Math.min(requestedStart, size - 1));
+    const end = Math.max(start, Math.min(requestedEnd, size - 1));
+    const chunkSize = end - start + 1;
+    res.writeHead(206, {
+      ...baseHeaders,
+      'content-length': chunkSize,
+      'content-range': `bytes ${start}-${end}/${size}`,
+    });
+    if (req.method === 'HEAD') {
+      return res.end();
+    }
+    return createReadStream(resolved, {start, end}).pipe(res);
+  }
+
+  res.writeHead(200, {...baseHeaders, 'content-length': size});
+  if (req.method === 'HEAD') {
+    return res.end();
+  }
   createReadStream(resolved).pipe(res);
 };
 
@@ -146,7 +184,7 @@ const server = createServer(async (req, res) => {
         browser_executable: browserExecutable || null,
       });
     }
-    if (req.method === 'GET' && url.pathname === '/asset') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/asset') {
       return handleAsset(req, res);
     }
     if (req.method === 'POST' && url.pathname === '/render') {

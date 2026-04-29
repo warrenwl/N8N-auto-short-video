@@ -1,0 +1,260 @@
+{
+  "id": "videoAgentReviewListMvp08",
+  "name": "08_人工审核中心",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-review-list",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-review-list-08",
+      "name": "Webhook - Review List",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "video-review-list-08"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  id,\n  topic,\n  title,\n  status,\n  video_path,\n  cover_path,\n  voice_path,\n  review_token,\n  review_status,\n  review_note,\n  reviewed_at,\n  approved_at,\n  rejected_at,\n  updated_at,\n  created_at,\n  render_started_at,\n  render_finished_at,\n  audio_started_at,\n  audio_finished_at,\n  media_started_at,\n  media_finished_at,\n  error,\n  EXTRACT(EPOCH FROM (\n    COALESCE(render_finished_at::timestamptz, media_finished_at::timestamptz, audio_finished_at::timestamptz, CURRENT_TIMESTAMP)\n    - COALESCE(render_started_at::timestamptz, audio_started_at::timestamptz, media_started_at::timestamptz, updated_at, created_at)\n  )) AS elapsed_seconds,\n  COALESCE(reviewed_at, render_finished_at, media_finished_at, updated_at, created_at) AS review_display_at\nFROM video_topics\nWHERE status IN (\n  'SCRIPT_READY',\n  'GENERATING_AUDIO',\n  'AUDIO_READY',\n  'GENERATING_COVER',\n  'COVER_READY',\n  'RENDERING_VIDEO',\n  'NEED_REVIEW',\n  'APPROVED',\n  'REJECTED',\n  'FAILED',\n  'RENDER_FAILED'\n)\nORDER BY COALESCE(reviewed_at, render_finished_at, media_finished_at, updated_at, created_at) DESC;",
+        "options": {}
+      },
+      "id": "select-need-review-08",
+      "name": "Postgres - Select NEED_REVIEW",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Review Center HTML\n// Input comes from a Postgres SELECT of review-related rows.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction assetUrl(path) {\n  if (!path) return '';\n  return `http://localhost:3001/asset?path=${encodeURIComponent(path)}`;\n}\n\nfunction formatLocalTime(value) {\n  if (!value) return '';\n  const date = new Date(value);\n  if (Number.isNaN(date.getTime())) return String(value);\n  const parts = new Intl.DateTimeFormat('zh-CN', {\n    timeZone: 'Asia/Shanghai',\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n    hour: '2-digit',\n    minute: '2-digit',\n    second: '2-digit',\n    hour12: false,\n  }).formatToParts(date).reduce((acc, part) => {\n    acc[part.type] = part.value;\n    return acc;\n  }, {});\n  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;\n}\n\nfunction formatDuration(ms) {\n  if (!Number.isFinite(ms) || ms < 0) return '';\n  const totalSeconds = Math.floor(ms / 1000);\n  const minutes = Math.floor(totalSeconds / 60);\n  const seconds = totalSeconds % 60;\n  if (minutes >= 60) {\n    const hours = Math.floor(minutes / 60);\n    return `${hours}小时${minutes % 60}分`;\n  }\n  return minutes > 0 ? `${minutes}分${seconds}秒` : `${seconds}秒`;\n}\n\nfunction formatDurationSeconds(value) {\n  const seconds = Number(value);\n  if (!Number.isFinite(seconds) || seconds < 0) return '';\n  return formatDuration(seconds * 1000);\n}\n\nfunction statusLabel(status) {\n  return {\n    SCRIPT_READY: '等待渲染',\n    GENERATING_AUDIO: '生成语音中',\n    AUDIO_READY: '语音完成',\n    GENERATING_COVER: '生成封面中',\n    COVER_READY: '封面完成',\n    RENDERING_VIDEO: '合成视频中',\n    FAILED: '失败',\n    RENDER_FAILED: '渲染失败',\n    NEED_REVIEW: '待审核',\n    APPROVED: '已通过',\n    REJECTED: '已拒绝',\n  }[status] || status || '未知';\n}\n\nconst generatingStatuses = new Set([\n  'SCRIPT_READY',\n  'GENERATING_AUDIO',\n  'AUDIO_READY',\n  'GENERATING_COVER',\n  'COVER_READY',\n  'RENDERING_VIDEO',\n  'FAILED',\n  'RENDER_FAILED',\n]);\n\nconst progressByStatus = {\n  SCRIPT_READY: {percent: 5, text: '等待 06 工作流领取'},\n  GENERATING_AUDIO: {percent: 20, text: '正在生成语音'},\n  AUDIO_READY: {percent: 35, text: '语音已完成'},\n  GENERATING_COVER: {percent: 45, text: '正在生成封面'},\n  COVER_READY: {percent: 60, text: '封面已完成'},\n  RENDERING_VIDEO: {percent: 80, text: '正在合成视频'},\n  FAILED: {percent: 100, text: '生成失败'},\n  RENDER_FAILED: {percent: 100, text: '渲染失败'},\n};\n\nfunction getQuery() {\n  try {\n    return $('Webhook - Review List').first().json.query || {};\n  } catch (error) {\n    return {};\n  }\n}\n\nconst rejectReasons = ['脚本不行', '画面不行', '声音不行', '字幕不行', '整体重做'];\nconst rejectOptions = rejectReasons.map((reason) => `<option value=\"${escapeHtml(reason)}\">${escapeHtml(reason)}</option>`).join('');\nconst allowedTabs = new Set(['NEED_REVIEW', 'GENERATING', 'APPROVED', 'REJECTED', 'ALL']);\nconst query = getQuery();\nconst activeStatus = allowedTabs.has(String(query.status || '').toUpperCase()) ? String(query.status).toUpperCase() : 'NEED_REVIEW';\nconst allRows = $input.all().map((item) => item.json || {});\nconst counts = allRows.reduce((acc, row) => {\n  const status = String(row.status || '');\n  acc[status] = (acc[status] || 0) + 1;\n  acc.ALL += 1;\n  const reviewedAt = row.reviewed_at ? new Date(row.reviewed_at) : null;\n  if (reviewedAt && !Number.isNaN(reviewedAt.getTime())) {\n    const now = new Date();\n    const reviewedDay = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai'}).format(reviewedAt);\n    const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai'}).format(now);\n    if (reviewedDay === today) acc.TODAY += 1;\n  }\n  if (generatingStatuses.has(status)) acc.GENERATING += 1;\n  return acc;\n}, {NEED_REVIEW: 0, GENERATING: 0, APPROVED: 0, REJECTED: 0, ALL: 0, TODAY: 0});\n\nconst rows = activeStatus === 'ALL'\n  ? allRows\n  : activeStatus === 'GENERATING'\n    ? allRows.filter((row) => generatingStatuses.has(String(row.status || '')))\n    : allRows.filter((row) => row.status === activeStatus);\n\nfunction hiddenReviewFields(row, action) {\n  return `\n    <input type=\"hidden\" name=\"action\" value=\"${escapeHtml(action)}\" />\n    <input type=\"hidden\" name=\"task_id\" value=\"${escapeHtml(row.id)}\" />\n    <input type=\"hidden\" name=\"token\" value=\"${escapeHtml(row.review_token || '')}\" />\n  `;\n}\n\nfunction actionButtons(row) {\n  const status = String(row.status || '');\n  if (status === 'NEED_REVIEW') {\n    return `\n      <form method=\"GET\" action=\"/webhook/video-review-action\">\n        ${hiddenReviewFields(row, 'approve')}\n        <button class=\"approve\" type=\"submit\">通过</button>\n      </form>\n      <form class=\"reject-form\" method=\"GET\" action=\"/webhook/video-review-action\">\n        ${hiddenReviewFields(row, 'reject')}\n        <select name=\"note\" aria-label=\"拒绝原因\">${rejectOptions}</select>\n        <input name=\"extra_note\" placeholder=\"补充说明，可选\" />\n        <button class=\"reject\" type=\"submit\">拒绝</button>\n      </form>\n    `;\n  }\n  if (status === 'APPROVED') {\n    return `\n      <form method=\"GET\" action=\"/webhook/video-review-action\">\n        ${hiddenReviewFields(row, 'back_review')}\n        <button class=\"secondary\" type=\"submit\">退回待审核</button>\n      </form>\n    `;\n  }\n  if (status === 'REJECTED') {\n    return `\n      <form method=\"GET\" action=\"/webhook/video-review-action\">\n        ${hiddenReviewFields(row, 'back_review')}\n        <button class=\"secondary\" type=\"submit\">退回待审核</button>\n      </form>\n      <form method=\"GET\" action=\"/webhook/video-review-action\">\n        ${hiddenReviewFields(row, 'rerender')}\n        <button class=\"rerender\" type=\"submit\">重新渲染视频</button>\n      </form>\n    `;\n  }\n  return '';\n}\n\nfunction progressBlock(row) {\n  const status = String(row.status || '');\n  if (!generatingStatuses.has(status)) return '';\n  const progress = progressByStatus[status] || {percent: 0, text: statusLabel(status)};\n  const elapsed = formatDurationSeconds(row.elapsed_seconds);\n  const updated = formatLocalTime(row.updated_at || '');\n  const error = row.error || '';\n\n  return `\n    <div class=\"progress-card\">\n      <div class=\"progress-head\">\n        <span>${escapeHtml(progress.text)}</span>\n        <strong>${Math.round(progress.percent)}%</strong>\n      </div>\n      <div class=\"progress-track\"><div class=\"progress-fill ${status === 'FAILED' || status === 'RENDER_FAILED' ? 'failed' : ''}\" style=\"width: ${Math.max(0, Math.min(100, progress.percent))}%\"></div></div>\n      <div class=\"progress-meta\">\n        ${updated ? `<span>更新时间：${escapeHtml(updated)}</span>` : ''}\n        ${elapsed ? `<span>已用时间：${escapeHtml(elapsed)}</span>` : ''}\n      </div>\n      ${error ? `<div class=\"error-box\">${escapeHtml(error)}</div>` : ''}\n    </div>\n  `;\n}\n\nconst cards = rows.map((row) => {\n  const id = String(row.id || '');\n  const title = row.title || row.topic || '未命名视频';\n  const videoPath = row.video_path || '';\n  const coverPath = row.cover_path || '';\n  const displayTime = formatLocalTime(row.review_display_at || row.render_finished_at || row.media_finished_at || row.created_at || row.updated_at || '');\n  const reviewedTime = formatLocalTime(row.reviewed_at || row.approved_at || row.rejected_at || '');\n  const videoUrl = assetUrl(videoPath);\n  const coverUrl = assetUrl(coverPath);\n  const status = String(row.status || '');\n  const reviewNote = row.review_note || '';\n  const progress = progressBlock(row);\n\n  return `\n    <article class=\"card\">\n      <div class=\"media\">\n        ${videoUrl ? `<video src=\"${escapeHtml(videoUrl)}\" poster=\"${escapeHtml(coverUrl)}\" controls preload=\"metadata\" onerror=\"this.outerHTML='<div class=&quot;empty&quot;>视频文件不可预览<br><small>本地文件可能已被清理</small></div>'\"></video>` : '<div class=\"empty\">暂无视频</div>'}\n      </div>\n      <div class=\"body\">\n        <div class=\"status ${escapeHtml(status.toLowerCase())}\">${escapeHtml(statusLabel(status))}</div>\n        <h2>${escapeHtml(title)}</h2>\n        <p class=\"topic\">${escapeHtml(row.topic || '')}</p>\n        <dl>\n          <dt>任务 ID</dt><dd>${escapeHtml(id)}</dd>\n          <dt>视频路径</dt><dd>${escapeHtml(videoPath)}</dd>\n          <dt>完成时间</dt><dd>${escapeHtml(displayTime)}</dd>\n          ${reviewedTime ? `<dt>审核时间</dt><dd>${escapeHtml(reviewedTime)}</dd>` : ''}\n          ${reviewNote ? `<dt>审核备注</dt><dd>${escapeHtml(reviewNote)}</dd>` : ''}\n        </dl>\n        ${progress}\n        <div class=\"actions\">${actionButtons(row)}</div>\n      </div>\n    </article>\n  `;\n}).join('\\n');\n\nfunction tab(status, label, count) {\n  const active = activeStatus === status ? ' active' : '';\n  return `<a class=\"tab${active}\" href=\"/webhook/video-review-list?status=${status}\">${escapeHtml(label)} <span>${count}</span></a>`;\n}\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>视频审核中心</title>\n  <style>\n    body { margin: 0; background: #f5f6f8; color: #111827; font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif; }\n    header { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,.94); border-bottom: 1px solid #e5e7eb; backdrop-filter: blur(14px); }\n    .head { max-width: 1180px; margin: 0 auto; padding: 18px 24px 14px; display: grid; gap: 14px; }\n    .topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }\n    h1 { margin: 0; font-size: 24px; letter-spacing: 0; }\n    .metrics { display: flex; flex-wrap: wrap; gap: 8px; color: #4b5563; font-size: 13px; font-weight: 800; }\n    .metric { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; padding: 7px 10px; }\n    .refresh-note { width: fit-content; color: #1d4ed8; background: #eff6ff; border: 1px solid #dbeafe; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 900; }\n    .tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }\n    .tab { flex: 0 0 auto; color: #374151; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 9px 13px; font-weight: 900; font-size: 14px; }\n    .tab span { color: #6b7280; margin-left: 4px; }\n    .tab.active { background: #111827; color: #fff; border-color: #111827; }\n    .tab.active span { color: #d1d5db; }\n    main { max-width: 1180px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }\n    .card { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 20px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.06); }\n    .media { background: #090a0c; border-radius: 8px; overflow: hidden; aspect-ratio: 9 / 16; }\n    video { width: 100%; height: 100%; display: block; object-fit: contain; background: #090a0c; }\n    .empty { height: 100%; display: grid; place-items: center; color: #9ca3af; font-weight: 800; text-align: center; line-height: 1.7; padding: 18px; box-sizing: border-box; }\n    .empty small { display: block; font-size: 12px; color: #6b7280; }\n    .body { min-width: 0; display: flex; flex-direction: column; gap: 12px; }\n    .status { width: fit-content; padding: 6px 10px; border-radius: 999px; background: #fff7ed; color: #c2410c; font-size: 12px; font-weight: 900; }\n    .status.approved { background: #ecfdf5; color: #047857; }\n    .status.rejected { background: #fef2f2; color: #b91c1c; }\n    .status.script_ready, .status.generating_audio, .status.audio_ready, .status.generating_cover, .status.cover_ready, .status.rendering_video { background: #eff6ff; color: #1d4ed8; }\n    .status.failed, .status.render_failed { background: #fef2f2; color: #b91c1c; }\n    h2 { margin: 0; font-size: 26px; line-height: 1.22; letter-spacing: 0; }\n    .topic { margin: 0; color: #4b5563; font-size: 15px; line-height: 1.6; }\n    dl { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px 12px; margin: 4px 0 0; font-size: 13px; line-height: 1.5; }\n    dt { color: #6b7280; font-weight: 800; }\n    dd { margin: 0; word-break: break-word; color: #374151; }\n    .actions { margin-top: auto; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }\n    .progress-card { border: 1px solid #dbeafe; background: #eff6ff; border-radius: 8px; padding: 12px; display: grid; gap: 8px; }\n    .progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #1e40af; font-weight: 900; font-size: 13px; }\n    .progress-track { height: 8px; border-radius: 999px; background: #dbeafe; overflow: hidden; }\n    .progress-fill { height: 100%; background: #2563eb; border-radius: inherit; }\n    .progress-fill.failed { background: #dc2626; }\n    .progress-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #475569; font-size: 12px; font-weight: 800; }\n    .error-box { border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; border-radius: 6px; padding: 9px 10px; font-size: 12px; line-height: 1.5; word-break: break-word; }\n    form { margin: 0; }\n    button { border: 0; border-radius: 6px; padding: 11px 18px; color: #fff; font-weight: 900; cursor: pointer; font-size: 15px; }\n    .approve { background: #16a34a; }\n    .reject { background: #dc2626; }\n    .secondary { background: #4b5563; }\n    .rerender { background: #2563eb; }\n    .reject-form { display: flex; gap: 8px; align-items: center; }\n    select, input[name=\"extra_note\"] { width: 150px; max-width: 44vw; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 14px; background: #fff; color: #111827; }\n    input[name=\"extra_note\"] { width: 220px; }\n    .none { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 42px; text-align: center; color: #4b5563; font-weight: 800; }\n    @media (max-width: 760px) {\n      .topline { align-items: flex-start; flex-direction: column; }\n      .card { grid-template-columns: 1fr; }\n      .media { max-height: 560px; }\n      .actions, .reject-form { flex-direction: column; align-items: stretch; }\n      select, input[name=\"extra_note\"] { width: auto; max-width: none; }\n      button { width: 100%; }\n    }\n  </style>\n  ${activeStatus === 'GENERATING' ? '<script>setTimeout(() => window.location.reload(), 5000);</script>' : ''}\n</head>\n<body>\n  <header>\n    <div class=\"head\">\n      <div class=\"topline\">\n        <h1>视频审核中心</h1>\n        <div class=\"metrics\">\n          <span class=\"metric\">待审核 ${counts.NEED_REVIEW}</span>\n          <span class=\"metric\">生成中 ${counts.GENERATING}</span>\n          <span class=\"metric\">已通过 ${counts.APPROVED}</span>\n          <span class=\"metric\">已拒绝 ${counts.REJECTED}</span>\n          <span class=\"metric\">今日审核 ${counts.TODAY}</span>\n        </div>\n      </div>\n      <nav class=\"tabs\">\n        ${tab('NEED_REVIEW', '待审核', counts.NEED_REVIEW)}\n        ${tab('GENERATING', '生成中', counts.GENERATING)}\n        ${tab('APPROVED', '已通过', counts.APPROVED)}\n        ${tab('REJECTED', '已拒绝', counts.REJECTED)}\n        ${tab('ALL', '全部', counts.ALL)}\n      </nav>\n      ${activeStatus === 'GENERATING' ? '<div class=\"refresh-note\">自动刷新中，每 5 秒更新一次生成状态。</div>' : ''}\n    </div>\n  </header>\n  <main>\n    ${rows.length ? cards : '<div class=\"none\">当前分类没有视频</div>'}\n  </main>\n</body>\n</html>`;\n\nreturn [{json: {response_html: html}}];\n"
+      },
+      "id": "build-review-list-html-08",
+      "name": "Code - Build Review List HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-review-list-08",
+      "name": "Respond to Webhook - Review List",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-review-action",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-review-action-08",
+      "name": "Webhook - Review Action",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "video-review-action-08"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Review Params\n// Expected webhook query params:\n// ?action=approve|reject|back_review|rerender&task_id=<id>&token=<review_token>&note=<reason>&extra_note=<optional>\n\nconst source = $json || {};\nconst query = source.query || source.params || source;\n\nconst taskId = String(query.task_id || query.id || '').trim();\nconst rawAction = String(query.action || '').trim().toLowerCase();\nconst token = String(query.token || '').trim();\nconst note = String(query.note || '').trim();\nconst extraNote = String(query.extra_note || '').trim();\n\nif (!taskId) {\n  throw new Error('缺少 task_id 参数');\n}\n\nif (!token) {\n  throw new Error('缺少 token 参数');\n}\n\nif (!['approve', 'reject', 'back_review', 'rerender'].includes(rawAction)) {\n  throw new Error('action 只能是 approve、reject、back_review 或 rerender');\n}\n\nconst nextStatusByAction = {\n  approve: 'APPROVED',\n  reject: 'REJECTED',\n  back_review: 'NEED_REVIEW',\n  rerender: 'SCRIPT_READY',\n};\nconst reviewStatusByAction = {\n  approve: 'APPROVED',\n  reject: 'REJECTED',\n  back_review: 'NEED_REVIEW',\n  rerender: 'RERENDER_REQUESTED',\n};\nconst nextStatus = nextStatusByAction[rawAction];\nconst reviewStatus = reviewStatusByAction[rawAction];\nconst reviewNote = [note, extraNote].filter(Boolean).join('：');\n\nreturn [\n  {\n    json: {\n      task_id: taskId,\n      token,\n      action: rawAction,\n      next_status: nextStatus,\n      review_status: reviewStatus,\n      review_note: reviewNote,\n      action_source: 'review_center',\n      received_at: new Date().toISOString()\n    }\n  }\n];\n"
+      },
+      "id": "validate-review-params-08",
+      "name": "Code - Validate Review Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- n8n Postgres node: Execute Query\n-- Query parameters:\n-- $1 = next_status        APPROVED, REJECTED, NEED_REVIEW, or SCRIPT_READY\n-- $2 = review_status      APPROVED, REJECTED, NEED_REVIEW, or RERENDER_REQUESTED\n-- $3 = review_note        optional, may be empty string\n-- $4 = action_source      e.g. review_center\n-- $5 = task_id\n-- $6 = review_token\n-- This query always returns one row, even if the update is blocked.\nWITH updated AS (\n  UPDATE video_topics\n  SET\n    status = $1,\n    review_status = $2,\n    review_note = NULLIF($3, ''),\n    review_action_source = $4,\n    reviewed_at = CASE WHEN $1 IN ('APPROVED', 'REJECTED') THEN now() ELSE reviewed_at END,\n    approved_at = CASE WHEN $1 = 'APPROVED' THEN now() WHEN $1 IN ('NEED_REVIEW', 'SCRIPT_READY') THEN NULL ELSE approved_at END,\n    rejected_at = CASE WHEN $1 = 'REJECTED' THEN now() WHEN $1 IN ('NEED_REVIEW', 'SCRIPT_READY') THEN NULL ELSE rejected_at END,\n    render_started_at = CASE WHEN $1 = 'SCRIPT_READY' THEN NULL ELSE render_started_at END,\n    render_finished_at = CASE WHEN $1 = 'SCRIPT_READY' THEN NULL ELSE render_finished_at END,\n    media_started_at = CASE WHEN $1 = 'SCRIPT_READY' THEN NULL ELSE media_started_at END,\n    media_finished_at = CASE WHEN $1 = 'SCRIPT_READY' THEN NULL ELSE media_finished_at END,\n    audio_started_at = CASE WHEN $1 = 'SCRIPT_READY' THEN NULL ELSE audio_started_at END,\n    audio_finished_at = CASE WHEN $1 = 'SCRIPT_READY' THEN NULL ELSE audio_finished_at END,\n    error = NULL,\n    updated_at = now()\n  WHERE id = $5\n    AND review_token = $6\n    AND (\n      ($1 IN ('APPROVED', 'REJECTED') AND status = 'NEED_REVIEW')\n      OR ($1 = 'NEED_REVIEW' AND status IN ('APPROVED', 'REJECTED'))\n      OR ($1 = 'SCRIPT_READY' AND status = 'REJECTED')\n    )\n  RETURNING\n    true AS success,\n    'UPDATED'::text AS result_code,\n    id,\n    title,\n    status,\n    review_status,\n    review_note,\n    video_path,\n    cover_path,\n    reviewed_at,\n    approved_at,\n    rejected_at\n), existing AS (\n  SELECT\n    false AS success,\n    CASE\n      WHEN id IS NULL THEN 'INVALID_TASK_OR_TOKEN'\n      WHEN $1 IN ('APPROVED', 'REJECTED') AND status <> 'NEED_REVIEW' THEN 'INVALID_SOURCE_STATUS'\n      WHEN $1 = 'NEED_REVIEW' AND status NOT IN ('APPROVED', 'REJECTED') THEN 'INVALID_SOURCE_STATUS'\n      WHEN $1 = 'SCRIPT_READY' AND status <> 'REJECTED' THEN 'INVALID_SOURCE_STATUS'\n      ELSE 'NOT_UPDATED'\n    END::text AS result_code,\n    id,\n    title,\n    status,\n    review_status,\n    review_note,\n    video_path,\n    cover_path,\n    reviewed_at,\n    approved_at,\n    rejected_at\n  FROM video_topics\n  WHERE id = $5\n    AND review_token = $6\n)\nSELECT * FROM updated\nUNION ALL\nSELECT * FROM existing WHERE NOT EXISTS (SELECT 1 FROM updated)\nUNION ALL\nSELECT\n  false AS success,\n  'INVALID_TASK_OR_TOKEN'::text AS result_code,\n  $5 AS id,\n  NULL::text AS title,\n  NULL::text AS status,\n  NULL::text AS review_status,\n  NULL::text AS review_note,\n  NULL::text AS video_path,\n  NULL::text AS cover_path,\n  NULL::timestamp AS reviewed_at,\n  NULL::timestamp AS approved_at,\n  NULL::timestamp AS rejected_at\nWHERE NOT EXISTS (SELECT 1 FROM updated) AND NOT EXISTS (SELECT 1 FROM existing);\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.next_status, $json.review_status, $json.review_note, $json.action_source, $json.task_id, $json.token ] }}"
+        }
+      },
+      "id": "update-review-decision-08",
+      "name": "Postgres - Update Review Decision",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Review Result HTML\n// Input comes from Postgres UPDATE query result.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst row = $json || {};\nconst success = row.success === true || row.success === 'true';\nconst resultCode = row.result_code || (success ? 'UPDATED' : 'UNKNOWN');\nconst status = row.status || 'UNKNOWN';\nconst title = row.title || '';\nconst id = row.id || '';\nconst reviewedAt = row.reviewed_at || '';\nconst note = row.review_note || '';\n\nconst statusMeta = {\n  APPROVED: {label: '已通过', color: '#16a34a', tab: 'APPROVED'},\n  REJECTED: {label: '已拒绝', color: '#dc2626', tab: 'REJECTED'},\n  NEED_REVIEW: {label: '待审核', color: '#d97706', tab: 'NEED_REVIEW'},\n  SCRIPT_READY: {label: '等待重新渲染', color: '#2563eb', tab: 'ALL'},\n};\nconst meta = statusMeta[status] || {label: status, color: '#4b5563', tab: 'ALL'};\n\nconst headline = success ? '审核操作成功' : '审核操作未生效';\nconst statusText = success ? `当前状态：${meta.label}` : `结果：${resultCode}`;\nconst color = success ? meta.color : '#dc2626';\n\nconst helpText = success\n  ? '你可以关闭这个页面，或返回审核中心查看最新状态。'\n  : '常见原因：任务不存在、token 不匹配，或当前状态不允许执行这个动作。';\n\nconst primaryTab = success ? meta.tab : 'NEED_REVIEW';\nconst actionLinks = `\n  <div class=\"links\">\n    <a class=\"primary\" href=\"/webhook/video-review-list?status=${escapeHtml(primaryTab)}\">返回对应列表</a>\n    <a href=\"/webhook/video-review-list?status=NEED_REVIEW\">查看待审核</a>\n    <a href=\"/webhook/video-review-list?status=APPROVED\">查看已通过</a>\n    <a href=\"/webhook/video-review-list?status=REJECTED\">查看已拒绝</a>\n  </div>\n`;\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>${escapeHtml(headline)}</title>\n  <style>\n    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif; background: #f6f7f9; color: #111827; }\n    .wrap { max-width: 760px; margin: 48px auto; padding: 0 20px; }\n    .card { background: #fff; border-radius: 18px; padding: 32px; box-shadow: 0 12px 32px rgba(15, 23, 42, .08); }\n    h1 { margin: 0 0 18px; font-size: 30px; }\n    .badge { display: inline-block; background: ${color}; color: #fff; padding: 8px 14px; border-radius: 999px; font-weight: 700; margin-bottom: 22px; }\n    .grid { display: grid; grid-template-columns: 120px 1fr; gap: 12px 18px; line-height: 1.7; }\n    .key { color: #6b7280; }\n    .value { word-break: break-word; }\n    .tip { margin-top: 24px; padding: 16px; background: #f9fafb; border-radius: 12px; color: #374151; }\n    .links { margin-top: 24px; display: flex; flex-wrap: wrap; gap: 10px; }\n    a { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; padding: 0 16px; border-radius: 8px; border: 1px solid #d1d5db; color: #374151; text-decoration: none; font-weight: 900; background: #fff; }\n    a.primary { border-color: ${color}; background: ${color}; color: #fff; }\n    @media (max-width: 640px) {\n      .grid { grid-template-columns: 1fr; }\n      .links { flex-direction: column; }\n      a { width: 100%; box-sizing: border-box; }\n    }\n  </style>\n</head>\n<body>\n  <div class=\"wrap\">\n    <div class=\"card\">\n      <h1>${escapeHtml(headline)}</h1>\n      <div class=\"badge\">${escapeHtml(statusText)}</div>\n      <div class=\"grid\">\n        <div class=\"key\">任务 ID</div><div class=\"value\">${escapeHtml(id)}</div>\n        <div class=\"key\">标题</div><div class=\"value\">${escapeHtml(title)}</div>\n        <div class=\"key\">结果代码</div><div class=\"value\">${escapeHtml(resultCode)}</div>\n        <div class=\"key\">审核时间</div><div class=\"value\">${escapeHtml(reviewedAt)}</div>\n        <div class=\"key\">审核备注</div><div class=\"value\">${escapeHtml(note)}</div>\n      </div>\n      <div class=\"tip\">${escapeHtml(helpText)}</div>\n      ${actionLinks}\n    </div>\n  </div>\n</body>\n</html>`;\n\nreturn [{ json: { ...row, response_html: html, response_status_code: success ? 200 : 409 } }];\n"
+      },
+      "id": "build-review-result-html-08",
+      "name": "Code - Build Review Result HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-review-result-08",
+      "name": "Respond to Webhook - Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Review List": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Select NEED_REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Select NEED_REVIEW": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Review List HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Review List HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Review List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Review Action": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Review Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Review Params": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update Review Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Update Review Decision": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Review Result HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Review Result HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "08-review-center-workflow",
+  "meta": {
+    "instanceId": "video-agent-local"
+  }
+}

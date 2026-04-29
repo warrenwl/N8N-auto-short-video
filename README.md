@@ -76,6 +76,7 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 | `04_comfyui_tts_render_workflow.json` | ComfyUI 封面/分镜图 + VoxCPM + FFmpeg |
 | `05_remotion_dynamic_render_workflow.json` | ComfyUI 封面 + VoxCPM + Remotion 动态版式 |
 | `06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成，便于单步重试 |
+| `08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
 
 工作流通过 GLM API（OpenAI 兼容接口）生成脚本，`GLM_API_KEY` 和 `GLM_MODEL` 从 `.env` 读取。
 
@@ -182,7 +183,7 @@ config/remotion_visual_config.jsonc
 {
   "account_name": "雾夜看雪",
   "account_logo": "account.jpg",
-  "follow_voice_text": "关注 {account_name}，带你把普通人的成长方法，练成每天都能用的小习惯。"
+  "follow_voice_text": "关注我，每天进步一点。"
 }
 ```
 
@@ -225,6 +226,73 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 - `POST /render/audio`：只生成语音和字幕时间轴。
 - `POST /render/cover`：只生成封面。
 - `POST /render/remotion`：只做 Remotion 合成。
+
+### 08 人工审核中心
+
+`08_人工审核中心` 同时提供审核列表页和审核动作 Webhook。日常只需要打开列表页，页面按钮会自动调用同一个工作流里的动作接口。
+
+审核动作必须同时带 `task_id` 和 `review_token`，避免只靠任务 ID 修改状态。
+
+初始化/升级审核字段：
+
+```bash
+docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/20_add_review_columns.sql
+docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/21_generate_review_tokens.sql
+```
+
+页面入口：
+
+```text
+http://localhost:5678/webhook/video-review-list
+```
+
+可选 Tab 参数：
+
+```text
+http://localhost:5678/webhook/video-review-list?status=NEED_REVIEW
+http://localhost:5678/webhook/video-review-list?status=GENERATING
+http://localhost:5678/webhook/video-review-list?status=APPROVED
+http://localhost:5678/webhook/video-review-list?status=REJECTED
+http://localhost:5678/webhook/video-review-list?status=ALL
+```
+
+动作接口仍然是：
+
+```text
+http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任务ID>&token=<review_token>
+```
+
+支持动作：
+
+| action | 状态流转 | 页面入口 |
+|---|---|---|
+| `approve` | `NEED_REVIEW` → `APPROVED` | 待审核卡片“通过”按钮 |
+| `reject` | `NEED_REVIEW` → `REJECTED` | 待审核卡片“拒绝”按钮 |
+| `back_review` | `APPROVED/REJECTED` → `NEED_REVIEW` | 已通过/已拒绝卡片“退回待审核”按钮 |
+| `rerender` | `REJECTED` → `SCRIPT_READY` | 已拒绝卡片“重新渲染视频”按钮，后续由 06 分段渲染重新领取 |
+
+页面展示规则：
+
+- 顶部展示 `待审核/已通过/已拒绝/今日审核` 统计。
+- 顶部展示 `待审核/生成中/已通过/已拒绝/今日审核` 统计。
+- Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED` 和 `ALL`。
+- `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，直到 06 工作流处理完成后回到 `NEED_REVIEW`。
+- `GENERATING` Tab 会每 5 秒自动刷新，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
+- 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
+- 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。
+- 视频预览读取 `video_path` 指向的本地文件，路径通常是 `/data/output/<task_id>/final.mp4`，对应宿主机目录 `data/output/<task_id>/final.mp4`。
+- 如果数据库记录还在，但本地 `final.mp4` 已被清理或移动，页面会显示“视频文件不可预览 / 本地文件可能已被清理”。这种记录需要重新渲染或恢复文件后才能预览。
+- Remotion renderer 的 `/asset` 静态资源接口支持 `HEAD` 和 `Range` 请求，浏览器 `<video>` 可以正常读取 metadata、拖动和播放已存在的视频文件。
+- 审核动作完成页会按最终状态上色：已通过为绿色、已拒绝为红色、退回待审核为橙色、重新渲染为蓝色；页面提供“返回对应列表 / 查看待审核 / 查看已通过 / 查看已拒绝”按钮。
+
+导入/更新审核中心工作流：
+
+```bash
+docker cp n8n/workflow/08_review_list_workflow.json n8n-video-n8n:/tmp/08_review_list_workflow.json
+docker exec n8n-video-n8n n8n import:workflow --input=/tmp/08_review_list_workflow.json --projectId=NGUCqFuUfTK6tdLq
+docker exec n8n-video-n8n n8n update:workflow --id=videoAgentReviewListMvp08 --active=true
+docker compose restart n8n
+```
 
 ## TTS 语音配置
 
@@ -271,13 +339,15 @@ docker compose down
 ```
 ├── config/tts_voice_config.json   # TTS 语音配置
 ├── docker-compose.yml             # Docker 编排
+├── data/output/                   # 生成的视频输出
+├── n8n/code/                      # n8n Code 节点源码备份
 ├── n8n/workflow/                  # n8n 工作流 JSON
 ├── postgres/init/                 # 数据库初始化 SQL
 ├── scripts/                       # 启动/测试脚本
+├── sql/                           # 增量数据库脚本
 ├── tts/                           # VoxCPM TTS 服务
 ├── worker/                        # 视频渲染 worker
-├── .env.example                   # 环境变量模板
-└── data/output/                   # 生成的视频输出
+└── .env.example                   # 环境变量模板
 ```
 
 ## 安全提示
