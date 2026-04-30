@@ -4,10 +4,17 @@
 
 ## 使用顺序
 
-1. `01_postgres_script_workflow.json`：手动执行，`IDEA -> SCRIPT_READY`。
-2. `06_split_render_workflow.json`：手动执行正常首渲染，`SCRIPT_READY -> NEED_REVIEW`；同时提供已拒绝视频重渲染 webhook。
-3. `08_review_list_workflow.json`：浏览器审核中心，处理通过、拒绝、退回、重新渲染和发布入口。
-4. `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送微信提醒。
+1. `00_topic_center_workflow.json`：选题中心，人工新增候选选题，确认入池为 `video_topics(IDEA)`。
+2. `01_postgres_script_workflow.json`：手动执行，`IDEA -> SCRIPT_READY`。
+3. `06_split_render_workflow.json`：手动执行正常首渲染，`SCRIPT_READY -> NEED_REVIEW`；同时提供已拒绝视频重渲染 webhook。
+4. `08_review_list_workflow.json`：浏览器审核中心，处理通过、拒绝、退回、重新渲染和发布入口。
+5. `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送微信提醒。
+
+## 选题入口
+
+`http://localhost:5678/webhook/topic-center`
+
+选题中心支持人工新增候选选题、确认入池到 `video_topics(IDEA)`、拒绝和标记重复。人工录入是独立 Tab，来源固定为 `manual`；批量导入和 GLM 生成后续会作为独立入口补充。页面顶部有“视频审核中心”入口；视频审核中心顶部也有“选题中心”入口。
 
 ## 审核入口
 

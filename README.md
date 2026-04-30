@@ -73,21 +73,28 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 n8n/workflow/available/
 ```
 
-日常只需要使用 `01 -> 06 -> 08 -> 09`：
+当前已跑通主线为 `00 -> 01 -> 06 -> 08 -> 09`：
 
+- `00_topic_center_workflow.json`：选题中心，人工新增候选选题，确认入池为 `video_topics(IDEA)`。
 - `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`。
 - `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；同时承接审核中心的已拒绝重渲染和仅重新合成视频。
 - `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染。
 - `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送 Server酱微信提醒。
 
+`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入和确认入池最小闭环；`/webhook/topic-center` 中人工录入是独立 Tab，来源固定为 `manual`，批量导入和 GLM 生成后续会作为独立入口补充。
+
+后续新增的 `/webhook/topic-center` 需要和现有 `/webhook/video-review-list` 互相预留跳转入口：选题中心可直接进入视频审核中心，视频审核中心也可直接回到选题中心。
+
 `02/02b/03/04/05` 是阶段演进留下的历史链路，保留用于回溯，不建议日常使用。
 
 | 文件 | 说明 |
 |------|------|
+| `available/00_topic_center_workflow.json` | 选题中心：候选池 → 确认入池 → `video_topics(IDEA)` |
 | `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库 |
 | `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；已拒绝视频可跳过封面重渲染，也可仅重新合成视频 |
 | `available/08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
 | `available/09_douyin_semiauto_publish_workflow.json` | 抖音半自动发布：发布包 → 微信提醒 → 手动确认回写 |
+| `00_topic_center_workflow.json` | 当前可用工作流的根目录副本 |
 | `01_postgres_script_workflow.json` | 当前可用工作流的根目录副本 |
 | `02_postgres_render_workflow.json` | 单镜头渲染 |
 | `02b_postgres_render_multishot_workflow.json` | 多镜头渲染 |

@@ -162,6 +162,33 @@ const rows = activeStatus === 'ALL'
     ? allRows.filter((row) => generatingStatuses.has(String(row.status || '')))
     : allRows.filter((row) => row.status === activeStatus);
 
+const tabIntro = {
+  NEED_REVIEW: {
+    title: '待审核',
+    text: '这里集中处理已经生成完成、等待人工判断的视频。',
+  },
+  GENERATING: {
+    title: '生成中',
+    text: '这里展示脚本、语音、封面和视频合成阶段的任务，页面会自动刷新状态。',
+  },
+  APPROVED: {
+    title: '已通过',
+    text: '这里展示可以进入发布准备的视频；如果已经生成发布包，卡片会显示当前发布状态。',
+  },
+  REJECTED: {
+    title: '已拒绝',
+    text: '这里展示需要退回或重新渲染的视频，可重新渲染完整视频或仅重新合成视频。',
+  },
+  PUBLISHED: {
+    title: '已发布',
+    text: '这里展示已经确认手动发布完成的视频。',
+  },
+  ALL: {
+    title: '全部视频',
+    text: '这里按统一卡片样式汇总视频生产、审核和发布状态。',
+  },
+};
+
 function hiddenReviewFields(row, action) {
   return `
     <input type="hidden" name="action" value="${escapeHtml(action)}" />
@@ -299,7 +326,7 @@ const cards = rows.map((row) => {
   const progress = progressBlock(row);
 
   return `
-    <article class="card">
+    <article class="card ${escapeHtml(status.toLowerCase())}">
       <div class="media">
         ${videoUrl ? `<video src="${escapeHtml(videoUrl)}" poster="${escapeHtml(coverUrl)}" controls preload="metadata" onerror="this.outerHTML='<div class=&quot;empty&quot;>视频文件不可预览<br><small>本地文件可能已被清理</small></div>'"></video>` : '<div class="empty">暂无视频</div>'}
       </div>
@@ -329,6 +356,10 @@ function tab(status, label, count) {
   return `<a class="tab${active}" href="/webhook/video-review-list?status=${status}">${escapeHtml(label)} <span>${count}</span></a>`;
 }
 
+const intro = tabIntro[activeStatus]
+  ? `<section class="tab-summary"><strong>${escapeHtml(tabIntro[activeStatus].title)}</strong><span>${escapeHtml(tabIntro[activeStatus].text)}</span></section>`
+  : '';
+
 const html = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -341,6 +372,9 @@ const html = `<!doctype html>
     .head { max-width: 1180px; margin: 0 auto; padding: 18px 24px 14px; display: grid; gap: 14px; }
     .topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
+    .page-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .nav-link { color: #111827; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 8px 12px; font-size: 13px; font-weight: 900; }
+    .nav-link.primary { background: #111827; color: #fff; border-color: #111827; }
     .metrics { display: flex; flex-wrap: wrap; gap: 8px; color: #4b5563; font-size: 13px; font-weight: 800; }
     .metric { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; padding: 7px 10px; }
     .refresh-note { width: fit-content; color: #1d4ed8; background: #eff6ff; border: 1px solid #dbeafe; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 900; }
@@ -350,7 +384,15 @@ const html = `<!doctype html>
     .tab.active { background: #111827; color: #fff; border-color: #111827; }
     .tab.active span { color: #d1d5db; }
     main { max-width: 1180px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }
-    .card { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 20px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.06); }
+    .tab-summary { background: #fff; border: 1px solid #e5e7eb; border-left: 5px solid #111827; border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,.06); padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .tab-summary strong { color: #111827; font-size: 16px; white-space: nowrap; }
+    .tab-summary span { color: #4b5563; font-size: 13px; line-height: 1.6; font-weight: 800; text-align: right; }
+    .card { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 20px; background: #fff; border: 1px solid #e5e7eb; border-left: 5px solid #f59e0b; border-radius: 8px; padding: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.06); }
+    .card.need_review { border-left-color: #f59e0b; }
+    .card.approved { border-left-color: #16a34a; }
+    .card.rejected, .card.failed, .card.render_failed { border-left-color: #dc2626; }
+    .card.published { border-left-color: #111827; }
+    .card.script_ready, .card.media_ready, .card.generating_audio, .card.audio_ready, .card.generating_cover, .card.cover_ready, .card.rendering_video { border-left-color: #2563eb; }
     .media { background: #090a0c; border-radius: 8px; overflow: hidden; aspect-ratio: 9 / 16; }
     video { width: 100%; height: 100%; display: block; object-fit: contain; background: #090a0c; }
     .empty { height: 100%; display: grid; place-items: center; color: #9ca3af; font-weight: 800; text-align: center; line-height: 1.7; padding: 18px; box-sizing: border-box; }
@@ -390,6 +432,8 @@ const html = `<!doctype html>
     .none { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 42px; text-align: center; color: #4b5563; font-weight: 800; }
     @media (max-width: 760px) {
       .topline { align-items: flex-start; flex-direction: column; }
+      .tab-summary { align-items: flex-start; flex-direction: column; }
+      .tab-summary span { text-align: left; }
       .card { grid-template-columns: 1fr; }
       .media { max-height: 560px; }
       .actions, .reject-form { flex-direction: column; align-items: stretch; }
@@ -441,13 +485,16 @@ const html = `<!doctype html>
     <div class="head">
       <div class="topline">
         <h1>视频审核中心</h1>
-        <div class="metrics">
-          <span class="metric">待审核 ${counts.NEED_REVIEW}</span>
-          <span class="metric">生成中 ${counts.GENERATING}</span>
-          <span class="metric">已通过 ${counts.APPROVED}</span>
-          <span class="metric">已拒绝 ${counts.REJECTED}</span>
-          <span class="metric">已发布 ${counts.PUBLISHED}</span>
-          <span class="metric">今日审核 ${counts.TODAY}</span>
+        <div class="page-nav">
+          <a class="nav-link primary" href="/webhook/topic-center">选题中心</a>
+          <div class="metrics">
+            <span class="metric">待审核 ${counts.NEED_REVIEW}</span>
+            <span class="metric">生成中 ${counts.GENERATING}</span>
+            <span class="metric">已通过 ${counts.APPROVED}</span>
+            <span class="metric">已拒绝 ${counts.REJECTED}</span>
+            <span class="metric">已发布 ${counts.PUBLISHED}</span>
+            <span class="metric">今日审核 ${counts.TODAY}</span>
+          </div>
         </div>
       </div>
       <nav class="tabs">
@@ -462,6 +509,7 @@ const html = `<!doctype html>
     </div>
   </header>
   <main>
+    ${intro}
     ${rows.length ? cards : '<div class="none">当前分类没有视频</div>'}
   </main>
 </body>

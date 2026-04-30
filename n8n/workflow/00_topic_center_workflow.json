@@ -1,0 +1,368 @@
+{
+  "name": "00_选题中心_候选池到IDEA",
+  "id": "videoAgentTopicCenterMvp00",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "topic-center",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-topic-center-00",
+      "name": "Webhook - Topic Center",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        80
+      ],
+      "webhookId": "topic-center-00"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Topic center list query.\n\nWITH listed AS (\n  SELECT\n    false AS is_empty,\n    tc.id,\n    tc.source,\n    tc.source_ref,\n    tc.status,\n    tc.topic,\n    tc.title,\n    tc.angle,\n    tc.audience,\n    tc.platform,\n    tc.account_key,\n    tc.category,\n    tc.tags,\n    tc.score,\n    tc.score_reason,\n    tc.duplicate_of,\n    tc.promoted_topic_id,\n    vt.status AS promoted_topic_status,\n    vt.title AS promoted_topic_title,\n    tc.created_at,\n    tc.updated_at\n  FROM topic_candidates tc\n  LEFT JOIN video_topics vt ON vt.id = tc.promoted_topic_id\n  ORDER BY tc.updated_at DESC, tc.created_at DESC\n  LIMIT 300\n)\nSELECT * FROM listed\nUNION ALL\nSELECT\n  true AS is_empty,\n  NULL::uuid AS id,\n  NULL::text AS source,\n  NULL::text AS source_ref,\n  NULL::text AS status,\n  NULL::text AS topic,\n  NULL::text AS title,\n  NULL::text AS angle,\n  NULL::text AS audience,\n  NULL::text AS platform,\n  NULL::text AS account_key,\n  NULL::text AS category,\n  '[]'::jsonb AS tags,\n  NULL::numeric AS score,\n  NULL::text AS score_reason,\n  NULL::uuid AS duplicate_of,\n  NULL::uuid AS promoted_topic_id,\n  NULL::text AS promoted_topic_status,\n  NULL::text AS promoted_topic_title,\n  NULL::timestamptz AS created_at,\n  NULL::timestamptz AS updated_at\nWHERE NOT EXISTS (SELECT 1 FROM listed);\n",
+        "options": {}
+      },
+      "id": "select-topic-candidates-00",
+      "name": "Postgres - Select Topic Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        280,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Topic Center HTML\n// Input comes from topic_candidates SELECT rows.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction formatLocalTime(value) {\n  if (!value) return '';\n  const date = new Date(value);\n  if (Number.isNaN(date.getTime())) return String(value);\n  const parts = new Intl.DateTimeFormat('zh-CN', {\n    timeZone: 'Asia/Shanghai',\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n    hour: '2-digit',\n    minute: '2-digit',\n    second: '2-digit',\n    hour12: false,\n  }).formatToParts(date).reduce((acc, part) => {\n    acc[part.type] = part.value;\n    return acc;\n  }, {});\n  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;\n}\n\nfunction getQuery() {\n  try {\n    return $('Webhook - Topic Center').first().json.query || {};\n  } catch (error) {\n    return {};\n  }\n}\n\nfunction tagText(tags) {\n  if (Array.isArray(tags)) return tags.join(' ');\n  if (typeof tags === 'string') return tags;\n  return '';\n}\n\nconst allowedTabs = new Set(['CREATE', 'ACTIVE', 'PROMOTED', 'REJECTED', 'DUPLICATE', 'ALL']);\nconst statusLabel = {\n  NEW: '待筛选',\n  SCORED: '已评分',\n  SELECTED: '已选择',\n  PROMOTED: '已入池',\n  REJECTED: '已拒绝',\n  DUPLICATE: '重复',\n};\nconst sourceLabel = {\n  manual: '人工录入',\n  import: '批量导入',\n  glm: 'GLM 生成',\n  hot: '热点采集',\n  competitor: '竞品参考',\n};\n\nconst query = getQuery();\nconst activeTab = allowedTabs.has(String(query.status || '').toUpperCase()) ? String(query.status).toUpperCase() : 'ACTIVE';\nconst rowsAll = $input.all()\n  .map((item) => item.json || {})\n  .filter((row) => row.is_empty !== true && row.is_empty !== 'true');\n\nconst counts = rowsAll.reduce((acc, row) => {\n  const status = String(row.status || '');\n  acc.ALL += 1;\n  acc[status] = (acc[status] || 0) + 1;\n  if (['NEW', 'SCORED', 'SELECTED'].includes(status)) acc.ACTIVE += 1;\n  return acc;\n}, {ACTIVE: 0, NEW: 0, SCORED: 0, SELECTED: 0, PROMOTED: 0, REJECTED: 0, DUPLICATE: 0, ALL: 0});\n\nconst rows = activeTab === 'CREATE'\n  ? []\n  : activeTab === 'ALL'\n  ? rowsAll\n  : activeTab === 'ACTIVE'\n    ? rowsAll.filter((row) => ['NEW', 'SCORED', 'SELECTED'].includes(String(row.status || '')))\n    : rowsAll.filter((row) => row.status === activeTab);\n\nfunction tab(status, label, count = null) {\n  const active = activeTab === status ? ' active' : '';\n  return `<a class=\"tab${active}\" href=\"/webhook/topic-center?status=${status}\">${escapeHtml(label)}${count === null ? '' : ` <span>${count}</span>`}</a>`;\n}\n\nfunction actionButtons(row) {\n  const status = String(row.status || '');\n  if (!['NEW', 'SCORED', 'SELECTED'].includes(status)) return '';\n  const id = escapeHtml(row.id);\n  return `\n    <form method=\"GET\" action=\"/webhook/topic-action\" data-inline-action=\"true\">\n      <input type=\"hidden\" name=\"action\" value=\"promote\" />\n      <input type=\"hidden\" name=\"candidate_id\" value=\"${id}\" />\n      <button class=\"promote\" type=\"submit\">确认入池</button>\n    </form>\n    <form method=\"GET\" action=\"/webhook/topic-action\" data-inline-action=\"true\">\n      <input type=\"hidden\" name=\"action\" value=\"reject\" />\n      <input type=\"hidden\" name=\"candidate_id\" value=\"${id}\" />\n      <button class=\"reject\" type=\"submit\">拒绝</button>\n    </form>\n    <form method=\"GET\" action=\"/webhook/topic-action\" data-inline-action=\"true\">\n      <input type=\"hidden\" name=\"action\" value=\"duplicate\" />\n      <input type=\"hidden\" name=\"candidate_id\" value=\"${id}\" />\n      <button class=\"secondary\" type=\"submit\">标记重复</button>\n    </form>\n  `;\n}\n\nfunction metaItem(label, value) {\n  if (!value) return '';\n  return `\n    <div class=\"meta-item\">\n      <span>${escapeHtml(label)}</span>\n      <strong>${escapeHtml(value)}</strong>\n    </div>\n  `;\n}\n\nconst tabIntro = {\n  ACTIVE: {\n    title: '候选池',\n    text: '这里展示还没有进入视频生产链路的候选选题。确认入池后，会写入 video_topics 并进入 IDEA 状态。',\n  },\n  PROMOTED: {\n    title: '已入池',\n    text: '这些选题已经转成正式视频主题，后续由 01 + 06 工作流继续生成脚本、语音、视频和待审核结果。',\n  },\n  REJECTED: {\n    title: '已拒绝',\n    text: '这里保留暂时不做的候选选题，方便回看来源、角度和评分理由，不会进入视频生成链路。',\n  },\n  DUPLICATE: {\n    title: '重复选题',\n    text: '这里保留被标记为重复的候选选题，用来避免后续人工或批量导入时重复投入。',\n  },\n  ALL: {\n    title: '全部选题',\n    text: '这里按统一卡片样式汇总所有候选状态，方便快速核对每条选题当前处在哪一步。',\n  },\n};\n\nfunction renderPromotedCard(row) {\n  const source = String(row.source || 'manual');\n  const title = row.title || row.topic || '未命名选题';\n  const tags = tagText(row.tags);\n  const updatedAt = formatLocalTime(row.updated_at);\n  const createdAt = formatLocalTime(row.created_at);\n  const promotedTopicStatus = row.promoted_topic_status || 'IDEA';\n  const promotedTitle = row.promoted_topic_title || title;\n\n  return `\n    <article class=\"topic-card promoted-card\">\n      <div class=\"card-rail\"><span>入池</span></div>\n      <div class=\"promoted-main\">\n        <div class=\"candidate-head\">\n          <span class=\"badge promoted\">已入池</span>\n          <span class=\"source\">${escapeHtml(sourceLabel[source] || source)}</span>\n          <span class=\"video-state\">${escapeHtml(promotedTopicStatus)}</span>\n        </div>\n        <h2>${escapeHtml(promotedTitle)}</h2>\n        <p class=\"topic\">${escapeHtml(row.topic || '')}</p>\n        ${tags ? `<div class=\"tag-row\">${escapeHtml(tags)}</div>` : ''}\n      </div>\n      <aside class=\"card-meta\">\n        ${metaItem('入池视频 ID', row.promoted_topic_id || '')}\n        ${metaItem('候选 ID', row.id || '')}\n        ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}\n        ${metaItem('更新时间', updatedAt)}\n        ${metaItem('创建时间', createdAt)}\n      </aside>\n    </article>\n  `;\n}\n\nfunction renderCandidateCard(row) {\n  const status = String(row.status || '');\n  const source = String(row.source || 'manual');\n  const title = row.title || row.topic || '未命名选题';\n  const tags = tagText(row.tags);\n  const createdAt = formatLocalTime(row.created_at);\n  const updatedAt = formatLocalTime(row.updated_at);\n  const promotedTopicStatus = row.promoted_topic_status || '';\n  const cardClass = status === 'REJECTED'\n    ? 'topic-card candidate-card rejected-card'\n    : status === 'DUPLICATE'\n      ? 'topic-card candidate-card duplicate-card'\n      : 'topic-card candidate-card active-card';\n  const railText = status === 'REJECTED'\n    ? '拒绝'\n    : status === 'DUPLICATE'\n      ? '重复'\n      : '候选';\n  const buttons = actionButtons(row);\n\n  return `\n    <article class=\"${cardClass}\">\n      <div class=\"card-rail\"><span>${escapeHtml(railText)}</span></div>\n      <div class=\"candidate-main\">\n        <div class=\"candidate-head\">\n          <span class=\"badge ${escapeHtml(status.toLowerCase())}\">${escapeHtml(statusLabel[status] || status)}</span>\n          <span class=\"source\">${escapeHtml(sourceLabel[source] || source)}</span>\n          ${row.category ? `<span class=\"category-pill\">${escapeHtml(row.category)}</span>` : ''}\n        </div>\n        <h2>${escapeHtml(title)}</h2>\n        <p class=\"topic\">${escapeHtml(row.topic || '')}</p>\n        ${row.angle ? `<div class=\"angle-box\"><span>角度</span><strong>${escapeHtml(row.angle)}</strong></div>` : ''}\n        ${tags ? `<div class=\"tag-row neutral\">${escapeHtml(tags)}</div>` : ''}\n      </div>\n      <aside class=\"card-meta\">\n        ${metaItem('候选 ID', row.id || '')}\n        ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}\n        ${metaItem('受众', row.audience || '')}\n        ${row.score ? metaItem('评分', row.score) : ''}\n        ${row.score_reason ? metaItem('评分理由', row.score_reason) : ''}\n        ${row.promoted_topic_id ? metaItem('入池视频', `${row.promoted_topic_id}${promotedTopicStatus ? `（${promotedTopicStatus}）` : ''}`) : ''}\n        ${row.duplicate_of ? metaItem('重复来源', row.duplicate_of) : ''}\n        ${metaItem('更新时间', updatedAt)}\n        ${metaItem('创建时间', createdAt)}\n      </aside>\n      ${buttons ? `<div class=\"candidate-actions\">${buttons}</div>` : ''}\n    </article>\n  `;\n}\n\nconst cards = rows.map((row) => String(row.status || '') === 'PROMOTED'\n  ? renderPromotedCard(row)\n  : renderCandidateCard(row)\n).join('\\n');\n\nconst createPanel = `\n  <section class=\"create-panel\">\n    <div class=\"panel-head\">\n      <div>\n        <h2>手动录入候选选题</h2>\n        <p class=\"form-hint\">当前 Tab 只做人工录入；批量导入和 GLM 生成会在后续作为独立入口加入。</p>\n      </div>\n      <span class=\"panel-badge\">source = manual</span>\n    </div>\n    <form method=\"GET\" action=\"/webhook/topic-create\" data-inline-action=\"true\" data-after-success=\"/webhook/topic-center?status=ACTIVE\">\n      <div id=\"toast\" class=\"toast\"></div>\n      <input type=\"hidden\" name=\"source\" value=\"manual\" />\n      <div class=\"create-grid\">\n        <label class=\"span-2\">主题<textarea name=\"topic\" required placeholder=\"例如：普通人如何把表达练得更清楚\"></textarea></label>\n        <label>标题<input name=\"title\" placeholder=\"可选，后续 GLM 会重新生成\" /></label>\n        <label>分类<input name=\"category\" placeholder=\"例如：职场成长\" /></label>\n        <label>受众<input name=\"audience\" value=\"普通短视频用户\" /></label>\n        <label>平台<select name=\"platform\"><option value=\"douyin\">douyin</option></select></label>\n        <label>账号 key<input name=\"account_key\" value=\"mes\" /></label>\n        <label>来源<input value=\"人工录入\" disabled /></label>\n        <label class=\"span-2\">角度<input name=\"angle\" placeholder=\"可选，例如：用 3 个低成本练习给出可执行方法\" /></label>\n        <label class=\"span-2\">标签<input name=\"tags\" placeholder=\"表达力, 职场新人, 自我提升\" /></label>\n      </div>\n      <button class=\"create-button\" type=\"submit\">加入候选池</button>\n    </form>\n  </section>\n`;\n\nconst intro = tabIntro[activeTab]\n  ? `<section class=\"tab-summary\"><strong>${escapeHtml(tabIntro[activeTab].title)}</strong><span>${escapeHtml(tabIntro[activeTab].text)}</span></section>`\n  : '';\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>选题中心</title>\n  <style>\n    body { margin: 0; background: #f5f6f8; color: #111827; font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", \"Microsoft YaHei\", Arial, sans-serif; }\n    header { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,.94); border-bottom: 1px solid #e5e7eb; backdrop-filter: blur(14px); }\n    .head { max-width: 1180px; margin: 0 auto; padding: 18px 24px 14px; display: grid; gap: 14px; }\n    .topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }\n    h1 { margin: 0; font-size: 24px; letter-spacing: 0; }\n    .page-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }\n    .nav-link { color: #111827; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 8px 12px; font-size: 13px; font-weight: 900; }\n    .nav-link.primary { background: #111827; color: #fff; border-color: #111827; }\n    .metrics { display: flex; flex-wrap: wrap; gap: 8px; color: #4b5563; font-size: 13px; font-weight: 800; }\n    .metric { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; padding: 7px 10px; }\n    .tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }\n    .tab { flex: 0 0 auto; color: #374151; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 9px 13px; font-weight: 900; font-size: 14px; }\n    .tab span { color: #6b7280; margin-left: 4px; }\n    .tab.active { background: #111827; color: #fff; border-color: #111827; }\n    .tab.active span { color: #d1d5db; }\n    main { max-width: 1180px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }\n    :root { --ink: #15171a; --muted: #667085; --line: #e6e8ec; --paper: #fff; --wash: #f4f6f8; --blue: #1f6feb; --green: #14945f; --red: #d92d20; --slate: #667085; }\n    .create-panel, .candidate, .topic-card, .none, .tab-summary { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 24px rgba(20,28,38,.06); }\n    .create-panel { padding: 18px; }\n    .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }\n    .panel-badge { flex: 0 0 auto; width: fit-content; padding: 7px 10px; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font-size: 12px; font-weight: 900; }\n    .create-panel h2 { margin: 0 0 8px; font-size: 20px; line-height: 1.25; }\n    .form-hint { margin: 0; color: #6b7280; font-size: 13px; line-height: 1.6; font-weight: 800; }\n    .tab-summary { padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-left: 5px solid #111827; }\n    .tab-summary strong { color: #111827; font-size: 16px; white-space: nowrap; }\n    .tab-summary span { color: #4b5563; font-size: 13px; line-height: 1.6; font-weight: 800; text-align: right; }\n    .create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }\n    label { display: grid; gap: 6px; color: #4b5563; font-size: 13px; font-weight: 900; }\n    input, textarea, select { width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; color: #111827; font-size: 14px; font-family: inherit; box-sizing: border-box; }\n    textarea { min-height: 76px; resize: vertical; }\n    .span-2 { grid-column: 1 / -1; }\n    .candidate { padding: 18px; display: grid; gap: 12px; }\n    .topic-card { position: relative; overflow: hidden; padding: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr) minmax(260px, 320px); grid-template-areas: \"rail main meta\" \"rail actions meta\"; gap: 0; align-items: stretch; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }\n    .topic-card:hover { transform: translateY(-1px); box-shadow: 0 16px 34px rgba(20,28,38,.10); }\n    .active-card { --accent: var(--blue); --accent-bg: #eef5ff; --accent-soft: #f8fbff; }\n    .promoted-card { --accent: var(--green); --accent-bg: #edfdf5; --accent-soft: #fbfffd; border-color: #cfeedd; }\n    .rejected-card { --accent: var(--red); --accent-bg: #fff1f0; --accent-soft: #fffafa; border-color: #ffd5d2; }\n    .duplicate-card { --accent: var(--slate); --accent-bg: #f2f4f7; --accent-soft: #fbfcfd; border-color: #d0d5dd; }\n    .card-rail { grid-area: rail; background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 72%, #111827)); color: #fff; display: grid; place-items: center; min-height: 100%; }\n    .card-rail span { writing-mode: vertical-rl; letter-spacing: 2px; font-size: 12px; font-weight: 900; }\n    .candidate-main, .promoted-main { grid-area: main; min-width: 0; padding: 20px 22px 16px; display: grid; gap: 11px; background: linear-gradient(135deg, var(--accent-soft), #fff 44%); }\n    .card-meta { grid-area: meta; border-left: 1px solid var(--line); background: #fbfcfd; padding: 18px; display: grid; align-content: start; gap: 10px; }\n    .candidate-actions { grid-area: actions; border-top: 1px solid var(--line); padding: 14px 22px 18px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: #fff; }\n    .meta-item { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; align-items: start; }\n    .meta-item span { color: #7a8494; font-size: 12px; font-weight: 900; }\n    .meta-item strong { color: #273142; font-size: 13px; line-height: 1.45; word-break: break-word; font-weight: 800; }\n    .video-state { width: fit-content; padding: 6px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 900; }\n    .category-pill { width: fit-content; padding: 6px 10px; border-radius: 999px; background: #fff7ed; color: #c2410c; font-size: 12px; font-weight: 900; }\n    .tag-row { color: #047857; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 999px; padding: 8px 12px; font-size: 13px; font-weight: 900; line-height: 1.5; width: fit-content; max-width: 100%; }\n    .tag-row.neutral { color: #175cd3; background: #eff6ff; border-color: #dbeafe; }\n    .angle-box { border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)); background: var(--accent-bg); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }\n    .angle-box span { color: #6b7280; font-size: 12px; font-weight: 900; }\n    .angle-box strong { color: #1f2937; font-size: 14px; line-height: 1.55; }\n    .candidate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\n    .badge, .source { width: fit-content; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 900; }\n    .badge.new, .badge.scored, .badge.selected { background: #eff6ff; color: #1d4ed8; }\n    .badge.promoted { background: #ecfdf5; color: #047857; }\n    .badge.rejected { background: #fef2f2; color: #b91c1c; }\n    .badge.duplicate { background: #f1f5f9; color: #475569; }\n    .source { background: #f3f4f6; color: #4b5563; }\n    .candidate h2, .candidate-card h2, .promoted-card h2 { margin: 0; color: var(--ink); font-size: 25px; line-height: 1.22; letter-spacing: 0; }\n    .topic { margin: 0; color: #4b5563; font-size: 15px; line-height: 1.7; max-width: 76ch; }\n    dl { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: 13px; line-height: 1.5; }\n    dt { color: #6b7280; font-weight: 800; }\n    dd { margin: 0; color: #374151; word-break: break-word; }\n    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }\n    form { margin: 0; }\n    button { border: 0; border-radius: 6px; padding: 11px 18px; color: #fff; font-weight: 900; cursor: pointer; font-size: 15px; }\n    .promote { background: #16a34a; }\n    .reject { background: #dc2626; }\n    .secondary { background: #4b5563; }\n    .create-button { background: #111827; margin-top: 12px; }\n    button:disabled { opacity: .66; cursor: progress; }\n    .none { padding: 42px; text-align: center; color: #4b5563; font-weight: 800; }\n    .toast { display: none; border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 900; }\n    .toast.show { display: block; }\n    .toast.error { color: #991b1b; background: #fef2f2; border: 1px solid #fecaca; }\n    .toast.success { color: #166534; background: #ecfdf5; border: 1px solid #bbf7d0; }\n    @media (max-width: 760px) {\n      .topline { align-items: flex-start; flex-direction: column; }\n      .panel-head, .tab-summary { align-items: flex-start; flex-direction: column; }\n      .tab-summary span { text-align: left; }\n      .create-grid { grid-template-columns: 1fr; }\n      .topic-card { grid-template-columns: 1fr; grid-template-areas: \"rail\" \"main\" \"meta\" \"actions\"; }\n      .card-rail { min-height: auto; height: 10px; }\n      .card-rail span { display: none; }\n      .card-meta { border-left: 0; border-top: 1px solid var(--line); }\n      .actions { flex-direction: column; align-items: stretch; }\n      button { width: 100%; }\n    }\n  </style>\n  <script>\n    document.addEventListener('submit', async (event) => {\n      const form = event.target;\n      if (!(form instanceof HTMLFormElement) || form.dataset.inlineAction !== 'true') return;\n      event.preventDefault();\n\n      const button = form.querySelector('button[type=\"submit\"]');\n      const toast = document.querySelector('#toast');\n      if (toast) {\n        toast.className = 'toast';\n        toast.textContent = '';\n      }\n      if (button) {\n        button.disabled = true;\n        button.dataset.originalText = button.textContent || '';\n        button.textContent = '处理中...';\n      }\n\n      const params = new URLSearchParams(new FormData(form));\n      const actionUrl = (form.getAttribute('action') || '/webhook/topic-action') + '?' + params.toString();\n      try {\n        const response = await fetch(actionUrl, {method: 'GET', cache: 'no-store'});\n        if (!response.ok) {\n          const text = await response.text();\n          if (toast) {\n            toast.className = 'toast error show';\n            toast.textContent = text || '操作未生效';\n          }\n          if (button) {\n            button.disabled = false;\n            button.textContent = button.dataset.originalText || '提交';\n          }\n          return;\n        }\n        const afterSuccess = form.dataset.afterSuccess || '';\n        if (afterSuccess) {\n          form.reset();\n          const audience = form.querySelector('input[name=\"audience\"]');\n          const accountKey = form.querySelector('input[name=\"account_key\"]');\n          if (audience) audience.value = '普通短视频用户';\n          if (accountKey) accountKey.value = 'mes';\n          if (toast) {\n            toast.className = 'toast success show';\n            toast.textContent = '已加入候选池，正在刷新候选列表...';\n          }\n          setTimeout(() => {\n            window.location.href = afterSuccess;\n          }, 450);\n          return;\n        }\n        window.location.reload();\n      } catch (error) {\n        window.location.href = actionUrl;\n      }\n    });\n  </script>\n</head>\n<body>\n  <header>\n    <div class=\"head\">\n      <div class=\"topline\">\n        <h1>选题中心</h1>\n        <div class=\"page-nav\">\n          <a class=\"nav-link primary\" href=\"/webhook/video-review-list\">视频审核中心</a>\n          <div class=\"metrics\">\n            <span class=\"metric\">候选 ${counts.ACTIVE}</span>\n            <span class=\"metric\">已入池 ${counts.PROMOTED}</span>\n            <span class=\"metric\">已拒绝 ${counts.REJECTED}</span>\n            <span class=\"metric\">重复 ${counts.DUPLICATE}</span>\n          </div>\n        </div>\n      </div>\n      <nav class=\"tabs\">\n        ${tab('CREATE', '手动录入')}\n        ${tab('ACTIVE', '候选池', counts.ACTIVE)}\n        ${tab('PROMOTED', '已入池', counts.PROMOTED)}\n        ${tab('REJECTED', '已拒绝', counts.REJECTED)}\n        ${tab('DUPLICATE', '重复', counts.DUPLICATE)}\n        ${tab('ALL', '全部', counts.ALL)}\n      </nav>\n    </div>\n  </header>\n  <main>\n    ${activeTab === 'CREATE' ? createPanel : ''}\n    ${activeTab === 'CREATE' ? '' : intro}\n    ${activeTab === 'CREATE' ? '' : (rows.length ? cards : '<div class=\"none\">当前分类没有候选选题</div>')}\n  </main>\n</body>\n</html>`;\n\nreturn [{json: {response_html: html}}];\n"
+      },
+      "id": "build-topic-center-html-00",
+      "name": "Code - Build Topic Center HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-topic-center-00",
+      "name": "Respond to Webhook - Topic Center",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "topic-create",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-topic-create-00",
+      "name": "Webhook - Topic Create",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        420
+      ],
+      "webhookId": "topic-create-00"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Topic Create Params\n// Expected query/form params:\n// ?topic=...&title=...&angle=...&audience=...&category=...&tags=...\n\nconst source = $json || {};\nconst query = source.query || source.params || source.body || source;\n\nfunction text(name, fallback = '') {\n  return String(query[name] ?? fallback).trim();\n}\n\nfunction normalizeTags(value) {\n  return String(value || '')\n    .split(/[，,\\s#]+/)\n    .map((tag) => tag.trim())\n    .filter(Boolean)\n    .slice(0, 12)\n    .map((tag) => tag.startsWith('#') ? tag : `#${tag}`);\n}\n\nconst topic = text('topic');\n\nconst payload = {\n  source: text('source', 'manual') || 'manual',\n  source_ref: text('source_ref'),\n  topic,\n  title: text('title'),\n  angle: text('angle'),\n  audience: text('audience', '普通短视频用户') || '普通短视频用户',\n  platform: text('platform', 'douyin') || 'douyin',\n  account_key: text('account_key', 'mes') || 'mes',\n  category: text('category'),\n  tags: normalizeTags(text('tags')),\n  received_at: new Date().toISOString(),\n};\n\nreturn [{\n  json: {\n    ...payload,\n    tags_json: JSON.stringify(payload.tags),\n    raw_payload_json: JSON.stringify(payload),\n  },\n}];\n"
+      },
+      "id": "validate-topic-create-00",
+      "name": "Code - Validate Topic Create Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Create one topic candidate from the topic center form.\n-- $1 source\n-- $2 source_ref\n-- $3 topic\n-- $4 title\n-- $5 angle\n-- $6 audience\n-- $7 platform\n-- $8 account_key\n-- $9 category\n-- $10 tags_json\n-- $11 raw_payload_json\n\nWITH input AS (\n  SELECT\n    COALESCE(NULLIF($1, ''), 'manual') AS source,\n    NULLIF($2, '') AS source_ref,\n    trim($3) AS topic,\n    NULLIF(trim($4), '') AS title,\n    NULLIF(trim($5), '') AS angle,\n    NULLIF(trim($6), '') AS audience,\n    COALESCE(NULLIF(trim($7), ''), 'douyin') AS platform,\n    COALESCE(NULLIF(trim($8), ''), 'mes') AS account_key,\n    NULLIF(trim($9), '') AS category,\n    COALESCE(NULLIF($10, '')::jsonb, '[]'::jsonb) AS tags,\n    COALESCE(NULLIF($11, '')::jsonb, '{}'::jsonb) AS raw_payload\n), existing AS (\n  SELECT tc.*\n  FROM topic_candidates tc\n  JOIN input i ON true\n  WHERE lower(regexp_replace(tc.topic, '\\s+', '', 'g')) = lower(regexp_replace(i.topic, '\\s+', '', 'g'))\n    AND COALESCE(tc.account_key, '') = COALESCE(i.account_key, '')\n    AND tc.status IN ('NEW', 'SCORED', 'SELECTED', 'PROMOTED')\n  ORDER BY tc.updated_at DESC\n  LIMIT 1\n), inserted AS (\n  INSERT INTO topic_candidates (\n    source,\n    source_ref,\n    status,\n    topic,\n    title,\n    angle,\n    audience,\n    platform,\n    account_key,\n    category,\n    tags,\n    raw_payload,\n    created_at,\n    updated_at\n  )\n  SELECT\n    source,\n    source_ref,\n    'NEW',\n    topic,\n    title,\n    angle,\n    audience,\n    platform,\n    account_key,\n    category,\n    tags,\n    raw_payload,\n    NOW(),\n    NOW()\n  FROM input\n  WHERE topic <> ''\n    AND NOT EXISTS (SELECT 1 FROM existing)\n  RETURNING *\n)\nSELECT\n  true AS success,\n  'CREATED'::text AS result_code,\n  200 AS response_status_code,\n  inserted.*\nFROM inserted\nUNION ALL\nSELECT\n  false AS success,\n  CASE\n    WHEN (SELECT topic FROM input) = '' THEN 'EMPTY_TOPIC'\n    ELSE 'DUPLICATE_CANDIDATE'\n  END AS result_code,\n  409 AS response_status_code,\n  COALESCE(existing.id, NULL::uuid) AS id,\n  COALESCE(existing.source, (SELECT source FROM input)) AS source,\n  existing.source_ref,\n  COALESCE(existing.status, 'DUPLICATE') AS status,\n  COALESCE(existing.topic, (SELECT topic FROM input)) AS topic,\n  existing.title,\n  existing.angle,\n  existing.audience,\n  COALESCE(existing.platform, (SELECT platform FROM input)) AS platform,\n  COALESCE(existing.account_key, (SELECT account_key FROM input)) AS account_key,\n  existing.category,\n  COALESCE(existing.tags, '[]'::jsonb) AS tags,\n  existing.score,\n  existing.score_reason,\n  existing.duplicate_of,\n  existing.promoted_topic_id,\n  existing.raw_payload,\n  existing.created_at,\n  existing.updated_at\nFROM existing\nRIGHT JOIN input ON true\nWHERE NOT EXISTS (SELECT 1 FROM inserted);\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.source, $json.source_ref, $json.topic, $json.title, $json.angle, $json.audience, $json.platform, $json.account_key, $json.category, $json.tags_json, $json.raw_payload_json ] }}"
+        }
+      },
+      "id": "create-topic-candidate-00",
+      "name": "Postgres - Create Topic Candidate",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        560,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-topic-create-00",
+      "name": "Respond to Webhook - Topic Create",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "topic-action",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-topic-action-00",
+      "name": "Webhook - Topic Action",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        740
+      ],
+      "webhookId": "topic-action-00"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Topic Action Params\n// Expected query: ?action=promote|reject|duplicate&candidate_id=<uuid>&note=<optional>\n\nconst source = $json || {};\nconst query = source.query || source.params || source.body || source;\n\nconst action = String(query.action || '').trim().toLowerCase();\nconst rawCandidateId = String(query.candidate_id || query.id || '').trim();\nconst note = String(query.note || '').trim();\nconst uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;\nconst candidateId = uuidPattern.test(rawCandidateId)\n  ? rawCandidateId\n  : '00000000-0000-4000-8000-000000000000';\n\nconst normalizedAction = ['promote', 'reject', 'duplicate'].includes(action) ? action : 'invalid';\n\nreturn [{\n  json: {\n    action: normalizedAction,\n    candidate_id: candidateId,\n    note,\n    received_at: new Date().toISOString(),\n  },\n}];\n"
+      },
+      "id": "validate-topic-action-00",
+      "name": "Code - Validate Topic Action Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Topic candidate actions from topic center.\n-- $1 action: promote, reject, duplicate\n-- $2 candidate_id\n-- $3 note\n\nWITH candidate AS (\n  SELECT *\n  FROM topic_candidates\n  WHERE id = $2::uuid\n  LIMIT 1\n), duplicate_target AS (\n  SELECT other.id\n  FROM topic_candidates other\n  JOIN candidate c ON true\n  WHERE other.id <> c.id\n    AND lower(regexp_replace(other.topic, '\\s+', '', 'g')) = lower(regexp_replace(c.topic, '\\s+', '', 'g'))\n    AND other.status IN ('NEW', 'SCORED', 'SELECTED', 'PROMOTED')\n  ORDER BY other.updated_at DESC\n  LIMIT 1\n), promoted AS (\n  INSERT INTO video_topics (\n    topic,\n    platform,\n    style,\n    duration_seconds,\n    language,\n    target_audience,\n    status,\n    title,\n    hashtags,\n    review_token,\n    source_candidate_id,\n    source,\n    account_key,\n    created_at,\n    updated_at\n  )\n  SELECT\n    c.topic,\n    COALESCE(NULLIF(c.platform, ''), 'douyin'),\n    '口播科普',\n    60,\n    'zh-CN',\n    COALESCE(NULLIF(c.audience, ''), '普通短视频用户'),\n    'IDEA',\n    NULLIF(c.title, ''),\n    COALESCE(c.tags, '[]'::jsonb),\n    md5(random()::text || clock_timestamp()::text || c.id::text),\n    c.id,\n    c.source,\n    c.account_key,\n    NOW(),\n    NOW()\n  FROM candidate c\n  WHERE $1 = 'promote'\n    AND c.status IN ('NEW', 'SCORED', 'SELECTED')\n    AND NOT EXISTS (\n      SELECT 1\n      FROM video_topics vt\n      WHERE lower(regexp_replace(vt.topic, '\\s+', '', 'g')) = lower(regexp_replace(c.topic, '\\s+', '', 'g'))\n        AND COALESCE(vt.account_key, '') = COALESCE(c.account_key, '')\n        AND vt.status IN ('IDEA', 'GENERATING_SCRIPT', 'SCRIPT_READY', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED')\n    )\n  RETURNING *\n), updated_candidate AS (\n  UPDATE topic_candidates tc\n  SET\n    status = CASE\n      WHEN $1 = 'promote' AND EXISTS (SELECT 1 FROM promoted) THEN 'PROMOTED'\n      WHEN $1 = 'reject' THEN 'REJECTED'\n      WHEN $1 = 'duplicate' THEN 'DUPLICATE'\n      ELSE tc.status\n    END,\n    promoted_topic_id = CASE\n      WHEN $1 = 'promote' AND EXISTS (SELECT 1 FROM promoted) THEN (SELECT id FROM promoted LIMIT 1)\n      ELSE promoted_topic_id\n    END,\n    duplicate_of = CASE\n      WHEN $1 = 'duplicate' THEN (SELECT id FROM duplicate_target LIMIT 1)\n      ELSE duplicate_of\n    END,\n    score_reason = CASE\n      WHEN NULLIF($3, '') IS NOT NULL THEN concat_ws(E'\\n', score_reason, $3)\n      ELSE score_reason\n    END,\n    updated_at = NOW()\n  WHERE tc.id = $2::uuid\n    AND (\n      ($1 = 'promote' AND EXISTS (SELECT 1 FROM promoted))\n      OR ($1 = 'reject' AND tc.status IN ('NEW', 'SCORED', 'SELECTED'))\n      OR ($1 = 'duplicate' AND tc.status IN ('NEW', 'SCORED', 'SELECTED'))\n    )\n  RETURNING tc.*\n), fallback AS (\n  SELECT\n    false AS success,\n    CASE\n      WHEN NOT EXISTS (SELECT 1 FROM candidate) THEN 'INVALID_CANDIDATE'\n      WHEN $1 NOT IN ('promote', 'reject', 'duplicate') THEN 'INVALID_ACTION'\n      WHEN $1 = 'promote' AND (SELECT status FROM candidate) NOT IN ('NEW', 'SCORED', 'SELECTED') THEN 'INVALID_SOURCE_STATUS'\n      WHEN $1 = 'promote' THEN 'DUPLICATE_VIDEO_TOPIC'\n      ELSE 'NOT_UPDATED'\n    END AS result_code,\n    409 AS response_status_code,\n    (SELECT id FROM candidate) AS id,\n    (SELECT status FROM candidate) AS status,\n    (SELECT topic FROM candidate) AS topic,\n    NULL::uuid AS promoted_topic_id\n)\nSELECT\n  true AS success,\n  CASE\n    WHEN $1 = 'promote' THEN 'PROMOTED'\n    WHEN $1 = 'reject' THEN 'REJECTED'\n    WHEN $1 = 'duplicate' THEN 'DUPLICATE'\n    ELSE 'UPDATED'\n  END AS result_code,\n  200 AS response_status_code,\n  updated_candidate.id,\n  updated_candidate.status,\n  updated_candidate.topic,\n  updated_candidate.promoted_topic_id\nFROM updated_candidate\nUNION ALL\nSELECT * FROM fallback\nWHERE NOT EXISTS (SELECT 1 FROM updated_candidate);\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.action, $json.candidate_id, $json.note ] }}"
+        }
+      },
+      "id": "topic-candidate-action-00",
+      "name": "Postgres - Topic Candidate Action",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        560,
+        740
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-topic-action-00",
+      "name": "Respond to Webhook - Topic Action",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        740
+      ]
+    },
+    {
+      "id": "note-topic-center-00",
+      "name": "说明 - 选题中心路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -160
+      ],
+      "parameters": {
+        "width": 1120,
+        "height": 180,
+        "color": 4,
+        "content": "## 00 选题中心路径\n\n访问 `/webhook/topic-center`。页面支持人工新增候选选题、确认入池到 `video_topics(IDEA)`、拒绝和标记重复。顶部预留到 `/webhook/video-review-list` 的互跳入口。"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook - Topic Center": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Select Topic Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Select Topic Candidates": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Topic Center HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Topic Center HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Topic Center",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Topic Create": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Topic Create Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Topic Create Params": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Create Topic Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Create Topic Candidate": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Topic Create",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - Topic Action": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Topic Action Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Topic Action Params": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Topic Candidate Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Topic Candidate Action": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook - Topic Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "topic-center-mvp-00",
+  "triggerCount": 3,
+  "tags": [],
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "active": false,
+  "description": "Stage 0: topic candidates center. Manual intake -> topic_candidates -> promote to video_topics(IDEA)."
+}
