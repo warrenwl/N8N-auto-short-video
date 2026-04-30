@@ -273,14 +273,16 @@ const html = `<!doctype html>
   <style>
     body { margin: 0; background: #f5f6f8; color: #111827; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; }
     header { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,.94); border-bottom: 1px solid #e5e7eb; backdrop-filter: blur(14px); }
-    .head { max-width: 1180px; margin: 0 auto; padding: 18px 24px 14px; display: grid; gap: 14px; }
+    .head { max-width: 1180px; margin: 0 auto; padding: 14px 24px 12px; display: grid; gap: 10px; }
     .topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .title-stack { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+    .workspace-title { margin: 0; color: #6b7280; font-size: 13px; font-weight: 900; letter-spacing: 0; white-space: nowrap; }
+    .workspace-title::after { content: "/"; margin-left: 10px; color: #d1d5db; }
     h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
-    .page-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .nav-link { color: #111827; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 8px 12px; font-size: 13px; font-weight: 900; }
-    .nav-link.primary { background: #111827; color: #fff; border-color: #111827; }
-    .metrics { display: flex; flex-wrap: wrap; gap: 8px; color: #4b5563; font-size: 13px; font-weight: 800; }
-    .metric { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; padding: 7px 10px; }
+    .module-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .module-link { color: #374151; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 9px 14px; font-size: 14px; font-weight: 900; }
+    .module-link.active { background: #111827; color: #fff; border-color: #111827; }
+    .module-link:not(.active):hover { border-color: #9ca3af; color: #111827; }
     .tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
     .tab { flex: 0 0 auto; color: #374151; text-decoration: none; border: 1px solid #d1d5db; background: #fff; border-radius: 999px; padding: 9px 13px; font-weight: 900; font-size: 14px; }
     .tab span { color: #6b7280; margin-left: 4px; }
@@ -351,6 +353,8 @@ const html = `<!doctype html>
     .toast.success { color: #166534; background: #ecfdf5; border: 1px solid #bbf7d0; }
     @media (max-width: 760px) {
       .topline { align-items: flex-start; flex-direction: column; }
+      .title-stack { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .workspace-title::after { content: ""; margin: 0; }
       .panel-head, .tab-summary { align-items: flex-start; flex-direction: column; }
       .tab-summary span { text-align: left; }
       .create-grid { grid-template-columns: 1fr; }
@@ -423,16 +427,14 @@ const html = `<!doctype html>
   <header>
     <div class="head">
       <div class="topline">
-        <h1>选题中心</h1>
-        <div class="page-nav">
-          <a class="nav-link primary" href="/webhook/video-review-list">视频审核中心</a>
-          <div class="metrics">
-            <span class="metric">候选 ${counts.ACTIVE}</span>
-            <span class="metric">已入池 ${counts.PROMOTED}</span>
-            <span class="metric">已拒绝 ${counts.REJECTED}</span>
-            <span class="metric">重复 ${counts.DUPLICATE}</span>
-          </div>
+        <div class="title-stack">
+          <p class="workspace-title">内容生产台</p>
+          <h1>选题中心</h1>
         </div>
+        <nav class="module-nav" aria-label="主模块切换">
+          <a class="module-link active" href="/webhook/topic-center">选题中心</a>
+          <a class="module-link" href="/webhook/video-review-list">视频审核中心</a>
+        </nav>
       </div>
       <nav class="tabs">
         ${tab('CREATE', '手动录入')}
