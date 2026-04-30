@@ -127,6 +127,30 @@ function statusLabel(status) {
   }[status] || status || '未知';
 }
 
+function parseRecentEvents(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'object') return Object.values(value);
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function eventTypeLabel(value) {
+  return {
+    STAGE_STARTED: '阶段开始',
+    STAGE_COMPLETED: '阶段完成',
+    HUMAN_REVIEW: '人工审核',
+    HUMAN_RECOVERY: '人工补救',
+    HUMAN_ACTION: '人工操作',
+    AUTO_TRIGGER: '自动触发',
+    FAILURE: '失败记录',
+  }[value] || value || '事件';
+}
+
 const generatingStatuses = new Set([
   'GENERATING_SCRIPT',
   'SCRIPT_READY',
@@ -425,6 +449,34 @@ function progressBlock(row) {
   `;
 }
 
+function eventTimeline(row) {
+  const events = parseRecentEvents(row.recent_events).slice(0, 5);
+  if (!events.length) return '';
+
+  const items = events.map((event) => {
+    const eventTime = formatLocalTime(event.created_at || '');
+    const type = eventTypeLabel(event.event_type);
+    const stage = event.stage ? ` · ${event.stage}` : '';
+    const status = event.new_status ? ` → ${event.new_status}` : '';
+    const message = event.message ? `<span>${escapeHtml(event.message)}</span>` : '';
+    const eventSeq = Number(event.event_seq);
+    const valueAttr = Number.isFinite(eventSeq) && eventSeq > 0 ? ` value="${Math.floor(eventSeq)}"` : '';
+    return `
+      <li${valueAttr}>
+        <div><strong>${escapeHtml(type + stage + status)}</strong>${eventTime ? `<em>${escapeHtml(eventTime)}</em>` : ''}</div>
+        ${message}
+      </li>
+    `;
+  }).join('');
+
+  return `
+    <details class="event-timeline">
+      <summary>最近事件</summary>
+      <ol>${items}</ol>
+    </details>
+  `;
+}
+
 const cards = rows.map((row) => {
   const id = String(row.id || '');
   const title = row.title || row.topic || '未命名视频';
@@ -440,7 +492,10 @@ const cards = rows.map((row) => {
   const currentPublishStatus = publishStatus(row);
   const publishStatusText = currentPublishStatus ? publishStatusLabel(currentPublishStatus) : '';
   const remindedTime = formatLocalTime(row.publish_reminded_at || '');
+  const autoRecoveryAttempts = Number(row.auto_recovery_attempts || 0);
+  const lastAutoRecoveryAt = formatLocalTime(row.last_auto_recovery_at || '');
   const progress = progressBlock(row);
+  const timeline = eventTimeline(row);
 
   return `
     <article class="card ${escapeHtml(status.toLowerCase())}">
@@ -460,8 +515,10 @@ const cards = rows.map((row) => {
           ${reviewNote ? `<dt>审核备注</dt><dd>${escapeHtml(reviewNote)}</dd>` : ''}
           ${publishStatusText ? `<dt>发布状态</dt><dd>${escapeHtml(publishStatusText)}</dd>` : ''}
           ${remindedTime ? `<dt>提醒时间</dt><dd>${escapeHtml(remindedTime)}</dd>` : ''}
+          ${autoRecoveryAttempts > 0 ? `<dt>自动恢复</dt><dd>${escapeHtml(`${autoRecoveryAttempts} 次${lastAutoRecoveryAt ? `，最近 ${lastAutoRecoveryAt}` : ''}`)}</dd>` : ''}
         </dl>
         ${progress}
+        ${timeline}
         <div class="actions">${actionButtons(row)}</div>
       </div>
     </article>
@@ -535,6 +592,16 @@ const html = `<!doctype html>
     .progress-fill.failed { background: #dc2626; }
     .progress-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #475569; font-size: 12px; font-weight: 800; }
     .error-box { border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; border-radius: 6px; padding: 9px 10px; font-size: 12px; line-height: 1.5; word-break: break-word; }
+    .event-timeline { border: 1px solid #e5e7eb; background: #f9fafb; border-radius: 8px; padding: 0; overflow: hidden; }
+    .event-timeline summary { position: sticky; top: 0; z-index: 1; background: #f9fafb; padding: 10px 12px; }
+    .event-timeline[open] ol { max-height: 160px; overflow-y: auto; padding-right: 8px; }
+    .event-timeline summary { cursor: pointer; color: #374151; font-size: 13px; font-weight: 900; }
+    .event-timeline ol { margin: 0; padding: 0 12px 10px 30px; display: grid; gap: 8px; }
+    .event-timeline li { color: #4b5563; font-size: 12px; line-height: 1.45; }
+    .event-timeline li div { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+    .event-timeline strong { color: #111827; font-weight: 900; }
+    .event-timeline em { color: #6b7280; font-style: normal; font-weight: 800; }
+    .event-timeline span { display: block; margin-top: 2px; word-break: break-word; }
     .recovery-card { border: 1px solid #fed7aa; background: #fff7ed; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .recovery-card strong { display: block; color: #9a3412; font-size: 13px; font-weight: 900; margin-bottom: 4px; }
     .recovery-card span { display: block; color: #7c2d12; font-size: 12px; font-weight: 800; line-height: 1.5; }
@@ -605,7 +672,24 @@ const html = `<!doctype html>
       }
     });
   </script>
-  ${activeStatus === 'GENERATING' ? '<script>setTimeout(() => window.location.reload(), 5000);</script>' : ''}
+  ${activeStatus === 'GENERATING' ? `<script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const note = document.querySelector('#review-refresh-note');
+      let seconds = 5;
+      const render = () => {
+        if (note) note.textContent = '自动刷新中，下次更新：' + seconds + ' 秒';
+      };
+      render();
+      setInterval(() => {
+        seconds -= 1;
+        if (seconds <= 0) {
+          window.location.reload();
+          return;
+        }
+        render();
+      }, 1000);
+    });
+  </script>` : ''}
 </head>
 <body>
   <header>
@@ -628,7 +712,7 @@ const html = `<!doctype html>
         ${tab('PUBLISHED', '已发布', counts.PUBLISHED)}
         ${tab('ALL', '全部', counts.ALL)}
       </nav>
-      ${activeStatus === 'GENERATING' ? '<div class="refresh-note">自动刷新中，每 5 秒更新一次生成状态。</div>' : ''}
+      ${activeStatus === 'GENERATING' ? '<div id="review-refresh-note" class="refresh-note">自动刷新中，下次更新：5 秒</div>' : ''}
     </div>
   </header>
   <main>

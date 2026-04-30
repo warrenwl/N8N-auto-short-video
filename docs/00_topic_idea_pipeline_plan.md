@@ -1,6 +1,6 @@
 # 00_选题入口层计划文档
 
-更新时间：2026-04-29 21:33 CST
+更新时间：2026-04-30 15:20 CST
 
 ## 1. 背景
 
@@ -136,11 +136,16 @@ config/topic_idea_config.jsonc
   // 去重相似度阈值，第一版可先用文本规范化 + 关键词匹配
   "dedupe_threshold": 0.86,
 
-  // 选题方向提示，用于 GLM 生成候选
-  "topic_directions": [
-    "职场新人表达力",
-    "下班后自我提升",
-    "普通人低成本成长"
+  // 分类与选题方向联动：category 是一级内容领域，directions 是二级栏目/生成范围
+  "category_direction_groups": [
+    {
+      "category": "认知成长",
+      "directions": ["普通人破局", "长期主义", "判断力训练"]
+    },
+    {
+      "category": "AI自动化",
+      "directions": ["办公提效", "内容生产", "自动化工作流"]
+    }
   ],
 
   // 不希望出现的方向
@@ -150,6 +155,16 @@ config/topic_idea_config.jsonc
   ]
 }
 ```
+
+当前 M5 实现已落地为 `config/topic_idea_config.jsonc`。第一版配置包含：
+
+- `defaults`：控制 `AI生成` Tab 打开时的默认数量、方向、分类、目标受众和内容风格；数量默认 1 条，页面提供 1/2/5/10 下拉并保留自定义输入。
+- `category_direction_groups/audience_groups/styles`：页面下拉数据源，同时支持手动自定义输入。`category` 是一级内容领域，`directions` 是该分类下的二级栏目/生成范围。
+- `system_prompt/user_prompt_template`：GLM 生成候选选题的固定提示词。
+- `blocked_topics`：提示 GLM 避开的高风险方向。
+- `topic_generation_jobs`：记录 GLM 候选生成异步任务，支持刷新页面后继续查看 `RUNNING/SUCCEEDED/FAILED` 状态；超过 5 分钟仍为 `RUNNING` 的任务会被轮询接口标记为 `FAILED`。
+
+M5 不处理 `template_type`。该字段仍由 01 脚本生成阶段根据选题正文输出，候选阶段只生成 `topic/title/angle/audience/category/tags`。
 
 ## 7. n8n 工作流规划
 
@@ -238,6 +253,8 @@ Manual Trigger 或 /webhook/topic-generate
 
 页面 Tab：
 
+- `AI生成`：根据配置和自定义方向调用 GLM 生成候选。
+- `手动录入`：人工新增单条候选。
 - `候选池`：`NEW/SCORED`
 - `已入池`：`PROMOTED`
 - `已拒绝`：`REJECTED`
@@ -271,7 +288,8 @@ Manual Trigger 或 /webhook/topic-generate
 - 人工录入作为独立 `手动录入` Tab，不混在候选列表里。
 - 当前阶段来源固定为 `manual / 人工录入`，不展示尚未实现的 `import/glm` 来源选项。
 - 点击“加入候选池”成功后清空表单，并跳回候选池 Tab，让新增候选和候选数量立即可见。
-- 后续批量导入、GLM 生成、热点采集、竞品参考都应作为独立入口或独立 Tab，不复用人工录入表单里的来源下拉。
+- `AI生成` 作为独立 Tab，调用 `/webhook/topic-generate` 后写入 `topic_candidates(NEW, source=glm)`，成功后跳回候选池。
+- 后续批量导入、热点采集、竞品参考都应作为独立入口或独立 Tab，不复用人工录入表单里的来源下拉。
 
 ## 9. 实施里程碑
 
@@ -311,11 +329,13 @@ Manual Trigger 或 /webhook/topic-generate
 
 ### M5：GLM 自动生成候选
 
-- [ ] 新增 `config/topic_idea_config.jsonc`。
-- [ ] 新增 GLM 选题生成提示词配置。
-- [ ] 新增 `00C_GLM 生成候选选题` workflow。
-- [ ] 生成结果写入 `topic_candidates(NEW)`。
-- [ ] 输出本次 GLM prompt 和响应到日志或候选 raw_payload。
+- [x] 新增 `config/topic_idea_config.jsonc`。
+- [x] 新增 GLM 选题生成提示词配置。
+- [x] 在 `00_选题中心_候选池到IDEA` 中新增 `00C_GLM 生成候选选题` webhook 路径。
+- [x] 生成结果写入 `topic_candidates(NEW)`。
+- [x] 输出本次 GLM prompt 和响应到候选 `raw_payload`。
+- [x] `/webhook/topic-center` 新增 `AI生成` Tab，支持“分类 -> 选题方向”二级联动；数量、目标受众、内容风格支持默认下拉和自定义输入。
+- [x] GLM 候选生成改为异步 job：点击后立即返回，页面用 5 秒倒计时轮询 `/webhook/topic-generation-jobs` 展示生成状态，刷新页面不丢进度。
 
 ### M6：评分与筛选
 
@@ -326,9 +346,9 @@ Manual Trigger 或 /webhook/topic-generate
 
 ### M7：与现有链路联动
 
-- [ ] 选题入池后可直接触发 01 脚本生成。
-- [ ] 审核中心或新选题中心能看到来源信息。
-- [ ] README 更新完整主线：`00 -> 01 -> 06 -> 08 -> 09`。
+- [x] 选题入池后可直接触发 01 脚本生成。
+- [x] 审核中心或新选题中心能看到来源信息。
+- [x] README 更新完整主线：`00 -> 01 -> 06 -> 08 -> 09`。
 
 ## 10. 验收标准
 
@@ -373,13 +393,17 @@ Manual Trigger 或 /webhook/topic-generate
 
 ## 12. 当前状态
 
-截至 2026-04-29 22:20 CST：
+截至 2026-04-30 15:20 CST：
 
 - `01 -> 06 -> 08 -> 09` 已初步跑通。
 - `00_选题中心_候选池到IDEA` 已新增并导入 n8n，访问入口为 `/webhook/topic-center`。
 - 已新增 `topic_candidates` 表，并给 `video_topics` 增加 `source_candidate_id/source/account_key` 用于追踪来源。
 - 选题中心支持人工新增候选、确认入池到 `video_topics(IDEA)`、拒绝和标记重复。
+- 选题中心新增 `AI生成` Tab，可通过 GLM 生成 `topic_candidates(NEW, source=glm)`；分类与选题方向改为一级/二级联动，数量、目标受众和内容风格均由 `config/topic_idea_config.jsonc` 提供默认下拉并支持自定义。
+- `AI生成` 已改成异步任务：`topic_generation_jobs(RUNNING)` 先落库，页面展示刷新倒计时并轮询状态；GLM 成功后更新为 `SUCCEEDED` 并写入候选池。
+- M5 候选生成默认 `max_tokens = 8000`，避免 GLM-5.1 reasoning tokens 过多时截断 JSON 正文。
+- GLM 生成候选的 prompt、响应和 batch_id 已写入候选 `raw_payload`，重复候选会跳过并返回统计。
 - 选题中心与视频审核中心已互相预留跳转入口。
 - 已通过 webhook 联调验证：创建候选成功，确认入池可生成 `video_topics(IDEA)`；联调测试数据已清理。
 - 09 抖音半自动发布已支持发布包、下载页、Server酱提醒和手动确认回写。
-- 下一步建议完成 M2 最后一项：用一条真实主题跑通 `00 -> 01`，然后进入 M4 批量导入或 M5 GLM 自动生成候选。
+- 下一步建议用 `AI生成` 生成一批候选，人工选择一条入池后跑通 `00 -> 01 -> 06`；之后可进入 M6 自动评分与筛选。M4 批量导入暂缓。

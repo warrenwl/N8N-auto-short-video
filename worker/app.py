@@ -106,6 +106,9 @@ class RenderRequest(BaseModel):
     render_engine: str = "ffmpeg"
     template_type: str = "knowledge"
     remotion_renderer_url: str = REMOTION_RENDERER_URL
+    existing_voice_path: Optional[str] = None
+    existing_audio_duration: Optional[float] = None
+    existing_audio_engine: Optional[str] = None
 
 
 def run_cmd(cmd: List[str]) -> None:
@@ -870,6 +873,43 @@ def load_audio_manifest(task_dir: Path) -> Optional[Dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def audio_manifest_from_existing_voice(req: RenderRequest) -> Optional[Dict[str, Any]]:
+    if not req.existing_voice_path:
+        return None
+
+    voice_path = Path(req.existing_voice_path)
+    if not voice_path.exists():
+        return None
+
+    paths = task_paths(req.task_id)
+    task_dir = paths["task_dir"]
+    audio_duration = float(req.existing_audio_duration or 0)
+    if audio_duration <= 0:
+        audio_duration = ffprobe_duration(voice_path)
+
+    shots, durations, subtitle_alignment = normalize_shots(req, audio_duration, voice_path)
+    audio_manifest = {
+        "status": "ok",
+        "task_id": req.task_id,
+        "voice_path": str(voice_path),
+        "main_voice_path": None,
+        "audio_duration": audio_duration,
+        "voice_total_duration": audio_duration,
+        "outro_audio_duration": 0.0,
+        "subtitle_alignment": subtitle_alignment,
+        "durations": durations,
+        "shots": shot_dicts(shots),
+        "audio_engine": req.existing_audio_engine or "VoxCPM",
+        "tts_config_path": str(TTS_CONFIG_PATH),
+        "voice_prompt": None,
+        "speech_text": speech_text_from_shots(req),
+        "outro_voice_text": "",
+        "source": "existing_voice_path",
+    }
+    paths["audio_manifest"].write_text(json.dumps(audio_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return audio_manifest
+
+
 def generate_audio_stage(req: RenderRequest) -> Dict[str, Any]:
     paths = task_paths(req.task_id)
     task_dir = paths["task_dir"]
@@ -969,7 +1009,7 @@ def render_video_stage(req: RenderRequest) -> Dict[str, Any]:
     task_dir = paths["task_dir"]
     audio_manifest = load_audio_manifest(task_dir)
     if not audio_manifest:
-        audio_manifest = generate_audio_stage(req)
+        audio_manifest = audio_manifest_from_existing_voice(req) or generate_audio_stage(req)
     media_manifest_path = paths["media_manifest"]
     media_manifest = json.loads(media_manifest_path.read_text(encoding="utf-8")) if media_manifest_path.exists() else generate_cover_stage(req)
 

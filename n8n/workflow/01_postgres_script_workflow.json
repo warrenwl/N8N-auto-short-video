@@ -35,7 +35,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE video_topics\nSET\n  status = 'GENERATING_SCRIPT',\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nWHERE id = $1::uuid\n  AND status = 'IDEA'\n  AND ($2::text IS NULL OR review_token = $2)\nRETURNING *;",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  status = 'GENERATING_SCRIPT',\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nWHERE id = $1::uuid\n  AND status = 'IDEA'\n  AND ($2::text IS NULL OR review_token = $2)\nRETURNING *\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'script',\n    'IDEA',\n    'GENERATING_SCRIPT',\n    'n8n',\n    '01_postgres_script_workflow',\n    '开始调用 GLM 生成脚本',\n    jsonb_build_object('entrypoint', CASE WHEN $2::text IS NULL THEN 'manual' ELSE 'webhook' END)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
         "options": {
           "queryReplacement": "={{ [ $json.id || $json.task_id, $json.token || null ] }}"
         }
@@ -122,7 +122,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE video_topics\nSET\n  title = $1,\n  hook = $2,\n  script = $3,\n  cover_text = $4,\n  template_type = $5,\n  hashtags = $6::jsonb,\n  shots_json = $7::jsonb,\n  risk_check = $8::jsonb,\n  status = 'SCRIPT_READY',\n  error = NULL\nWHERE id = $9\nRETURNING *;",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  title = $1,\n  hook = $2,\n  script = $3,\n  cover_text = $4,\n  template_type = $5,\n  hashtags = $6::jsonb,\n  shots_json = $7::jsonb,\n  risk_check = $8::jsonb,\n  status = 'SCRIPT_READY',\n  error = NULL\nWHERE id = $9\nRETURNING *\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    event_type,\n    stage,\n    old_status,\n    new_status,\n    'n8n',\n    '01_postgres_script_workflow',\n    message,\n    metadata\n  FROM updated\n  CROSS JOIN LATERAL (\n    VALUES\n      ('STAGE_COMPLETED'::text, 'script'::text, 'GENERATING_SCRIPT'::text, 'SCRIPT_READY'::text, '脚本文案生成完成'::text, '{}'::jsonb),\n      ('AUTO_TRIGGER'::text, 'render'::text, 'SCRIPT_READY'::text, 'SCRIPT_READY'::text, '自动触发 06 首渲染入口'::text, jsonb_build_object('webhook', 'video-render-start'))\n  ) AS events(event_type, stage, old_status, new_status, message, metadata)\n  RETURNING 1\n)\nSELECT * FROM updated;",
         "options": {
           "queryReplacement": "={{ [ $json.title, $json.hook, $json.script, $json.cover_text, $json.template_type, $json.hashtags_json, $json.shots_json, $json.risk_check_json, $json.id ] }}"
         }
@@ -155,7 +155,7 @@
         "width": 2140,
         "height": 220,
         "color": 4,
-        "content": "## 01 脚本生成主路径：IDEA → SCRIPT_READY\n\n保留两种入口：\n- 手动入口：在 n8n 点 **Execute workflow**，领取最早一条 `IDEA`。\n- 自动入口：选题中心“生成视频”调用 `/webhook/video-script-start?task_id=<id>&token=<review_token>`，只领取指定 `IDEA`。\n\n两种入口都会进入同一个 `Postgres - Mark GENERATING_SCRIPT`，调用 GLM 生成脚本/分镜/template_type，并写回 `SCRIPT_READY`。"
+        "content": "## 01 脚本生成主路径：IDEA → SCRIPT_READY\n\n保留两种入口：\n- 手动入口：在 n8n 点 **Execute workflow**，领取最早一条 `IDEA`。\n- 自动入口：选题中心“生成视频”调用 `/webhook/video-script-start?task_id=<id>&token=<review_token>`，只领取指定 `IDEA`。\n\n两种入口都会进入同一个 `Postgres - Mark GENERATING_SCRIPT`，调用 GLM 生成脚本/分镜/template_type，并写回 `SCRIPT_READY`。\n\nV3：本路径会写入 `video_task_events`，记录脚本阶段开始和完成，便于审核中心展示最近事件。"
       }
     },
     {

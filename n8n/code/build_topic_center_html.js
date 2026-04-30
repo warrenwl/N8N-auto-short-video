@@ -1,6 +1,8 @@
 // n8n Code node: Build Topic Center HTML
 // Input comes from topic_candidates SELECT rows.
 
+const fs = require('fs');
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -44,7 +46,141 @@ function tagText(tags) {
   return '';
 }
 
-const allowedTabs = new Set(['CREATE', 'ACTIVE', 'PROMOTED', 'REJECTED', 'DUPLICATE', 'ALL']);
+function stripJsonComments(text) {
+  return String(text || '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+function readTopicIdeaConfig() {
+  const fallback = {
+    defaults: {
+      count: 1,
+      platform: 'douyin',
+      account_key: 'mes',
+      direction: '普通人破局',
+      category: '认知成长',
+      audience: '30岁左右有焦虑感的普通上班族',
+      style: '理性克制',
+    },
+    category_direction_groups: [
+      {category: '认知成长', directions: ['普通人破局', '长期主义', '判断力训练', '行动系统']},
+      {category: 'AI自动化', directions: ['办公提效', '内容生产', '资料整理', '自动化工作流']},
+      {category: '职场效率', directions: ['向上沟通', '工作汇报', '任务拆解', '优先级管理']},
+    ],
+    counts: [1, 2, 5, 10],
+    categories: ['认知成长', 'AI自动化', '职场效率'],
+    audience_groups: [{group: '默认', items: ['30岁左右有焦虑感的普通上班族', '想用AI提升效率但没有技术背景的人']}],
+    styles: ['理性克制', '温和陪伴', '实操清单'],
+  };
+  const configPath = $env.TOPIC_IDEA_CONFIG_PATH || '/config/topic_idea_config.jsonc';
+  try {
+    if (!fs.existsSync(configPath)) return fallback;
+    const data = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));
+    return {
+      ...fallback,
+      ...data,
+      defaults: {
+        ...fallback.defaults,
+        ...(data.defaults || {}),
+      },
+    };
+  } catch (error) {
+    return {
+      ...fallback,
+      load_error: `读取 ${configPath} 失败：${error.message}`,
+    };
+  }
+}
+
+function flattenAudienceGroups(groups) {
+  return (Array.isArray(groups) ? groups : [])
+    .flatMap((group) => (Array.isArray(group.items) ? group.items : []).map((item) => ({
+      group: group.group || '',
+      value: String(item || '').trim(),
+    })))
+    .filter((item) => item.value);
+}
+
+function getCategoryDirectionGroups(config) {
+  const groups = Array.isArray(config.category_direction_groups) ? config.category_direction_groups : [];
+  if (groups.length) {
+    return groups
+      .map((group) => ({
+        category: String(group.category || group.name || '').trim(),
+        directions: (Array.isArray(group.directions) ? group.directions : [])
+          .map((item) => String(item || '').trim())
+          .filter(Boolean),
+      }))
+      .filter((group) => group.category);
+  }
+
+  const categories = Array.isArray(config.categories) ? config.categories : [];
+  const directions = Array.isArray(config.directions) ? config.directions : [];
+  return categories
+    .map((category) => ({
+      category: String(category || '').trim(),
+      directions: directions.map((item) => String(item || '').trim()).filter(Boolean),
+    }))
+    .filter((group) => group.category);
+}
+
+function directionMapJson(groups) {
+  const map = groups.reduce((acc, group) => {
+    acc[group.category] = group.directions;
+    return acc;
+  }, {});
+  return JSON.stringify(map);
+}
+
+function uniqueOptionValues(values) {
+  const seen = new Set();
+  return values
+    .map((item) => {
+      const value = typeof item === 'string' ? item : item.value;
+      const label = typeof item === 'string' ? '' : item.group;
+      const normalized = String(value || '').trim();
+      if (!normalized || seen.has(normalized)) return null;
+      seen.add(normalized);
+      return {value: normalized, label};
+    })
+    .filter(Boolean);
+}
+
+function selectOptions(values, selectedValue) {
+  return uniqueOptionValues(values)
+    .map((item) => `<option value="${escapeHtml(item.value)}"${item.value === selectedValue ? ' selected' : ''}>${escapeHtml(item.label ? `${item.label} / ${item.value}` : item.value)}</option>`)
+    .join('');
+}
+
+function customSelectField({name, label, values, selectedValue, customPlaceholder, span2 = false, type = 'text', min = '', max = '', selectAttrs = ''}) {
+  const selected = String(selectedValue || '').trim();
+  const options = uniqueOptionValues(values);
+  const hasSelected = options.some((item) => item.value === selected);
+  const customActive = selected && !hasSelected;
+  const typeAttrs = type === 'number' ? ` type="number"${min ? ` min="${escapeHtml(min)}"` : ''}${max ? ` max="${escapeHtml(max)}"` : ''}` : '';
+  return `
+    <label class="${span2 ? 'span-2' : ''} custom-field">${escapeHtml(label)}
+      <select data-custom-select="${escapeHtml(name)}"${selectAttrs ? ` ${selectAttrs}` : ''}>
+        ${selectOptions(options, selected)}
+        <option value="__custom__"${customActive ? ' selected' : ''}>自定义...</option>
+      </select>
+      <input class="custom-input${customActive ? ' show' : ''}" data-custom-input="${escapeHtml(name)}"${typeAttrs} value="${customActive ? escapeHtml(selected) : ''}" placeholder="${escapeHtml(customPlaceholder || `自定义${label}`)}" />
+      <input type="hidden" name="${escapeHtml(name)}" data-custom-hidden="${escapeHtml(name)}" value="${escapeHtml(selected)}" />
+    </label>
+  `;
+}
+
+const topicIdeaConfig = readTopicIdeaConfig();
+const topicIdeaDefaults = topicIdeaConfig.defaults || {};
+const audienceOptions = flattenAudienceGroups(topicIdeaConfig.audience_groups);
+const categoryDirectionGroups = getCategoryDirectionGroups(topicIdeaConfig);
+const categoryOptions = categoryDirectionGroups.map((group) => group.category);
+const selectedCategory = topicIdeaDefaults.category || categoryOptions[0] || '认知成长';
+const selectedDirectionGroup = categoryDirectionGroups.find((group) => group.category === selectedCategory) || categoryDirectionGroups[0] || {directions: []};
+const directionOptions = selectedDirectionGroup.directions;
+
+const allowedTabs = new Set(['AI_GENERATE', 'CREATE', 'ACTIVE', 'PROMOTED', 'REJECTED', 'DUPLICATE', 'ALL']);
 const statusLabel = {
   NEW: '待筛选',
   SCORED: '已评分',
@@ -146,6 +282,10 @@ function metaItem(label, value) {
 }
 
 const tabIntro = {
+  AI_GENERATE: {
+    title: 'AI 生成候选',
+    text: '根据配置方向和页面自定义条件调用 GLM，生成结果只进入候选池 NEW 状态，不会自动入池或自动生成视频。',
+  },
   ACTIVE: {
     title: '候选池',
     text: '这里展示还没有进入视频生产链路的候选选题。确认入池后，会写入 video_topics 并进入 IDEA 状态。',
@@ -167,6 +307,12 @@ const tabIntro = {
     text: '这里按统一卡片样式汇总所有候选状态，方便快速核对每条选题当前处在哪一步。',
   },
 };
+
+function sourceRefText(value) {
+  const text = String(value || '');
+  if (!text.startsWith('glm:')) return text;
+  return text.replace(/^glm:/, '');
+}
 
 function renderPromotedCard(row) {
   const source = String(row.source || 'manual');
@@ -242,6 +388,7 @@ function renderCandidateCard(row) {
         ${metaItem('候选 ID', row.id || '')}
         ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}
         ${metaItem('受众', row.audience || '')}
+        ${source === 'glm' ? metaItem('生成批次', sourceRefText(row.source_ref)) : ''}
         ${row.score ? metaItem('评分', row.score) : ''}
         ${row.score_reason ? metaItem('评分理由', row.score_reason) : ''}
         ${row.promoted_topic_id ? metaItem('入池视频', `${row.promoted_topic_id}${promotedTopicStatus ? `（${promotedTopicStatus}）` : ''}`) : ''}
@@ -259,12 +406,85 @@ const cards = rows.map((row) => String(row.status || '') === 'PROMOTED'
   : renderCandidateCard(row)
 ).join('\n');
 
+const aiPanel = `
+  <section class="create-panel ai-panel">
+    <div class="panel-head">
+      <div>
+        <h2>AI 生成候选选题</h2>
+        <p class="form-hint">读取 <code>/config/topic_idea_config.jsonc</code> 的分类联动配置。先选一级分类，再自动带出该分类下的二级选题方向；具体候选题目由 GLM 生成。</p>
+      </div>
+      <span class="panel-badge ai">source = glm</span>
+    </div>
+    ${topicIdeaConfig.load_error ? `<div class="config-warning">${escapeHtml(topicIdeaConfig.load_error)}</div>` : ''}
+    <form method="GET" action="/webhook/topic-generate" data-inline-action="true">
+      <div id="toast" class="toast"></div>
+      <input type="hidden" name="platform" value="${escapeHtml(topicIdeaDefaults.platform || 'douyin')}" />
+      <input type="hidden" name="account_key" value="${escapeHtml(topicIdeaDefaults.account_key || 'mes')}" />
+      <div class="create-grid">
+        ${customSelectField({
+          name: 'category',
+          label: '分类',
+          values: categoryOptions,
+          selectedValue: selectedCategory,
+          customPlaceholder: '输入自定义一级分类',
+          selectAttrs: 'data-category-select="true"',
+        })}
+        ${customSelectField({
+          name: 'count',
+          label: '数量',
+          values: (topicIdeaConfig.counts || [1, 2, 5, 10]).map(String),
+          selectedValue: String(topicIdeaDefaults.count || 1),
+          customPlaceholder: '输入 1-20 之间的数字',
+          type: 'number',
+          min: '1',
+          max: '20',
+        })}
+        ${customSelectField({
+          name: 'direction',
+          label: '选题方向（二级栏目）',
+          values: directionOptions,
+          selectedValue: topicIdeaDefaults.direction || directionOptions[0] || '普通人破局',
+          customPlaceholder: '输入自定义二级方向，例如：非技术人提效',
+          span2: true,
+          selectAttrs: `data-direction-select="true" data-category-directions="${escapeHtml(directionMapJson(categoryDirectionGroups))}"`,
+        })}
+        ${customSelectField({
+          name: 'audience',
+          label: '目标受众',
+          values: audienceOptions,
+          selectedValue: topicIdeaDefaults.audience || '30岁左右有焦虑感的普通上班族',
+          customPlaceholder: '输入更具体的人群，例如：30岁左右想用AI做副业但没有技术背景的人',
+          span2: true,
+        })}
+        ${customSelectField({
+          name: 'style',
+          label: '内容风格',
+          values: topicIdeaConfig.styles || [],
+          selectedValue: topicIdeaDefaults.style || '理性克制',
+          customPlaceholder: '输入自定义内容风格',
+        })}
+        <label>账号 key
+          <input value="${escapeHtml(topicIdeaDefaults.account_key || 'mes')}" disabled />
+        </label>
+      </div>
+      <button class="create-button ai-create-button" type="submit">生成候选</button>
+    </form>
+    <section class="generation-jobs">
+      <div class="jobs-head">
+        <h3>生成任务</h3>
+        <span id="jobs-refresh-note">下次刷新：5 秒</span>
+      </div>
+      <div id="generation-jobs-list" class="jobs-list">正在读取生成任务...</div>
+    </section>
+  </section>
+`;
+
 const createPanel = `
   <section class="create-panel">
     <div class="panel-head">
       <div>
         <h2>手动录入候选选题</h2>
-        <p class="form-hint">当前 Tab 只做人工录入；批量导入和 GLM 生成会在后续作为独立入口加入。</p>
+        <p class="form-hint">当前 Tab 只做人工录入；AI 生成候选已拆到独立 Tab，便于区分人工来源和 GLM 来源。</p>
       </div>
       <span class="panel-badge">source = manual</span>
     </div>
@@ -316,19 +536,53 @@ const html = `<!doctype html>
     .tab.active { background: #111827; color: #fff; border-color: #111827; }
     .tab.active span { color: #d1d5db; }
     main { max-width: 1180px; margin: 0 auto; padding: 24px; display: grid; gap: 18px; }
+    body:has(main.ai-main) { overflow: hidden; }
+    main.ai-main { height: calc(100dvh - 128px); min-height: 0; padding-top: 14px; padding-bottom: 14px; box-sizing: border-box; overflow: hidden; }
     :root { --ink: #15171a; --muted: #667085; --line: #e6e8ec; --paper: #fff; --wash: #f4f6f8; --blue: #1f6feb; --green: #14945f; --red: #d92d20; --slate: #667085; }
     .create-panel, .candidate, .topic-card, .none, .tab-summary { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 24px rgba(20,28,38,.06); }
     .create-panel { padding: 18px; }
     .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
     .panel-badge { flex: 0 0 auto; width: fit-content; padding: 7px 10px; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font-size: 12px; font-weight: 900; }
+    .panel-badge.ai { background: #f0fdf4; color: #15803d; }
     .create-panel h2 { margin: 0 0 8px; font-size: 20px; line-height: 1.25; }
+    code { padding: 2px 5px; border-radius: 5px; background: #f3f4f6; color: #374151; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
     .form-hint { margin: 0; color: #6b7280; font-size: 13px; line-height: 1.6; font-weight: 800; }
+    .config-warning { margin-bottom: 12px; border: 1px solid #fed7aa; background: #fff7ed; color: #9a3412; border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 900; }
+    .ai-panel { height: 100%; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(220px, 1fr); align-content: stretch; gap: 12px; padding: 16px 18px; box-sizing: border-box; }
+    .ai-panel .panel-head { margin-bottom: 0; }
+    .ai-panel .panel-badge { padding: 6px 9px; }
+    .ai-panel h2 { margin-bottom: 4px; font-size: 18px; }
+    .ai-panel .form-hint { font-size: 12px; line-height: 1.45; }
+    .ai-panel form { min-height: 0; display: grid; align-content: start; gap: 12px; }
+    .ai-panel .create-grid { gap: 11px 14px; }
+    .ai-panel label { gap: 5px; font-size: 12px; }
+    .ai-panel input, .ai-panel select { padding: 9px 11px; font-size: 13px; }
+    .ai-panel .create-button { margin-top: 0; padding: 11px 16px; }
+    .generation-jobs { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 12px; }
+    .ai-panel .generation-jobs { min-height: 0; margin-top: 0; padding-top: 10px; grid-template-rows: auto minmax(0, 1fr); gap: 8px; overflow: hidden; }
+    .jobs-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 8px; background: var(--paper); border-bottom: 1px solid #eef0f3; }
+    .jobs-head h3 { margin: 0; font-size: 17px; }
+    .jobs-head span { color: #6b7280; font-size: 12px; font-weight: 900; }
+    .jobs-list { height: min(320px, 42vh); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; display: grid; align-content: start; gap: 10px; color: #4b5563; font-weight: 800; padding-right: 6px; scrollbar-gutter: stable; }
+    .ai-panel .jobs-list { height: auto; min-height: 0; padding: 0 8px 10px 0; gap: 8px; }
+    .job-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; background: #fbfcfd; display: grid; gap: 8px; }
+    .ai-panel .job-card { padding: 10px 12px; gap: 6px; }
+    .job-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+    .job-title { color: #111827; font-size: 14px; font-weight: 900; }
+    .job-meta { color: #6b7280; font-size: 12px; line-height: 1.6; font-weight: 800; }
+    .job-status { width: fit-content; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 900; }
+    .job-status.running { background: #eff6ff; color: #1d4ed8; }
+    .job-status.succeeded { background: #ecfdf5; color: #047857; }
+    .job-status.failed { background: #fef2f2; color: #b91c1c; }
     .tab-summary { padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-left: 5px solid #111827; }
     .tab-summary strong { color: #111827; font-size: 16px; white-space: nowrap; }
     .tab-summary span { color: #4b5563; font-size: 13px; line-height: 1.6; font-weight: 800; text-align: right; }
     .create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     label { display: grid; gap: 6px; color: #4b5563; font-size: 13px; font-weight: 900; }
     input, textarea, select { width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; color: #111827; font-size: 14px; font-family: inherit; box-sizing: border-box; }
+    .custom-field { align-content: start; }
+    .custom-input { display: none; }
+    .custom-input.show { display: block; }
     textarea { min-height: 76px; resize: vertical; }
     .span-2 { grid-column: 1 / -1; }
     .candidate { padding: 18px; display: grid; gap: 12px; }
@@ -380,7 +634,12 @@ const html = `<!doctype html>
     .toast.show { display: block; }
     .toast.error { color: #991b1b; background: #fef2f2; border: 1px solid #fecaca; }
     .toast.success { color: #166534; background: #ecfdf5; border: 1px solid #bbf7d0; }
+    .toast.info { color: #1e3a8a; background: #eff6ff; border: 1px solid #bfdbfe; }
     @media (max-width: 760px) {
+      body:has(main.ai-main) { overflow: auto; }
+      main.ai-main { height: auto; min-height: 0; overflow: visible; }
+      .ai-panel { height: auto; overflow: visible; }
+      .ai-panel .jobs-list { max-height: 320px; }
       .topline { align-items: flex-start; flex-direction: column; }
       .title-stack { align-items: flex-start; flex-direction: column; gap: 2px; }
       .workspace-title::after { content: ""; margin: 0; }
@@ -396,10 +655,196 @@ const html = `<!doctype html>
     }
   </style>
   <script>
+    function syncCustomField(root, name) {
+      const select = root.querySelector('[data-custom-select="' + name + '"]');
+      const input = root.querySelector('[data-custom-input="' + name + '"]');
+      const hidden = root.querySelector('[data-custom-hidden="' + name + '"]');
+      if (!select || !input || !hidden) return;
+      const isCustom = select.value === '__custom__';
+      input.classList.toggle('show', isCustom);
+      input.required = isCustom;
+      hidden.value = isCustom ? input.value.trim() : select.value;
+    }
+
+    function syncAllCustomFields(root) {
+      root.querySelectorAll('[data-custom-select]').forEach((select) => {
+        syncCustomField(root, select.dataset.customSelect);
+      });
+    }
+
+    function categoryDirectionMap(select) {
+      try {
+        return JSON.parse(select.dataset.categoryDirections || '{}');
+      } catch (error) {
+        return {};
+      }
+    }
+
+    function setSelectOptions(select, values, selectedValue) {
+      select.innerHTML = '';
+      values.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        if (value === selectedValue) option.selected = true;
+        select.appendChild(option);
+      });
+      const custom = document.createElement('option');
+      custom.value = '__custom__';
+      custom.textContent = '自定义...';
+      select.appendChild(custom);
+    }
+
+    function syncDirectionOptions(form, keepCurrent) {
+      const categoryHidden = form.querySelector('[data-custom-hidden="category"]');
+      const directionSelect = form.querySelector('[data-direction-select]');
+      const directionInput = form.querySelector('[data-custom-input="direction"]');
+      const directionHidden = form.querySelector('[data-custom-hidden="direction"]');
+      if (!categoryHidden || !directionSelect || !directionInput || !directionHidden) return;
+
+      const map = categoryDirectionMap(directionSelect);
+      const category = categoryHidden.value;
+      const values = Array.isArray(map[category]) ? map[category] : [];
+      const current = directionHidden.value || directionInput.value || '';
+      const selected = keepCurrent && values.includes(current)
+        ? current
+        : values[0] || '';
+
+      setSelectOptions(directionSelect, values, selected);
+      if (selected) {
+        directionInput.value = '';
+        directionSelect.value = selected;
+      } else {
+        directionSelect.value = '__custom__';
+      }
+      if (keepCurrent && current && !values.includes(current)) {
+        directionSelect.value = '__custom__';
+        directionInput.value = current;
+      }
+      syncCustomField(form, 'direction');
+    }
+
+    function escapeText(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      }[char]));
+    }
+
+    function jobStatusText(status) {
+      if (status === 'RUNNING') return '生成中';
+      if (status === 'SUCCEEDED') return '已完成';
+      if (status === 'FAILED') return '失败';
+      return status || '未知';
+    }
+
+    const generationJobsRefreshSeconds = 5;
+    let generationJobsCountdown = generationJobsRefreshSeconds;
+    let generationJobsRunningCount = 0;
+    let generationJobsRefreshing = false;
+
+    function updateGenerationJobsRefreshNote() {
+      const note = document.querySelector('#jobs-refresh-note');
+      if (!note) return;
+      const prefix = generationJobsRunningCount > 0
+        ? '有 ' + generationJobsRunningCount + ' 个任务生成中，'
+        : '';
+      note.textContent = prefix + '下次刷新：' + generationJobsCountdown + ' 秒';
+    }
+
+    function resetGenerationJobsCountdown() {
+      generationJobsCountdown = generationJobsRefreshSeconds;
+      updateGenerationJobsRefreshNote();
+    }
+
+    function renderJob(job) {
+      const statusClass = String(job.status || '').toLowerCase();
+      const counts = job.status === 'SUCCEEDED'
+        ? '生成 ' + job.created_count + ' 条，重复 ' + job.duplicate_count + ' 条'
+        : job.status === 'RUNNING'
+          ? '已用时 ' + job.elapsed_seconds + 's'
+          : (job.error || '生成失败');
+      return '<article class="job-card">' +
+        '<div class="job-top">' +
+          '<div class="job-title">' + escapeText(job.category || '-') + ' / ' + escapeText(job.direction || '-') + '</div>' +
+          '<span class="job-status ' + escapeText(statusClass) + '">' + escapeText(jobStatusText(job.status)) + '</span>' +
+        '</div>' +
+        '<div class="job-meta">批次：' + escapeText(job.batch_id || '-') + ' · 数量：' + escapeText(job.requested_count || 0) + ' · ' + escapeText(counts) + '</div>' +
+      '</article>';
+    }
+
+    async function refreshGenerationJobs() {
+      const list = document.querySelector('#generation-jobs-list');
+      if (!list) return;
+      if (generationJobsRefreshing) return;
+      generationJobsRefreshing = true;
+      try {
+        const response = await fetch('/webhook/topic-generation-jobs', {cache: 'no-store'});
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+        list.innerHTML = jobs.length
+          ? jobs.map(renderJob).join('')
+          : '暂无生成任务';
+        generationJobsRunningCount = Number(data.running_count || 0);
+        resetGenerationJobsCountdown();
+      } catch (error) {
+        list.textContent = '读取生成任务失败：' + error.message;
+        resetGenerationJobsCountdown();
+      } finally {
+        generationJobsRefreshing = false;
+      }
+    }
+
+    function startGenerationJobsCountdown() {
+      updateGenerationJobsRefreshNote();
+      setInterval(() => {
+        generationJobsCountdown -= 1;
+        if (generationJobsCountdown <= 0) {
+          refreshGenerationJobs();
+          return;
+        }
+        updateGenerationJobsRefreshNote();
+      }, 1000);
+    }
+
+    document.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const form = target.closest('form');
+      if (!form) return;
+      if (target.matches('[data-custom-select]')) {
+        syncCustomField(form, target.dataset.customSelect);
+        if (target.matches('[data-category-select]')) syncDirectionOptions(form, false);
+      }
+    });
+
+    document.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const form = target.closest('form');
+      if (!form) return;
+      if (target.matches('[data-custom-input]')) syncCustomField(form, target.dataset.customInput);
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('form').forEach((form) => {
+        syncAllCustomFields(form);
+        syncDirectionOptions(form, true);
+      });
+      refreshGenerationJobs();
+      startGenerationJobsCountdown();
+    });
+
     document.addEventListener('submit', async (event) => {
       const form = event.target;
       if (!(form instanceof HTMLFormElement) || form.dataset.inlineAction !== 'true') return;
       event.preventDefault();
+      syncAllCustomFields(form);
+      syncDirectionOptions(form, true);
 
       const button = form.querySelector('button[type="submit"]');
       const toast = document.querySelector('#toast');
@@ -415,6 +860,13 @@ const html = `<!doctype html>
 
       const params = new URLSearchParams(new FormData(form));
       const actionUrl = (form.getAttribute('action') || '/webhook/topic-action') + '?' + params.toString();
+      const isTopicGenerate = form.getAttribute('action') === '/webhook/topic-generate';
+      if (isTopicGenerate) {
+        if (toast) {
+          toast.className = 'toast info show';
+          toast.textContent = '正在提交生成任务...';
+        }
+      }
       try {
         const response = await fetch(actionUrl, {method: 'GET', cache: 'no-store'});
         if (!response.ok) {
@@ -430,15 +882,29 @@ const html = `<!doctype html>
           return;
         }
         const afterSuccess = form.dataset.afterSuccess || '';
+        if (isTopicGenerate) {
+          if (button) {
+            button.disabled = false;
+            button.textContent = button.dataset.originalText || '生成候选';
+          }
+          if (toast) {
+            toast.className = 'toast success show';
+            toast.textContent = '已提交生成任务，后台正在调用 GLM。你可以刷新页面，任务状态会保留在下方。';
+          }
+          refreshGenerationJobs();
+          return;
+        }
         if (afterSuccess) {
           form.reset();
           const audience = form.querySelector('input[name="audience"]');
           const accountKey = form.querySelector('input[name="account_key"]');
-          if (audience) audience.value = '普通短视频用户';
-          if (accountKey) accountKey.value = 'mes';
+          if (audience && form.getAttribute('action') === '/webhook/topic-create') audience.value = '普通短视频用户';
+          if (accountKey && form.getAttribute('action') === '/webhook/topic-create') accountKey.value = 'mes';
           if (toast) {
             toast.className = 'toast success show';
-            toast.textContent = '已加入候选池，正在刷新候选列表...';
+            toast.textContent = isTopicGenerate
+              ? '已生成候选，正在刷新候选列表...'
+              : '已加入候选池，正在刷新候选列表...';
           }
           setTimeout(() => {
             window.location.href = afterSuccess;
@@ -471,6 +937,7 @@ const html = `<!doctype html>
         </nav>
       </div>
       <nav class="tabs">
+        ${tab('AI_GENERATE', 'AI生成')}
         ${tab('CREATE', '手动录入')}
         ${tab('ACTIVE', '候选池', counts.ACTIVE)}
         ${tab('PROMOTED', '已入池', counts.PROMOTED)}
@@ -480,10 +947,11 @@ const html = `<!doctype html>
       </nav>
     </div>
   </header>
-  <main>
+  <main class="${activeTab === 'AI_GENERATE' ? 'ai-main' : ''}">
+    ${activeTab === 'AI_GENERATE' ? aiPanel : ''}
     ${activeTab === 'CREATE' ? createPanel : ''}
-    ${activeTab === 'CREATE' ? '' : intro}
-    ${activeTab === 'CREATE' ? '' : (rows.length ? cards : '<div class="none">当前分类没有候选选题</div>')}
+    ${activeTab === 'AI_GENERATE' || activeTab === 'CREATE' ? '' : intro}
+    ${activeTab === 'AI_GENERATE' || activeTab === 'CREATE' ? '' : (rows.length ? cards : '<div class="none">当前分类没有候选选题</div>')}
   </main>
 </body>
 </html>`;

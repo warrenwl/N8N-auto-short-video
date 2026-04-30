@@ -1,0 +1,450 @@
+{
+  "name": "10_自动巡检与恢复_生成中任务",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-auto-recovery-10",
+      "name": "Schedule Trigger - Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        120
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger-auto-recovery-10",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- V4 automatic stalled-task recovery.\n-- n8n Postgres node: Execute Query\n-- Finds stale generation tasks, performs a conservative recovery state change,\n-- writes video_task_events, and returns webhook trigger URLs for recovered rows.\n\nWITH thresholds AS (\n  SELECT * FROM (VALUES\n    ('GENERATING_SCRIPT'::text, 5 * 60, 'script'::text, 'IDEA'::text, 'RECOVERY_REQUESTED'::text, 'video-script-start'::text, '自动恢复：脚本生成超时，退回 IDEA 并重新请求 GLM'::text),\n    ('SCRIPT_READY'::text, 5 * 60, 'render'::text, 'SCRIPT_READY'::text, 'RECOVERY_REQUESTED'::text, 'video-render-start'::text, '自动恢复：等待渲染超时，重新触发 06'::text),\n    ('GENERATING_AUDIO'::text, 15 * 60, 'audio'::text, 'SCRIPT_READY'::text, 'RECOVERY_REQUESTED'::text, 'video-render-start'::text, '自动恢复：语音生成超时，退回脚本完成状态并重新生成语音'::text),\n    ('AUDIO_READY'::text, 10 * 60, 'cover'::text, 'AUDIO_READY'::text, 'COVER_RECOVERY_REQUESTED'::text, 'video-rerender-cover'::text, '自动恢复：语音完成后等待超时，继续生成封面'::text),\n    ('GENERATING_COVER'::text, 20 * 60, 'cover'::text, 'AUDIO_READY'::text, 'COVER_RECOVERY_REQUESTED'::text, 'video-rerender-cover'::text, '自动恢复：封面生成超时，复用语音重新生成封面'::text),\n    ('COVER_READY'::text, 10 * 60, 'video'::text, 'AUDIO_READY'::text, 'VIDEO_RERENDER_REQUESTED'::text, 'video-rerender-video-only'::text, '自动恢复：封面完成后等待超时，复用素材重新合成视频'::text),\n    ('RENDERING_VIDEO'::text, 20 * 60, 'video'::text, 'AUDIO_READY'::text, 'VIDEO_RERENDER_REQUESTED'::text, 'video-rerender-video-only'::text, '自动恢复：视频合成超时，复用素材重新合成视频'::text)\n  ) AS t(status, threshold_seconds, stage, next_status, review_status, webhook_path, message)\n), candidates AS (\n  SELECT\n    vt.*,\n    th.stage,\n    th.next_status,\n    th.review_status AS next_review_status,\n    th.webhook_path,\n    th.message,\n    th.threshold_seconds,\n    EXTRACT(EPOCH FROM (\n      now() - COALESCE(\n        CASE\n          WHEN vt.status = 'GENERATING_AUDIO' THEN vt.audio_started_at::timestamptz\n          WHEN vt.status = 'GENERATING_COVER' THEN vt.media_started_at::timestamptz\n          WHEN vt.status = 'RENDERING_VIDEO' THEN vt.render_started_at::timestamptz\n          ELSE NULL\n        END,\n        vt.updated_at::timestamptz,\n        vt.created_at::timestamptz\n      )\n    ))::integer AS stale_seconds\n  FROM video_topics vt\n  JOIN thresholds th ON th.status = vt.status\n  WHERE vt.auto_recovery_disabled = false\n    AND vt.review_token IS NOT NULL\n), stale AS (\n  SELECT *\n  FROM candidates\n  WHERE stale_seconds >= threshold_seconds\n  ORDER BY updated_at ASC\n  LIMIT 5\n  FOR UPDATE SKIP LOCKED\n), to_recover AS (\n  SELECT * FROM stale WHERE auto_recovery_attempts < 2\n), recovered AS (\n  UPDATE video_topics vt\n  SET\n    status = tr.next_status,\n    review_status = tr.next_review_status,\n    review_note = tr.message,\n    review_action_source = 'auto_recovery_v4',\n    auto_recovery_attempts = vt.auto_recovery_attempts + 1,\n    last_auto_recovery_at = now(),\n    title = CASE WHEN tr.next_status = 'IDEA' THEN NULL ELSE vt.title END,\n    hook = CASE WHEN tr.next_status = 'IDEA' THEN NULL ELSE vt.hook END,\n    script = CASE WHEN tr.next_status = 'IDEA' THEN NULL ELSE vt.script END,\n    cover_text = CASE WHEN tr.next_status = 'IDEA' THEN NULL ELSE vt.cover_text END,\n    hashtags = CASE WHEN tr.next_status = 'IDEA' THEN '[]'::jsonb ELSE vt.hashtags END,\n    shots_json = CASE WHEN tr.next_status = 'IDEA' THEN '[]'::jsonb ELSE vt.shots_json END,\n    risk_check = CASE WHEN tr.next_status = 'IDEA' THEN '{}'::jsonb ELSE vt.risk_check END,\n    template_type = CASE WHEN tr.next_status = 'IDEA' THEN 'knowledge' ELSE vt.template_type END,\n    audio_started_at = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_started_at END,\n    audio_finished_at = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_finished_at END,\n    voice_path = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.voice_path END,\n    audio_duration = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_duration END,\n    audio_engine = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_engine END,\n    media_started_at = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.media_started_at END,\n    media_finished_at = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.media_finished_at END,\n    cover_path = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.cover_path END,\n    shot_images_json = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.shot_images_json END,\n    media_engine = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.media_engine END,\n    media_manifest = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.media_manifest END,\n    comfyui_prompt_ids = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.comfyui_prompt_ids END,\n    render_started_at = CASE WHEN tr.next_status IN ('AUDIO_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.render_started_at END,\n    render_finished_at = CASE WHEN tr.next_status IN ('AUDIO_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.render_finished_at END,\n    video_path = CASE WHEN tr.next_status IN ('AUDIO_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.video_path END,\n    subtitle_path = CASE WHEN tr.next_status IN ('AUDIO_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.subtitle_path END,\n    clips_json = CASE WHEN tr.next_status IN ('AUDIO_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.clips_json END,\n    render_manifest = CASE WHEN tr.next_status IN ('AUDIO_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.render_manifest END,\n    error = NULL,\n    updated_at = now()\n  FROM to_recover tr\n  WHERE vt.id = tr.id\n  RETURNING\n    vt.id,\n    vt.topic,\n    vt.title,\n    vt.status,\n    vt.review_token,\n    vt.auto_recovery_attempts,\n    tr.status AS old_status,\n    tr.stage,\n    tr.webhook_path,\n    tr.message,\n    tr.stale_seconds\n), failed AS (\n  UPDATE video_topics vt\n  SET\n    status = 'FAILED',\n    review_status = 'AUTO_RECOVERY_FAILED',\n    review_note = '自动恢复超过 2 次仍超时，已标记失败，请人工检查',\n    review_action_source = 'auto_recovery_v4',\n    error = '自动恢复超过 2 次仍超时，已标记失败，请人工检查',\n    auto_recovery_disabled = true,\n    last_auto_recovery_at = now(),\n    updated_at = now()\n  FROM stale st\n  WHERE vt.id = st.id\n    AND st.auto_recovery_attempts >= 2\n  RETURNING\n    vt.id,\n    vt.topic,\n    vt.title,\n    vt.status,\n    vt.review_token,\n    vt.auto_recovery_attempts,\n    st.status AS old_status,\n    st.stage,\n    NULL::text AS webhook_path,\n    '自动恢复超过 2 次仍超时，已标记失败，请人工检查'::text AS message,\n    st.stale_seconds\n), event_rows AS (\n  SELECT 'AUTO_RECOVERY'::text AS event_type, * FROM recovered\n  UNION ALL\n  SELECT 'AUTO_RECOVERY_FAILED'::text AS event_type, * FROM failed\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id,\n    event_type,\n    stage,\n    old_status,\n    new_status,\n    actor,\n    source,\n    message,\n    metadata\n  )\n  SELECT\n    id,\n    event_type,\n    stage,\n    old_status,\n    status,\n    'n8n',\n    '10_auto_recovery_workflow',\n    message,\n    jsonb_build_object(\n      'attempts', auto_recovery_attempts,\n      'stale_seconds', stale_seconds,\n      'webhook_path', webhook_path\n    )\n  FROM event_rows\n  RETURNING 1\n)\nSELECT\n  er.event_type,\n  er.id,\n  er.topic,\n  er.title,\n  er.old_status,\n  er.status AS new_status,\n  er.stage,\n  er.review_token,\n  er.auto_recovery_attempts,\n  er.stale_seconds,\n  er.message,\n  er.webhook_path,\n  CASE\n    WHEN er.webhook_path IS NULL THEN NULL\n    ELSE 'http://localhost:5678/webhook/' || er.webhook_path || '?task_id=' || er.id::text || '&token=' || er.review_token\n  END AS trigger_url\nFROM event_rows er\nORDER BY er.event_type, er.stage, er.id;\n"
+      },
+      "id": "postgres-auto-recover-stalled-10",
+      "name": "Postgres - Auto Recover Stalled Tasks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        320,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-auto-recovery-row",
+              "leftValue": "={{ $json.event_type }}",
+              "rightValue": "AUTO_RECOVERY",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-auto-recovery-10",
+      "name": "IF - Needs Recovery Trigger",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.trigger_url }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-trigger-recovery-webhook-10",
+      "name": "HTTP Request - Trigger Recovery Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Auto Recovery Alert\n// Input: AUTO_RECOVERY_FAILED rows returned by sql/39_auto_recover_stalled_tasks.sql.\n\nfunction env(name, fallback = '') {\n  try {\n    if (typeof $env !== 'undefined' && $env[name]) return $env[name];\n  } catch (error) {}\n  return fallback;\n}\n\nconst serverchanSendKey = env('SERVERCHAN_SENDKEY', '').trim();\nconst serverchanUrl = serverchanSendKey\n  ? `https://sctapi.ftqq.com/${serverchanSendKey}.send`\n  : 'http://publish-helper:8010/serverchan-skip';\nconst reviewUrl = `${env('PUBLIC_N8N_BASE_URL', 'http://localhost:5678').replace(/\\/$/, '')}/webhook/video-review-list?status=GENERATING`;\n\nreturn $input.all().map((item) => {\n  const row = item.json || {};\n  const title = `自动恢复失败：${row.title || row.topic || row.id}`;\n  const desp = [\n    '# 自动恢复失败',\n    '',\n    `任务：${row.title || row.topic || row.id}`,\n    '',\n    `任务 ID：${row.id}`,\n    '',\n    `原状态：${row.old_status || ''}`,\n    '',\n    `当前状态：${row.new_status || row.status || 'FAILED'}`,\n    '',\n    `阶段：${row.stage || ''}`,\n    '',\n    `自动恢复次数：${row.auto_recovery_attempts ?? ''}`,\n    '',\n    `卡住时长：${row.stale_seconds ?? ''} 秒`,\n    '',\n    row.message || '自动恢复超过上限，请人工检查。',\n    '',\n    `[打开审核中心生成中 Tab](${reviewUrl})`,\n  ].join('\\n');\n\n  return {\n    json: {\n      ...row,\n      serverchan_url: serverchanUrl,\n      serverchan_title: title,\n      serverchan_desp: desp,\n      serverchan_enabled: Boolean(serverchanSendKey),\n    },\n  };\n});\n"
+      },
+      "id": "code-build-auto-recovery-alert-10",
+      "name": "Code - Build Auto Recovery Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.serverchan_url }}",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title",
+              "value": "={{ $json.serverchan_title }}"
+            },
+            {
+              "name": "desp",
+              "value": "={{ $json.serverchan_desp }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "http-send-auto-recovery-alert-10",
+      "name": "HTTP Request - Send Auto Recovery Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Normalize Auto Recovery Alert Response\n\nreturn $input.all().map((item) => {\n  const res = item.json || {};\n  let serverchanEnabled = true;\n  try {\n    serverchanEnabled = $('Code - Build Auto Recovery Alert').first().json.serverchan_enabled !== false;\n  } catch (error) {}\n\n  const ok = res && (res.code === 0 || res.errno === 0 || res.message === 'success' || res.data);\n  return {\n    json: {\n      ...res,\n      alert_status: serverchanEnabled ? (ok ? 'SENT' : 'SENT_OR_UNKNOWN') : 'SKIPPED_NO_SENDKEY',\n      alert_response_json: JSON.stringify(res || {}),\n    },\n  };\n});\n"
+      },
+      "id": "code-normalize-auto-recovery-alert-10",
+      "name": "Code - Normalize Auto Recovery Alert Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "width": 1540,
+        "height": 190,
+        "color": 4,
+        "content": "## V4 自动巡检路径：生成中任务超时恢复 + 产物修复\n\n每 5 分钟执行一次，也可手动执行。工作流会并行做两件事：\n- 产物修复：检查 `GENERATING_COVER / RENDERING_VIDEO` 是否已有 `cover.png/media_manifest.json/final.mp4`，如果文件已落盘但数据库没回写，会先补库并继续下游。\n- 超时恢复：扫描生成中状态，按 V1/V2 阈值最多自动恢复 2 次，并写入 `video_task_events`。"
+      },
+      "id": "note-auto-recovery-scan-10",
+      "name": "说明 - 自动巡检路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "width": 980,
+        "height": 170,
+        "color": 6,
+        "content": "## 失败提醒路径\n\n同一任务自动恢复达到 2 次后仍再次超时，会被标记为 `FAILED`，禁用后续自动恢复，并通过 Server酱推送提醒。人工仍可在审核中心查看最近事件和失败原因。"
+      },
+      "id": "note-auto-recovery-alert-10",
+      "name": "说明 - 自动恢复失败提醒",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        900,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- V4.1: list tasks that may have finished local artifacts but missed DB writeback.\n-- n8n Postgres node: Execute Query\n\nSELECT\n  id,\n  topic,\n  title,\n  status,\n  review_token,\n  cover_path,\n  video_path,\n  media_started_at,\n  render_started_at,\n  updated_at,\n  EXTRACT(EPOCH FROM (\n    now() - COALESCE(\n      CASE\n        WHEN status = 'GENERATING_COVER' THEN media_started_at::timestamptz\n        WHEN status = 'RENDERING_VIDEO' THEN render_started_at::timestamptz\n        ELSE NULL\n      END,\n      updated_at::timestamptz,\n      created_at::timestamptz\n    )\n  ))::integer AS stale_seconds\nFROM video_topics\nWHERE auto_recovery_disabled = false\n  AND review_token IS NOT NULL\n  AND status IN ('GENERATING_COVER', 'RENDERING_VIDEO')\n  AND EXTRACT(EPOCH FROM (\n    now() - COALESCE(\n      CASE\n        WHEN status = 'GENERATING_COVER' THEN media_started_at::timestamptz\n        WHEN status = 'RENDERING_VIDEO' THEN render_started_at::timestamptz\n        ELSE NULL\n      END,\n      updated_at::timestamptz,\n      created_at::timestamptz\n    )\n  )) >= 60\nORDER BY updated_at ASC\nLIMIT 10;\n"
+      },
+      "id": "postgres-list-artifact-repair-candidates-10",
+      "name": "Postgres - List Artifact Repair Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        320,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Inspect Existing Artifacts\n// Reads /data/output/<task_id> to repair cases where worker finished files\n// but n8n restarted before PostgreSQL writeback.\n\nconst fs = require('fs');\n\nfunction readJson(filePath, fallback) {\n  try {\n    return JSON.parse(fs.readFileSync(filePath, 'utf8'));\n  } catch (error) {\n    return fallback;\n  }\n}\n\nfunction exists(filePath) {\n  try {\n    return fs.existsSync(filePath) && fs.statSync(filePath).size > 0;\n  } catch (error) {\n    return false;\n  }\n}\n\nfunction dataPath(apiPath) {\n  if (!apiPath) return '';\n  return String(apiPath).replace(/^\\/data\\//, '/data/');\n}\n\nfunction jsonString(value, fallback) {\n  return JSON.stringify(value ?? fallback);\n}\n\nconst outputRoot = '/data/output';\n\nfunction joinPath(...parts) {\n  return parts\n    .map((part) => String(part || '').replace(/^\\/+|\\/+$/g, ''))\n    .filter(Boolean)\n    .join('/')\n    .replace(/^/, '/');\n}\n\nreturn $input.all().flatMap((item) => {\n  const row = item.json || {};\n  const taskId = String(row.id || '').trim();\n  if (!taskId) return [];\n\n  const taskDir = joinPath(outputRoot, taskId);\n  const mediaManifestPath = joinPath(taskDir, 'media_manifest.json');\n  const coverPath = joinPath(taskDir, 'cover.png');\n  const finalPath = joinPath(taskDir, 'final.mp4');\n  const manifestPath = joinPath(taskDir, 'manifest.json');\n\n  if (row.status === 'GENERATING_COVER' && exists(mediaManifestPath) && exists(coverPath)) {\n    const mediaManifest = readJson(mediaManifestPath, {});\n    const apiCoverPath = mediaManifest.cover_path || `/data/output/${taskId}/cover.png`;\n    return [{\n      json: {\n        task_id: taskId,\n        old_status: row.status,\n        repair_kind: 'cover_completed',\n        next_status: 'AUDIO_READY',\n        review_status: 'VIDEO_RERENDER_REQUESTED',\n        trigger_url: `http://localhost:5678/webhook/video-rerender-video-only?task_id=${encodeURIComponent(taskId)}&token=${encodeURIComponent(row.review_token || '')}`,\n        message: '自动产物修复：封面文件已生成但数据库未回写，补齐封面字段并仅重新合成视频',\n        cover_path: apiCoverPath,\n        video_path: '',\n        subtitle_path: '',\n        clips_json: '[]',\n        render_manifest_json: '{}',\n        voice_path: '',\n        audio_duration: '',\n        audio_engine: '',\n        shot_images_json: '[]',\n        media_engine: mediaManifest.engine || 'ComfyUI',\n        media_manifest_json: jsonString(mediaManifest, {}),\n        comfyui_prompt_ids_json: jsonString(mediaManifest.prompt_ids || {}, {}),\n      },\n    }];\n  }\n\n  if (row.status === 'RENDERING_VIDEO' && exists(finalPath) && exists(manifestPath)) {\n    const manifest = readJson(manifestPath, {});\n    const mediaManifest = manifest.media_manifest || readJson(mediaManifestPath, {});\n    const remotionManifest = manifest.remotion_manifest || readJson(joinPath(taskDir, 'remotion_manifest.json'), {});\n    return [{\n      json: {\n        task_id: taskId,\n        old_status: row.status,\n        repair_kind: 'video_completed',\n        next_status: 'NEED_REVIEW',\n        review_status: '',\n        trigger_url: '',\n        message: '自动产物修复：最终视频已生成但数据库未回写，补齐成片字段并进入待审核',\n        cover_path: manifest.cover_path || mediaManifest.cover_path || `/data/output/${taskId}/cover.png`,\n        video_path: manifest.video_path || `/data/output/${taskId}/final.mp4`,\n        subtitle_path: manifest.subtitle_path || `/data/output/${taskId}/subtitles.srt`,\n        clips_json: jsonString(manifest.clips || [], []),\n        render_manifest_json: jsonString(remotionManifest, {}),\n        voice_path: manifest.voice_path || '',\n        audio_duration: manifest.audio_duration || '',\n        audio_engine: manifest.audio_engine || '',\n        shot_images_json: jsonString(manifest.images || [], []),\n        media_engine: manifest.media_engine || mediaManifest.engine || '',\n        media_manifest_json: jsonString(mediaManifest, {}),\n        comfyui_prompt_ids_json: jsonString(manifest.comfyui_prompt_ids || mediaManifest.prompt_ids || {}, {}),\n      },\n    }];\n  }\n\n  return [];\n});\n"
+      },
+      "id": "code-inspect-existing-artifacts-10",
+      "name": "Code - Inspect Existing Artifacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- V4.1: apply DB repair for artifacts that already exist on disk.\n-- Query parameters are provided by n8n Code - Inspect Existing Artifacts.\n\nWITH input AS (\n  SELECT\n    $1::uuid AS task_id,\n    $2::text AS old_status,\n    $3::text AS repair_kind,\n    $4::text AS next_status,\n    NULLIF($5::text, '') AS review_status,\n    NULLIF($6::text, '') AS trigger_url,\n    $7::text AS message,\n    NULLIF($8::text, '') AS cover_path,\n    NULLIF($9::text, '') AS video_path,\n    NULLIF($10::text, '') AS subtitle_path,\n    COALESCE(NULLIF($11::text, '')::jsonb, '[]'::jsonb) AS clips_json,\n    COALESCE(NULLIF($12::text, '')::jsonb, '{}'::jsonb) AS render_manifest,\n    NULLIF($13::text, '') AS voice_path,\n    NULLIF($14::text, '')::double precision AS audio_duration,\n    NULLIF($15::text, '') AS audio_engine,\n    COALESCE(NULLIF($16::text, '')::jsonb, '[]'::jsonb) AS shot_images_json,\n    NULLIF($17::text, '') AS media_engine,\n    COALESCE(NULLIF($18::text, '')::jsonb, '{}'::jsonb) AS media_manifest,\n    COALESCE(NULLIF($19::text, '')::jsonb, '{}'::jsonb) AS comfyui_prompt_ids\n), updated AS (\n  UPDATE video_topics vt\n  SET\n    status = input.next_status,\n    review_status = input.review_status,\n    review_note = input.message,\n    review_action_source = 'auto_artifact_repair_v4_1',\n    cover_path = COALESCE(input.cover_path, vt.cover_path),\n    video_path = CASE WHEN input.next_status = 'NEED_REVIEW' THEN input.video_path ELSE vt.video_path END,\n    subtitle_path = CASE WHEN input.next_status = 'NEED_REVIEW' THEN input.subtitle_path ELSE vt.subtitle_path END,\n    clips_json = CASE WHEN input.next_status = 'NEED_REVIEW' THEN input.clips_json ELSE vt.clips_json END,\n    render_manifest = CASE WHEN input.next_status = 'NEED_REVIEW' THEN input.render_manifest ELSE vt.render_manifest END,\n    voice_path = COALESCE(input.voice_path, vt.voice_path),\n    audio_duration = COALESCE(input.audio_duration, vt.audio_duration),\n    audio_engine = COALESCE(input.audio_engine, vt.audio_engine),\n    shot_images_json = CASE WHEN input.next_status = 'NEED_REVIEW' THEN input.shot_images_json ELSE vt.shot_images_json END,\n    media_engine = COALESCE(input.media_engine, vt.media_engine),\n    media_manifest = CASE WHEN input.media_manifest <> '{}'::jsonb THEN input.media_manifest ELSE vt.media_manifest END,\n    comfyui_prompt_ids = CASE WHEN input.comfyui_prompt_ids <> '{}'::jsonb THEN input.comfyui_prompt_ids ELSE vt.comfyui_prompt_ids END,\n    media_finished_at = CASE\n      WHEN input.repair_kind IN ('cover_completed', 'video_completed') THEN COALESCE(vt.media_finished_at, now())\n      ELSE vt.media_finished_at\n    END,\n    render_finished_at = CASE\n      WHEN input.repair_kind = 'video_completed' THEN COALESCE(vt.render_finished_at, now())\n      ELSE NULL\n    END,\n    error = NULL,\n    last_auto_recovery_at = now(),\n    updated_at = now()\n  FROM input\n  WHERE vt.id = input.task_id\n    AND vt.status = input.old_status\n    AND vt.auto_recovery_disabled = false\n  RETURNING\n    vt.id,\n    vt.topic,\n    vt.title,\n    input.old_status,\n    vt.status AS new_status,\n    input.repair_kind,\n    input.trigger_url,\n    input.message,\n    vt.review_token\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id,\n    event_type,\n    stage,\n    old_status,\n    new_status,\n    actor,\n    source,\n    message,\n    metadata\n  )\n  SELECT\n    id,\n    'AUTO_ARTIFACT_REPAIR',\n    CASE WHEN repair_kind = 'cover_completed' THEN 'cover' ELSE 'video' END,\n    old_status,\n    new_status,\n    'n8n',\n    '10_auto_recovery_workflow',\n    message,\n    jsonb_build_object('repair_kind', repair_kind, 'trigger_url', trigger_url)\n  FROM updated\n  RETURNING 1\n)\nSELECT\n  'AUTO_ARTIFACT_REPAIR'::text AS event_type,\n  id,\n  topic,\n  title,\n  old_status,\n  new_status,\n  repair_kind,\n  trigger_url,\n  message,\n  review_token\nFROM updated;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.task_id, $json.old_status, $json.repair_kind, $json.next_status, $json.review_status || '', $json.trigger_url || '', $json.message, $json.cover_path || '', $json.video_path || '', $json.subtitle_path || '', $json.clips_json || '[]', $json.render_manifest_json || '{}', $json.voice_path || '', String($json.audio_duration || ''), $json.audio_engine || '', $json.shot_images_json || '[]', $json.media_engine || '', $json.media_manifest_json || '{}', $json.comfyui_prompt_ids_json || '{}' ] }}"
+        }
+      },
+      "id": "postgres-apply-artifact-repair-10",
+      "name": "Postgres - Apply Artifact Repair",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        960,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-artifact-repair-trigger",
+              "leftValue": "={{ Boolean($json.trigger_url) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-artifact-repair-has-trigger-10",
+      "name": "IF - Artifact Repair Has Trigger",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.trigger_url }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "http-trigger-artifact-repair-webhook-10",
+      "name": "HTTP Request - Trigger Artifact Repair Webhook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        -160
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger - Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Auto Recover Stalled Tasks",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Postgres - List Artifact Repair Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Auto Recover Stalled Tasks",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Postgres - List Artifact Repair Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Auto Recover Stalled Tasks": {
+      "main": [
+        [
+          {
+            "node": "IF - Needs Recovery Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Needs Recovery Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Trigger Recovery Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code - Build Auto Recovery Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Auto Recovery Alert": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Send Auto Recovery Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Send Auto Recovery Alert": {
+      "main": [
+        [
+          {
+            "node": "Code - Normalize Auto Recovery Alert Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - List Artifact Repair Candidates": {
+      "main": [
+        [
+          {
+            "node": "Code - Inspect Existing Artifacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Inspect Existing Artifacts": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Apply Artifact Repair",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Apply Artifact Repair": {
+      "main": [
+        [
+          {
+            "node": "IF - Artifact Repair Has Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Artifact Repair Has Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Trigger Artifact Repair Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-04-30T00:00:00.000Z",
+  "versionId": "v4-auto-recovery",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "videoAgentAutoRecoveryMvp10",
+  "description": "V4 自动巡检与恢复：扫描超时生成中任务，按阶段自动恢复，超过上限后标记失败并推送提醒。"
+}

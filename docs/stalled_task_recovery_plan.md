@@ -32,13 +32,13 @@
 - 06 新增“复用语音、重新封面+合成”入口 `/webhook/video-rerender-cover`，不影响现有 01/06 手动执行和现有重渲染入口。
 - README 与 workflow sticky note 同步更新。
 
-## V3：任务事件日志
+## V3：任务事件日志（已完成）
 
 - 新增 `video_task_events` 表。
 - 记录阶段开始/完成、人工补救、自动触发、失败原因。
 - 审核中心可展示最近事件，方便排查卡住原因。
 
-## V4：自动巡检与自动恢复
+## V4：自动巡检与自动恢复（已完成）
 
 - 新增定时巡检工作流。
 - 自动扫描超时任务并按策略重试。
@@ -48,3 +48,7 @@
 
 - V1 已上线。
 - V2 已上线：审核中心会按当前阶段展示对应补救按钮，06 已增加封面恢复支路。
+- V2 风险修复已完成：06 会向 worker 显式传递 `existing_voice_path / existing_audio_duration / existing_audio_engine`；worker 在缺少 `audio_manifest.json` 时会优先用已有语音重建最小音频 manifest，不再因为 manifest 被清理而重新 TTS。
+- V3 已上线：新增 `sql/37_create_video_task_events.sql`，01/06/08 的关键状态变更会写入 `video_task_events`；审核中心卡片会展示最近 5 条事件，便于定位任务卡在哪一步、是否由人工补救触发。
+- V4 已上线：新增 `sql/38_add_auto_recovery_fields.sql`、`sql/39_auto_recover_stalled_tasks.sql` 和 `10_自动巡检与恢复_生成中任务`。工作流每 5 分钟扫描超时生成中任务，最多自动恢复 2 次；超过上限后标记 `FAILED`、禁用后续自动恢复并推送 Server酱提醒。
+- V4.1 已上线：10 工作流新增产物探测修复。若 `GENERATING_COVER` 已存在 `cover.png/media_manifest.json` 但数据库未回写，会自动补齐封面字段并触发仅重新合成视频；若 `RENDERING_VIDEO` 已存在 `final.mp4/manifest.json` 但数据库未回写，会自动补齐成片字段并进入 `NEED_REVIEW`。

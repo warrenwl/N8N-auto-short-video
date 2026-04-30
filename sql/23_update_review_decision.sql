@@ -74,6 +74,48 @@ WITH updated AS (
     reviewed_at,
     approved_at,
     rejected_at
+), event_insert AS (
+  INSERT INTO video_task_events (
+    video_topic_id,
+    event_type,
+    stage,
+    old_status,
+    new_status,
+    actor,
+    source,
+    message,
+    metadata
+  )
+  SELECT
+    id,
+    CASE
+      WHEN $1 = 'FAILED' THEN 'FAILURE'
+      WHEN $2 IN ('RERENDER_REQUESTED', 'VIDEO_RERENDER_REQUESTED', 'RECOVERY_REQUESTED', 'COVER_RECOVERY_REQUESTED', 'MANUAL_FAILED') THEN 'HUMAN_RECOVERY'
+      WHEN $1 IN ('APPROVED', 'REJECTED', 'NEED_REVIEW') THEN 'HUMAN_REVIEW'
+      ELSE 'HUMAN_ACTION'
+    END,
+    CASE
+      WHEN $2 = 'RECOVERY_REQUESTED' AND $1 = 'IDEA' THEN 'script'
+      WHEN $2 = 'RECOVERY_REQUESTED' AND $1 = 'SCRIPT_READY' THEN 'audio'
+      WHEN $2 = 'COVER_RECOVERY_REQUESTED' THEN 'cover'
+      WHEN $2 = 'VIDEO_RERENDER_REQUESTED' THEN 'video'
+      WHEN $2 = 'RERENDER_REQUESTED' THEN 'render'
+      WHEN $1 IN ('APPROVED', 'REJECTED', 'NEED_REVIEW') THEN 'review'
+      WHEN $1 = 'FAILED' THEN 'failure'
+      ELSE 'manual'
+    END,
+    NULL::text,
+    status,
+    COALESCE(NULLIF($4, ''), 'review_center'),
+    '08_review_list_workflow',
+    COALESCE(NULLIF($3, ''), $2, $1),
+    jsonb_build_object(
+      'review_status', $2,
+      'review_note', NULLIF($3, ''),
+      'action_source', $4
+    )
+  FROM updated
+  RETURNING 1
 ), existing AS (
   SELECT
     false AS success,

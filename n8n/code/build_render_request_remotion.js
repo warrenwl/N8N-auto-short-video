@@ -47,6 +47,9 @@ shots = shots.map((shot, index) => ({
 const title = String(row.title || row.topic || 'AI 短视频');
 const coverText = String(row.cover_text || row.title || row.topic || '');
 const templateType = String(row.template_type || row.remotion_template_type || 'knowledge');
+const existingVoicePath = row.voice_path ? String(row.voice_path) : null;
+const existingAudioDuration = Number(row.audio_duration || 0);
+const existingAudioEngine = row.audio_engine ? String(row.audio_engine) : null;
 
 return [
   {
@@ -88,6 +91,9 @@ return [
       render_engine: 'remotion',
       template_type: templateType,
       remotion_renderer_url: 'http://host.docker.internal:3001',
+      existing_voice_path: existingVoicePath,
+      existing_audio_duration: Number.isFinite(existingAudioDuration) && existingAudioDuration > 0 ? existingAudioDuration : null,
+      existing_audio_engine: existingAudioEngine,
     },
   },
 ];

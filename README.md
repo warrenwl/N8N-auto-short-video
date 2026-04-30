@@ -73,15 +73,16 @@ IDEA → GENERATING_SCRIPT → SCRIPT_READY → MEDIA_READY → RENDERED → NEE
 n8n/workflow/available/
 ```
 
-当前已跑通主线为 `00 -> 01 -> 06 -> 08 -> 09`：
+当前已跑通主线为 `00 -> 01 -> 06 -> 08 -> 09`，并有 `10` 自动巡检兜底：
 
-- `00_topic_center_workflow.json`：选题中心，人工新增候选选题，确认入池为 `video_topics(IDEA)`。
+- `00_topic_center_workflow.json`：选题中心，支持人工录入和 GLM 自动生成候选选题，确认入池为 `video_topics(IDEA)`。
 - `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`；保留手动触发，同时提供 `/webhook/video-script-start` 给选题中心单条“一键生成视频”按钮调用。
 - `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；保留手动触发，同时提供 `/webhook/video-render-start` 承接 01 完成后的自动首渲染，也承接审核中心的已拒绝重渲染和仅重新合成视频。
-- `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染。
+- `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染；卡片会展示最近任务事件，便于排查卡住原因。
 - `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送 Server酱微信提醒。
+- `10_auto_recovery_workflow.json`：生成中任务自动巡检，每 5 分钟扫描超时任务并按阶段自动恢复。
 
-`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入和确认入池最小闭环；`/webhook/topic-center` 中人工录入是独立 Tab，来源固定为 `manual`，批量导入和 GLM 生成后续会作为独立入口补充。`已入池` Tab 中 `IDEA` 状态视频会显示“生成视频”按钮，点击后调用 01 的 `/webhook/video-script-start`，01 写回 `SCRIPT_READY` 后自动调用 06 的 `/webhook/video-render-start`，最终进入 `NEED_REVIEW`。
+`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入、GLM 生成候选和确认入池闭环；`/webhook/topic-center` 中 `AI生成` Tab 会调用 `/webhook/topic-generate`，生成结果只写入 `topic_candidates(NEW, source=glm)`，不会自动入池或自动生成视频。`手动录入` Tab 来源固定为 `manual`。`已入池` Tab 中 `IDEA` 状态视频会显示“生成视频”按钮，点击后调用 01 的 `/webhook/video-script-start`，01 写回 `SCRIPT_READY` 后自动调用 06 的 `/webhook/video-render-start`，最终进入 `NEED_REVIEW`。
 
 后续新增的 `/webhook/topic-center` 需要和现有 `/webhook/video-review-list` 互相预留跳转入口：选题中心可直接进入视频审核中心，视频审核中心也可直接回到选题中心。
 
@@ -89,11 +90,12 @@ n8n/workflow/available/
 
 | 文件 | 说明 |
 |------|------|
-| `available/00_topic_center_workflow.json` | 选题中心：候选池 → 确认入池 → `video_topics(IDEA)` |
+| `available/00_topic_center_workflow.json` | 选题中心：AI生成/人工录入 → 候选池 → 确认入池 → `video_topics(IDEA)` |
 | `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库；支持 `/webhook/video-script-start` 单条触发 |
 | `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；支持 `/webhook/video-render-start` 单条首渲染，已拒绝视频可跳过封面重渲染，也可仅重新合成视频 |
 | `available/08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
 | `available/09_douyin_semiauto_publish_workflow.json` | 抖音半自动发布：发布包 → 微信提醒 → 手动确认回写 |
+| `available/10_auto_recovery_workflow.json` | 自动巡检与恢复：扫描超时生成中任务，按阶段自动恢复，超过上限后标记失败并提醒 |
 | `00_topic_center_workflow.json` | 当前可用工作流的根目录副本 |
 | `01_postgres_script_workflow.json` | 当前可用工作流的根目录副本 |
 | `02_postgres_render_workflow.json` | 单镜头渲染 |
@@ -104,8 +106,43 @@ n8n/workflow/available/
 | `06_split_render_workflow.json` | 当前可用工作流的根目录副本 |
 | `08_review_list_workflow.json` | 当前可用工作流的根目录副本 |
 | `09_douyin_semiauto_publish_workflow.json` | 当前可用工作流的根目录副本 |
+| `10_auto_recovery_workflow.json` | 当前可用工作流的根目录副本 |
 
 工作流通过 GLM API（OpenAI 兼容接口）生成脚本，`GLM_API_KEY` 和 `GLM_MODEL` 从 `.env` 读取。
+
+### GLM 候选选题配置
+
+00 工作流的 M5 自动生成候选配置在：
+
+```text
+config/topic_idea_config.jsonc
+```
+
+修改这个文件后，重新打开 `/webhook/topic-center?status=AI_GENERATE` 或重新触发 `/webhook/topic-generate` 即可生效。该配置控制 `AI生成` Tab 的默认下拉数据和 GLM 选题提示词。`分类` 是一级内容领域，`选题方向` 是该分类下的二级栏目/生成范围，GLM 会再生成具体候选选题：
+
+```jsonc
+{
+  "defaults": {
+    "count": 1,
+    "direction": "普通人破局",
+    "category": "认知成长",
+    "audience": "30岁左右有焦虑感的普通上班族",
+    "style": "理性克制"
+  },
+  "category_direction_groups": [
+    {"category": "认知成长", "directions": ["普通人破局", "长期主义"]},
+    {"category": "AI自动化", "directions": ["办公提效", "内容生产"]}
+  ],
+  "audience_groups": [
+    {"group": "职场阶段", "items": ["刚毕业1-3年的职场新人"]}
+  ],
+  "styles": ["理性克制", "温和陪伴"]
+}
+```
+
+数量默认 1 条，页面提供 1/2/5/10 下拉，并保留自定义输入 1-20。`AI生成` 采用异步任务：点击后先写入 `topic_generation_jobs(RUNNING)` 并立即返回，页面下方“生成任务”区域会展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`。刷新页面不会丢失进度；GLM 完成后 job 会变为 `SUCCEEDED`，并写入 `topic_candidates.status = NEW`、`source = glm`、`source_ref = glm:<batch_id>`。GLM prompt、响应、生成参数会写入候选 `raw_payload`。`template_type` 不在候选阶段填写，仍由 01 脚本生成阶段根据正文内容输出并写回 `video_topics.template_type`。
+
+GLM-5.1 会消耗较多 reasoning tokens，M5 候选生成默认 `max_tokens = 8000`；如果后台分支失败导致任务长期停在 `RUNNING`，任务列表轮询会把超过 5 分钟的 job 自动标记为 `FAILED` 并展示失败原因。
 
 ### GLM 脚本提示词配置
 
@@ -271,6 +308,8 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 ```bash
 docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/20_add_review_columns.sql
 docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/21_generate_review_tokens.sql
+docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/37_create_video_task_events.sql
+docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/38_add_auto_recovery_fields.sql
 ```
 
 页面入口：
@@ -317,9 +356,15 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 - 顶部展示 `待审核/生成中/已通过/已拒绝/已发布/今日审核` 统计。
 - `生成中` Tab 会按阶段展示进度；当 `GENERATING_SCRIPT` 超过 5 分钟、`GENERATING_AUDIO` 超过 15 分钟、`GENERATING_COVER/RENDERING_VIDEO` 超过 20 分钟时，卡片会显示“需要补救”区域。
 - 当前补救支持：脚本、等待渲染、语音、封面、视频合成阶段都能按阶段恢复；任一超时生成中任务可“标记失败”，避免任务长期挂在中间状态。
+- 封面/视频合成恢复会显式携带数据库中的 `voice_path/audio_duration/audio_engine`。即使 output 目录里的旧 `audio_manifest.json` 被清理，worker 也会优先用已有语音重建音频 manifest，避免误重新生成语音。
+- 每个视频卡片会展示“最近事件”折叠区，数据来自 `video_task_events`。01/06/08/10 会记录脚本、语音、封面、视频合成、人工审核、人工补救、自动恢复和失败标记等事件。
+- `10_自动巡检与恢复_生成中任务` 每 5 分钟扫描超时生成中任务，并按同一套补救策略自动触发 01/06；每条任务最多自动恢复 2 次，仍超时会标记 `FAILED`、禁用后续自动恢复并通过 Server酱提醒。
+- `10` 也会先做产物探测修复：如果 `GENERATING_COVER` 已经落盘 `cover.png/media_manifest.json` 但数据库没回写，会补齐封面字段并触发“仅重新合成视频”；如果 `RENDERING_VIDEO` 已经落盘 `final.mp4/manifest.json` 但数据库没回写，会补齐成片字段并直接进入 `NEED_REVIEW`。
+- 自动恢复次数会显示在审核中心卡片中；详细动作会进入“最近事件”。
+- 修改 n8n Code 节点后先运行 `./scripts/check_n8n_code_node_sandbox.js`，避免把 `path` 等 n8n task runner 禁用模块写入 workflow。
 - Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `ALL`。
 - `GENERATING` 会聚合展示生成/重渲染进度状态：`GENERATING_SCRIPT`、`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。选题中心点击“生成视频”后会先进入 `GENERATING_SCRIPT`；点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
-- `GENERATING` Tab 会每 5 秒自动刷新，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
+- `GENERATING` Tab 会展示 5 秒刷新倒计时，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
 - 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。
 - 视频预览读取 `video_path` 指向的本地文件，路径通常是 `/data/output/<task_id>/final.mp4`，对应宿主机目录 `data/output/<task_id>/final.mp4`。
@@ -334,6 +379,15 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 docker cp n8n/workflow/08_review_list_workflow.json n8n-video-n8n:/tmp/08_review_list_workflow.json
 docker exec n8n-video-n8n n8n import:workflow --input=/tmp/08_review_list_workflow.json --projectId=NGUCqFuUfTK6tdLq
 docker exec n8n-video-n8n n8n update:workflow --id=videoAgentReviewListMvp08 --active=true
+docker compose restart n8n
+```
+
+导入/更新自动巡检工作流：
+
+```bash
+docker cp n8n/workflow/10_auto_recovery_workflow.json n8n-video-n8n:/tmp/10_auto_recovery_workflow.json
+docker exec n8n-video-n8n n8n import:workflow --input=/tmp/10_auto_recovery_workflow.json --projectId=NGUCqFuUfTK6tdLq
+docker exec n8n-video-n8n n8n update:workflow --id=videoAgentAutoRecoveryMvp10 --active=true
 docker compose restart n8n
 ```
 
@@ -435,6 +489,7 @@ docker compose down
 ## 项目结构
 
 ```
+├── config/topic_idea_config.jsonc # GLM 候选选题生成配置
 ├── config/tts_voice_config.json   # TTS 语音配置
 ├── docker-compose.yml             # Docker 编排
 ├── data/output/                   # 生成的视频输出
