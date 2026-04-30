@@ -124,23 +124,39 @@ config/topic_idea_config.jsonc
 {
   "defaults": {
     "count": 1,
-    "direction": "普通人破局",
+    "direction": "认知偏差",
     "category": "认知成长",
     "audience": "30岁左右有焦虑感的普通上班族",
+    "tone": "理性克制",
+    "content_structure": "反常识观点",
     "style": "理性克制"
   },
   "category_direction_groups": [
-    {"category": "认知成长", "directions": ["普通人破局", "长期主义"]},
+    {"category": "认知成长", "directions": ["认知偏差", "判断力训练"]},
     {"category": "AI自动化", "directions": ["办公提效", "内容生产"]}
   ],
   "audience_groups": [
     {"group": "职场阶段", "items": ["刚毕业1-3年的职场新人"]}
   ],
-  "styles": ["理性克制", "温和陪伴"]
+  "audience_recommendations": [
+    {
+      "category": "认知成长",
+      "default": ["30岁左右有焦虑感的普通上班族"],
+      "directions": {
+        "认知偏差": ["普通家庭出身、想靠长期积累改变处境的人"]
+      }
+    }
+  ],
+  "tones": ["理性克制", "温和陪伴"],
+  "content_structures": ["反常识观点", "实操清单"]
 }
 ```
 
-数量默认 1 条，页面提供 1/2/5/10 下拉，并保留自定义输入 1-20。`AI生成` 采用异步任务：点击后先写入 `topic_generation_jobs(RUNNING)` 并立即返回，页面下方“生成任务”区域会展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`。刷新页面不会丢失进度；GLM 完成后 job 会变为 `SUCCEEDED`，并写入 `topic_candidates.status = NEW`、`source = glm`、`source_ref = glm:<batch_id>`。GLM prompt、响应、生成参数会写入候选 `raw_payload`。`template_type` 不在候选阶段填写，仍由 01 脚本生成阶段根据正文内容输出并写回 `video_topics.template_type`。
+数量默认 1 条，页面提供 1/2/5/10 下拉，并保留自定义输入 1-20。目标受众采用“推荐优先 + 全部可选 + 自定义”的交互：`audience_recommendations` 会根据当前分类和选题方向优先展示推荐受众，`audience_groups` 仍作为全量受众池保留在下拉中。
+
+`AI生成` 的风格已拆成 `tone` 和 `content_structure`：`tone` 控制表达语气，`content_structure` 控制切入结构。GLM 候选输出会额外要求 `core_angle/pain_point/promise/opening_hook/risk_note/score_reason`，这些字段保存在候选 `raw_payload.raw_candidate` 中，并在候选卡片展示。重复判断也会同时参考 `topic/title/core_angle`，比单纯标题精确匹配更稳一点。
+
+`AI生成` 采用异步任务：点击后先写入 `topic_generation_jobs(RUNNING)` 并立即返回，页面下方“生成任务”区域会展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`。刷新页面不会丢失进度；GLM 完成后 job 会变为 `SUCCEEDED`，并写入 `topic_candidates.status = NEW`、`source = glm`、`source_ref = glm:<batch_id>`。GLM prompt、响应、生成参数会写入候选 `raw_payload`。`template_type` 不在候选阶段填写，仍由 01 脚本生成阶段根据正文内容输出并写回 `video_topics.template_type`。
 
 GLM-5.1 会消耗较多 reasoning tokens，M5 候选生成默认 `max_tokens = 8000`；如果后台分支失败导致任务长期停在 `RUNNING`，任务列表轮询会把超过 5 分钟的 job 自动标记为 `FAILED` 并展示失败原因。
 

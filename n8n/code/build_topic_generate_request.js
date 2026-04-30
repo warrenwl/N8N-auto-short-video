@@ -15,14 +15,16 @@ const fallbackConfig = {
     count: 1,
     platform: 'douyin',
     account_key: 'mes',
-    direction: '普通人破局',
+    direction: '认知偏差',
     category: '认知成长',
     audience: '30岁左右有焦虑感的普通上班族',
+    tone: '理性克制',
+    content_structure: '反常识观点',
     style: '理性克制',
   },
   blocked_topics: ['医疗诊断', '投资荐股', '夸大收益', '贩卖焦虑'],
   system_prompt: '你是一个短视频选题策划助手。必须只输出严格 JSON。',
-  user_prompt_template: '请生成 {{count}} 条候选选题。一级分类：{{category}}。二级选题方向：{{direction}}。目标受众：{{audience}}。风格：{{style}}。要求：二级选题方向只是栏目/范围，不是具体题目；请生成更具体、可拍成短视频的候选选题。输出 JSON：{"candidates":[{"topic":"","title":"","angle":"","audience":"","category":"","tags":[]}]}',
+  user_prompt_template: '请生成 {{count}} 条候选选题。一级分类：{{category}}。二级选题方向：{{direction}}。目标受众：{{audience}}。表达语气：{{tone}}。内容结构：{{content_structure}}。要求：选题必须具体，有明确痛点、反差或误区，避免鸡汤和标题党。输出 JSON：{"candidates":[{"topic":"","title":"","angle":"","core_angle":"","pain_point":"","promise":"","opening_hook":"","risk_note":"","score_reason":"","audience":"","category":"","tags":[]}]}',
 };
 
 function stripJsonComments(text) {
@@ -69,6 +71,10 @@ const config = readConfig();
 const defaults = config.defaults || {};
 const count = clampCount(text('count', defaults.count), Number(defaults.count || 1));
 const batchId = `glm-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(16).slice(2, 8)}`;
+const tone = text('tone', defaults.tone || defaults.style || '理性克制') || '理性克制';
+const contentStructure = text('content_structure', defaults.content_structure || '反常识观点') || '反常识观点';
+const explicitStyle = text('style', '');
+const style = explicitStyle || `${tone} / ${contentStructure}`;
 
 const params = {
   batch_id: batchId,
@@ -77,10 +83,12 @@ const params = {
   count,
   platform: text('platform', defaults.platform || 'douyin') || 'douyin',
   account_key: text('account_key', defaults.account_key || 'mes') || 'mes',
-  direction: text('direction', defaults.direction || '普通人破局') || '普通人破局',
+  direction: text('direction', defaults.direction || '认知偏差') || '认知偏差',
   category: text('category', defaults.category || '认知成长') || '认知成长',
   audience: text('audience', defaults.audience || '普通短视频用户') || '普通短视频用户',
-  style: text('style', defaults.style || '理性克制') || '理性克制',
+  tone,
+  content_structure: contentStructure,
+  style,
   requested_at: new Date().toISOString(),
 };
 

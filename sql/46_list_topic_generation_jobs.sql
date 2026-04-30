@@ -38,4 +38,4 @@ SELECT
   EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - created_at))::integer AS elapsed_seconds
 FROM topic_generation_jobs
 ORDER BY created_at DESC
-LIMIT 20;
+LIMIT 10;

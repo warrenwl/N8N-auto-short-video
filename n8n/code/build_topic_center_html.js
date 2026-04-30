@@ -58,19 +58,23 @@ function readTopicIdeaConfig() {
       count: 1,
       platform: 'douyin',
       account_key: 'mes',
-      direction: '普通人破局',
+      direction: '认知偏差',
       category: '认知成长',
       audience: '30岁左右有焦虑感的普通上班族',
+      tone: '理性克制',
+      content_structure: '反常识观点',
       style: '理性克制',
     },
     category_direction_groups: [
-      {category: '认知成长', directions: ['普通人破局', '长期主义', '判断力训练', '行动系统']},
+      {category: '认知成长', directions: ['认知偏差', '判断力训练', '行动系统', '反馈机制']},
       {category: 'AI自动化', directions: ['办公提效', '内容生产', '资料整理', '自动化工作流']},
       {category: '职场效率', directions: ['向上沟通', '工作汇报', '任务拆解', '优先级管理']},
     ],
     counts: [1, 2, 5, 10],
     categories: ['认知成长', 'AI自动化', '职场效率'],
     audience_groups: [{group: '默认', items: ['30岁左右有焦虑感的普通上班族', '想用AI提升效率但没有技术背景的人']}],
+    tones: ['理性克制', '温和陪伴', '犀利观点'],
+    content_structures: ['反常识观点', '实操清单', '故事开场'],
     styles: ['理性克制', '温和陪伴', '实操清单'],
   };
   const configPath = $env.TOPIC_IDEA_CONFIG_PATH || '/config/topic_idea_config.jsonc';
@@ -133,12 +137,47 @@ function directionMapJson(groups) {
   return JSON.stringify(map);
 }
 
+function audienceRecommendationMapJson(config) {
+  const items = Array.isArray(config.audience_recommendations) ? config.audience_recommendations : [];
+  const map = items.reduce((acc, group) => {
+    const category = String(group.category || '').trim();
+    if (!category) return acc;
+    const categoryMap = {};
+    const defaults = Array.isArray(group.default) ? group.default : [];
+    categoryMap.__default = defaults
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+    const directions = group.directions && typeof group.directions === 'object' ? group.directions : {};
+    Object.entries(directions).forEach(([direction, values]) => {
+      categoryMap[direction] = (Array.isArray(values) ? values : [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
+    });
+    acc[category] = categoryMap;
+    return acc;
+  }, {});
+  return JSON.stringify(map);
+}
+
+function recommendedAudienceOptions(config, category, direction, allOptions) {
+  const groups = Array.isArray(config.audience_recommendations) ? config.audience_recommendations : [];
+  const group = groups.find((item) => String(item.category || '').trim() === category);
+  const directions = group && group.directions && typeof group.directions === 'object' ? group.directions : {};
+  const recommended = group
+    ? (Array.isArray(directions[direction]) ? directions[direction] : group.default || [])
+    : [];
+  return [
+    ...recommended.map((value) => ({group: '推荐', value})),
+    ...allOptions,
+  ];
+}
+
 function uniqueOptionValues(values) {
   const seen = new Set();
   return values
     .map((item) => {
       const value = typeof item === 'string' ? item : item.value;
-      const label = typeof item === 'string' ? '' : item.group;
+      const label = typeof item === 'string' ? '' : item.group || item.label;
       const normalized = String(value || '').trim();
       if (!normalized || seen.has(normalized)) return null;
       seen.add(normalized);
@@ -179,6 +218,8 @@ const categoryOptions = categoryDirectionGroups.map((group) => group.category);
 const selectedCategory = topicIdeaDefaults.category || categoryOptions[0] || '认知成长';
 const selectedDirectionGroup = categoryDirectionGroups.find((group) => group.category === selectedCategory) || categoryDirectionGroups[0] || {directions: []};
 const directionOptions = selectedDirectionGroup.directions;
+const selectedDirection = topicIdeaDefaults.direction || directionOptions[0] || '认知偏差';
+const recommendedAudienceOptionsInitial = recommendedAudienceOptions(topicIdeaConfig, selectedCategory, selectedDirection, audienceOptions);
 
 const allowedTabs = new Set(['AI_GENERATE', 'CREATE', 'ACTIVE', 'PROMOTED', 'REJECTED', 'DUPLICATE', 'ALL']);
 const statusLabel = {
@@ -382,15 +423,20 @@ function renderCandidateCard(row) {
         <h2>${escapeHtml(title)}</h2>
         <p class="topic">${escapeHtml(row.topic || '')}</p>
         ${row.angle ? `<div class="angle-box"><span>角度</span><strong>${escapeHtml(row.angle)}</strong></div>` : ''}
+        ${row.pain_point ? `<div class="angle-box"><span>痛点</span><strong>${escapeHtml(row.pain_point)}</strong></div>` : ''}
+        ${row.promise ? `<div class="angle-box"><span>收益</span><strong>${escapeHtml(row.promise)}</strong></div>` : ''}
+        ${row.opening_hook ? `<div class="angle-box"><span>开头钩子</span><strong>${escapeHtml(row.opening_hook)}</strong></div>` : ''}
         ${tags ? `<div class="tag-row neutral">${escapeHtml(tags)}</div>` : ''}
       </div>
       <aside class="card-meta">
         ${metaItem('候选 ID', row.id || '')}
         ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}
         ${metaItem('受众', row.audience || '')}
+        ${metaItem('核心角度', row.core_angle || '')}
+        ${metaItem('风险提示', row.risk_note || '')}
+        ${metaItem('推荐理由', row.candidate_score_reason || row.score_reason || '')}
         ${source === 'glm' ? metaItem('生成批次', sourceRefText(row.source_ref)) : ''}
         ${row.score ? metaItem('评分', row.score) : ''}
-        ${row.score_reason ? metaItem('评分理由', row.score_reason) : ''}
         ${row.promoted_topic_id ? metaItem('入池视频', `${row.promoted_topic_id}${promotedTopicStatus ? `（${promotedTopicStatus}）` : ''}`) : ''}
         ${row.duplicate_of ? metaItem('重复来源', row.duplicate_of) : ''}
         ${metaItem('更新时间', updatedAt)}
@@ -443,7 +489,7 @@ const aiPanel = `
           name: 'direction',
           label: '选题方向（二级栏目）',
           values: directionOptions,
-          selectedValue: topicIdeaDefaults.direction || directionOptions[0] || '普通人破局',
+          selectedValue: selectedDirection,
           customPlaceholder: '输入自定义二级方向，例如：非技术人提效',
           span2: true,
           selectAttrs: `data-direction-select="true" data-category-directions="${escapeHtml(directionMapJson(categoryDirectionGroups))}"`,
@@ -451,17 +497,25 @@ const aiPanel = `
         ${customSelectField({
           name: 'audience',
           label: '目标受众',
-          values: audienceOptions,
+          values: recommendedAudienceOptionsInitial,
           selectedValue: topicIdeaDefaults.audience || '30岁左右有焦虑感的普通上班族',
           customPlaceholder: '输入更具体的人群，例如：30岁左右想用AI做副业但没有技术背景的人',
           span2: true,
+          selectAttrs: `data-audience-select="true" data-audience-recommendations="${escapeHtml(audienceRecommendationMapJson(topicIdeaConfig))}" data-all-audiences="${escapeHtml(JSON.stringify(audienceOptions))}"`,
         })}
         ${customSelectField({
-          name: 'style',
-          label: '内容风格',
-          values: topicIdeaConfig.styles || [],
-          selectedValue: topicIdeaDefaults.style || '理性克制',
-          customPlaceholder: '输入自定义内容风格',
+          name: 'tone',
+          label: '表达语气',
+          values: topicIdeaConfig.tones || topicIdeaConfig.styles || [],
+          selectedValue: topicIdeaDefaults.tone || topicIdeaDefaults.style || '理性克制',
+          customPlaceholder: '输入自定义表达语气',
+        })}
+        ${customSelectField({
+          name: 'content_structure',
+          label: '内容结构',
+          values: topicIdeaConfig.content_structures || ['反常识观点', '实操清单', '故事开场'],
+          selectedValue: topicIdeaDefaults.content_structure || '反常识观点',
+          customPlaceholder: '输入自定义内容结构',
         })}
         <label>账号 key
           <input value="${escapeHtml(topicIdeaDefaults.account_key || 'mes')}" disabled />
@@ -680,12 +734,23 @@ const html = `<!doctype html>
       }
     }
 
+    function parseDataJson(node, key, fallback) {
+      try {
+        return JSON.parse(node.dataset[key] || '');
+      } catch (error) {
+        return fallback;
+      }
+    }
+
     function setSelectOptions(select, values, selectedValue) {
       select.innerHTML = '';
-      values.forEach((value) => {
+      values.forEach((item) => {
+        const value = typeof item === 'string' ? item : item.value;
+        const label = typeof item === 'string' ? '' : item.group;
+        if (!value) return;
         const option = document.createElement('option');
         option.value = value;
-        option.textContent = value;
+        option.textContent = label ? label + ' / ' + value : value;
         if (value === selectedValue) option.selected = true;
         select.appendChild(option);
       });
@@ -693,6 +758,61 @@ const html = `<!doctype html>
       custom.value = '__custom__';
       custom.textContent = '自定义...';
       select.appendChild(custom);
+    }
+
+    function uniqueAudienceOptions(values) {
+      const seen = new Set();
+      return values
+        .map((item) => {
+          const value = typeof item === 'string' ? item : item.value;
+          const group = typeof item === 'string' ? '' : item.group;
+          const normalized = String(value || '').trim();
+          if (!normalized || seen.has(normalized)) return null;
+          seen.add(normalized);
+          return {group: group || '', value: normalized};
+        })
+        .filter(Boolean);
+    }
+
+    function syncAudienceOptions(form, keepCurrent) {
+      const categoryHidden = form.querySelector('[data-custom-hidden="category"]');
+      const directionHidden = form.querySelector('[data-custom-hidden="direction"]');
+      const audienceSelect = form.querySelector('[data-audience-select]');
+      const audienceInput = form.querySelector('[data-custom-input="audience"]');
+      const audienceHidden = form.querySelector('[data-custom-hidden="audience"]');
+      if (!categoryHidden || !directionHidden || !audienceSelect || !audienceInput || !audienceHidden) return;
+
+      const recommendations = parseDataJson(audienceSelect, 'audienceRecommendations', {});
+      const allAudiences = parseDataJson(audienceSelect, 'allAudiences', []);
+      const category = categoryHidden.value;
+      const direction = directionHidden.value;
+      const categoryRecommendations = recommendations[category] || {};
+      const recommended = Array.isArray(categoryRecommendations[direction])
+        ? categoryRecommendations[direction]
+        : Array.isArray(categoryRecommendations.__default)
+          ? categoryRecommendations.__default
+          : [];
+      const values = uniqueAudienceOptions([
+        ...recommended.map((value) => ({group: '推荐', value})),
+        ...allAudiences,
+      ]);
+      const current = audienceHidden.value || audienceInput.value || '';
+      const selected = keepCurrent && values.some((item) => item.value === current)
+        ? current
+        : values[0]?.value || '';
+
+      setSelectOptions(audienceSelect, values, selected);
+      if (selected) {
+        audienceInput.value = '';
+        audienceSelect.value = selected;
+      } else {
+        audienceSelect.value = '__custom__';
+      }
+      if (keepCurrent && current && !values.some((item) => item.value === current)) {
+        audienceSelect.value = '__custom__';
+        audienceInput.value = current;
+      }
+      syncCustomField(form, 'audience');
     }
 
     function syncDirectionOptions(form, keepCurrent) {
@@ -722,6 +842,7 @@ const html = `<!doctype html>
         directionInput.value = current;
       }
       syncCustomField(form, 'direction');
+      syncAudienceOptions(form, keepCurrent);
     }
 
     function escapeText(value) {
@@ -819,6 +940,7 @@ const html = `<!doctype html>
       if (target.matches('[data-custom-select]')) {
         syncCustomField(form, target.dataset.customSelect);
         if (target.matches('[data-category-select]')) syncDirectionOptions(form, false);
+        if (target.matches('[data-direction-select]')) syncAudienceOptions(form, false);
       }
     });
 
@@ -827,7 +949,10 @@ const html = `<!doctype html>
       if (!(target instanceof HTMLElement)) return;
       const form = target.closest('form');
       if (!form) return;
-      if (target.matches('[data-custom-input]')) syncCustomField(form, target.dataset.customInput);
+      if (target.matches('[data-custom-input]')) {
+        syncCustomField(form, target.dataset.customInput);
+        if (target.dataset.customInput === 'direction') syncAudienceOptions(form, false);
+      }
     });
 
     document.addEventListener('DOMContentLoaded', () => {

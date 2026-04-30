@@ -30,6 +30,10 @@ function asTags(value) {
     .map((tag) => tag.startsWith('#') ? tag : `#${tag}`);
 }
 
+function text(value) {
+  return String(value || '').trim();
+}
+
 const request = $('Code - Build Topic Generate Request').first().json;
 const response = $input.first().json;
 const rawText = extractText(response);
@@ -50,11 +54,17 @@ const candidatesSource = Array.isArray(parsed.candidates)
 
 const candidates = candidatesSource
   .map((candidate) => ({
-    topic: String(candidate.topic || candidate.idea || '').trim(),
-    title: String(candidate.title || '').trim(),
-    angle: String(candidate.angle || candidate.reason || '').trim(),
-    audience: String(candidate.audience || request.audience || '').trim(),
-    category: String(candidate.category || request.category || '').trim(),
+    topic: text(candidate.topic || candidate.idea),
+    title: text(candidate.title),
+    angle: text(candidate.angle || candidate.reason),
+    core_angle: text(candidate.core_angle || candidate.coreAngle || candidate.angle || candidate.reason),
+    pain_point: text(candidate.pain_point || candidate.painPoint),
+    promise: text(candidate.promise || candidate.value || candidate.takeaway),
+    opening_hook: text(candidate.opening_hook || candidate.openingHook || candidate.hook),
+    risk_note: text(candidate.risk_note || candidate.riskNote || '低风险'),
+    score_reason: text(candidate.score_reason || candidate.scoreReason || candidate.reason),
+    audience: text(candidate.audience || request.audience),
+    category: text(candidate.category || request.category),
     tags: asTags(candidate.tags || candidate.hashtags),
     raw_candidate: candidate,
   }))
@@ -75,6 +85,8 @@ const rawPayloadBase = {
     direction: request.direction,
     category: request.category,
     audience: request.audience,
+    tone: request.tone,
+    content_structure: request.content_structure,
     style: request.style,
   },
   prompt_config_path: request.prompt_config_path,

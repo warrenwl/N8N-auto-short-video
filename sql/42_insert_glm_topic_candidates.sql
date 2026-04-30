@@ -28,6 +28,7 @@ WITH input AS (
     trim(value->>'topic') AS topic,
     NULLIF(trim(value->>'title'), '') AS title,
     NULLIF(trim(value->>'angle'), '') AS angle,
+    NULLIF(trim(value->>'core_angle'), '') AS core_angle,
     COALESCE(NULLIF(trim(value->>'audience'), ''), (SELECT default_audience FROM input)) AS audience,
     COALESCE(NULLIF(trim(value->>'category'), ''), (SELECT default_category FROM input)) AS category,
     CASE
@@ -46,8 +47,21 @@ WITH input AS (
     SELECT tc.id
     FROM topic_candidates tc
     JOIN input i ON true
-    WHERE lower(regexp_replace(tc.topic, '\s+', '', 'g')) = lower(regexp_replace(c.topic, '\s+', '', 'g'))
+    WHERE (
+        lower(regexp_replace(tc.topic, '\s+', '', 'g')) = lower(regexp_replace(c.topic, '\s+', '', 'g'))
+        OR (
+          c.title IS NOT NULL
+          AND NULLIF(tc.title, '') IS NOT NULL
+          AND lower(regexp_replace(tc.title, '\s+', '', 'g')) = lower(regexp_replace(c.title, '\s+', '', 'g'))
+        )
+        OR (
+          c.core_angle IS NOT NULL
+          AND NULLIF(tc.raw_payload->'raw_candidate'->>'core_angle', '') IS NOT NULL
+          AND lower(regexp_replace(tc.raw_payload->'raw_candidate'->>'core_angle', '\s+', '', 'g')) = lower(regexp_replace(c.core_angle, '\s+', '', 'g'))
+        )
+      )
       AND COALESCE(tc.account_key, '') = COALESCE(i.account_key, '')
+      AND COALESCE(tc.category, '') = COALESCE(c.category, '')
       AND tc.status IN ('NEW', 'SCORED', 'SELECTED', 'PROMOTED')
     ORDER BY tc.updated_at DESC
     LIMIT 1
