@@ -26,6 +26,8 @@ const statusMeta = {
   MEDIA_READY: {label: '等待重新渲染', color: '#2563eb', tab: 'GENERATING'},
   AUDIO_READY: {label: '等待重新合成视频', color: '#2563eb', tab: 'GENERATING'},
   SCRIPT_READY: {label: '等待渲染', color: '#2563eb', tab: 'GENERATING'},
+  IDEA: {label: '等待重新生成脚本', color: '#2563eb', tab: 'GENERATING'},
+  FAILED: {label: '已标记失败', color: '#dc2626', tab: 'GENERATING'},
 };
 const meta = statusMeta[status] || {label: status, color: '#4b5563', tab: 'ALL'};
 
@@ -50,6 +52,30 @@ const videoOnlyTrigger = success && status === 'AUDIO_READY' && row.review_statu
   ? `
     <script>
       fetch('/webhook/video-rerender-video-only?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
+        .catch(() => {});
+    </script>
+  `
+  : '';
+const coverTrigger = success && status === 'AUDIO_READY' && row.review_status === 'COVER_RECOVERY_REQUESTED'
+  ? `
+    <script>
+      fetch('/webhook/video-rerender-cover?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
+        .catch(() => {});
+    </script>
+  `
+  : '';
+const scriptReadyTrigger = success && status === 'SCRIPT_READY' && row.review_status === 'RECOVERY_REQUESTED'
+  ? `
+    <script>
+      fetch('/webhook/video-render-start?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
+        .catch(() => {});
+    </script>
+  `
+  : '';
+const scriptTrigger = success && status === 'IDEA' && row.review_status === 'RECOVERY_REQUESTED'
+  ? `
+    <script>
+      fetch('/webhook/video-script-start?task_id=${encodeURIComponent(id)}&token=${encodeURIComponent(row.review_token || '')}', {cache: 'no-store'})
         .catch(() => {});
     </script>
   `
@@ -105,6 +131,9 @@ const html = `<!doctype html>
       ${actionLinks}
       ${rerenderTrigger}
       ${videoOnlyTrigger}
+      ${coverTrigger}
+      ${scriptReadyTrigger}
+      ${scriptTrigger}
     </div>
   </div>
 </body>

@@ -76,12 +76,12 @@ n8n/workflow/available/
 当前已跑通主线为 `00 -> 01 -> 06 -> 08 -> 09`：
 
 - `00_topic_center_workflow.json`：选题中心，人工新增候选选题，确认入池为 `video_topics(IDEA)`。
-- `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`。
-- `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；同时承接审核中心的已拒绝重渲染和仅重新合成视频。
+- `01_postgres_script_workflow.json`：生成脚本包，`IDEA -> SCRIPT_READY`；保留手动触发，同时提供 `/webhook/video-script-start` 给选题中心单条“一键生成视频”按钮调用。
+- `06_split_render_workflow.json`：分段渲染，`SCRIPT_READY -> NEED_REVIEW`；保留手动触发，同时提供 `/webhook/video-render-start` 承接 01 完成后的自动首渲染，也承接审核中心的已拒绝重渲染和仅重新合成视频。
 - `08_review_list_workflow.json`：人工审核中心，处理通过、拒绝、退回和重新渲染。
 - `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送 Server酱微信提醒。
 
-`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入和确认入池最小闭环；`/webhook/topic-center` 中人工录入是独立 Tab，来源固定为 `manual`，批量导入和 GLM 生成后续会作为独立入口补充。
+`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入和确认入池最小闭环；`/webhook/topic-center` 中人工录入是独立 Tab，来源固定为 `manual`，批量导入和 GLM 生成后续会作为独立入口补充。`已入池` Tab 中 `IDEA` 状态视频会显示“生成视频”按钮，点击后调用 01 的 `/webhook/video-script-start`，01 写回 `SCRIPT_READY` 后自动调用 06 的 `/webhook/video-render-start`，最终进入 `NEED_REVIEW`。
 
 后续新增的 `/webhook/topic-center` 需要和现有 `/webhook/video-review-list` 互相预留跳转入口：选题中心可直接进入视频审核中心，视频审核中心也可直接回到选题中心。
 
@@ -90,8 +90,8 @@ n8n/workflow/available/
 | 文件 | 说明 |
 |------|------|
 | `available/00_topic_center_workflow.json` | 选题中心：候选池 → 确认入池 → `video_topics(IDEA)` |
-| `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库 |
-| `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；已拒绝视频可跳过封面重渲染，也可仅重新合成视频 |
+| `available/01_postgres_script_workflow.json` | 选题 → GLM 生成脚本 → 写入数据库；支持 `/webhook/video-script-start` 单条触发 |
+| `available/06_split_render_workflow.json` | 分段渲染：语音 → 封面 → Remotion 合成；支持 `/webhook/video-render-start` 单条首渲染，已拒绝视频可跳过封面重渲染，也可仅重新合成视频 |
 | `available/08_review_list_workflow.json` | 人工审核中心：浏览器查看待审/已通过/已拒绝视频，并直接处理审核动作 |
 | `available/09_douyin_semiauto_publish_workflow.json` | 抖音半自动发布：发布包 → 微信提醒 → 手动确认回写 |
 | `00_topic_center_workflow.json` | 当前可用工作流的根目录副本 |
@@ -239,7 +239,7 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 
 画布分为两条路径：
 
-- 上半区“正常首渲染路径”：在 n8n 里点 `Execute workflow`，领取 `SCRIPT_READY` 记录，完整执行语音/字幕、ComfyUI 封面、Remotion 合成。
+- 上半区“正常首渲染路径”：在 n8n 里点 `Execute workflow` 会领取最早一条 `SCRIPT_READY` 记录；由 01 自动调用 `/webhook/video-render-start?task_id=...&token=...` 时只领取指定 `SCRIPT_READY` 记录。两种入口都会完整执行语音/字幕、ComfyUI 封面、Remotion 合成。
 - 下半区“已拒绝重渲染路径”：由审核中心“重新渲染视频”按钮自动调用 `/webhook/video-rerender-split`，领取 `MEDIA_READY + RERENDER_REQUESTED` 记录，只重新生成语音/字幕并 Remotion 合成，跳过 ComfyUI/封面生成。
 - 第三条“仅重新合成视频路径”：由审核中心“仅重新合成视频”按钮自动调用 `/webhook/video-rerender-video-only`，领取 `AUDIO_READY + VIDEO_RERENDER_REQUESTED` 记录，复用已有语音/字幕/封面，只重新执行 Remotion 合成。
 
@@ -304,12 +304,21 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 | `back_review` | `APPROVED/REJECTED` → `NEED_REVIEW` | 已通过/已拒绝卡片“退回待审核”按钮 |
 | `rerender` | `REJECTED` → `MEDIA_READY` | 已拒绝卡片“重新渲染视频”按钮，自动触发 06 的重渲染入口；重新生成语音/字幕并合成视频，不重新生成封面 |
 | `rerender_video_only` | `REJECTED` → `AUDIO_READY` | 已拒绝卡片“仅重新合成视频”按钮，自动触发 06 的仅重合成入口；复用已有语音/字幕/封面，只重新生成 `final.mp4` |
+| `reset_script` | `GENERATING_SCRIPT` → `IDEA` | 生成中卡片超时后“重新生成脚本”按钮，自动触发 01 |
+| `trigger_render` | `SCRIPT_READY` → `SCRIPT_READY` | 生成中卡片等待超时后“重新触发渲染”按钮，自动触发 06 |
+| `reset_audio` | `GENERATING_AUDIO` → `SCRIPT_READY` | 生成中卡片超时后“重新生成语音”按钮，自动触发 06 正常首渲染入口 |
+| `trigger_cover` | `AUDIO_READY` → `AUDIO_READY` | 生成中卡片等待超时后“继续生成封面”按钮，自动触发 06 封面恢复入口 |
+| `reset_cover` | `GENERATING_COVER` → `AUDIO_READY` | 生成中卡片超时后“重新生成封面”按钮，复用语音并自动触发 06 封面恢复入口 |
+| `reset_render` | `COVER_READY/RENDERING_VIDEO` → `AUDIO_READY` | 生成中卡片超时后“重新合成视频”按钮，复用语音/封面并自动触发 06 仅重合成入口 |
+| `mark_failed` | 生成中状态 → `FAILED` | 生成中卡片超时后“标记失败”按钮 |
 
 页面展示规则：
 
 - 顶部展示 `待审核/生成中/已通过/已拒绝/已发布/今日审核` 统计。
+- `生成中` Tab 会按阶段展示进度；当 `GENERATING_SCRIPT` 超过 5 分钟、`GENERATING_AUDIO` 超过 15 分钟、`GENERATING_COVER/RENDERING_VIDEO` 超过 20 分钟时，卡片会显示“需要补救”区域。
+- 当前补救支持：脚本、等待渲染、语音、封面、视频合成阶段都能按阶段恢复；任一超时生成中任务可“标记失败”，避免任务长期挂在中间状态。
 - Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `ALL`。
-- `GENERATING` 会聚合展示重渲染/生成进度状态：`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
+- `GENERATING` 会聚合展示生成/重渲染进度状态：`GENERATING_SCRIPT`、`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。选题中心点击“生成视频”后会先进入 `GENERATING_SCRIPT`；点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
 - `GENERATING` Tab 会每 5 秒自动刷新，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
 - 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。

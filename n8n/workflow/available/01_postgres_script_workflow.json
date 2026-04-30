@@ -35,9 +35,9 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE video_topics\nSET status = 'GENERATING_SCRIPT', error = NULL\nWHERE id = $1\nRETURNING *;",
+        "query": "UPDATE video_topics\nSET\n  status = 'GENERATING_SCRIPT',\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nWHERE id = $1::uuid\n  AND status = 'IDEA'\n  AND ($2::text IS NULL OR review_token = $2)\nRETURNING *;",
         "options": {
-          "queryReplacement": "={{ [ $json.id ] }}"
+          "queryReplacement": "={{ [ $json.id || $json.task_id, $json.token || null ] }}"
         }
       },
       "id": "mark-generating",
@@ -149,14 +149,81 @@
       "typeVersion": 1,
       "position": [
         -20,
-        -150
+        -300
       ],
       "parameters": {
-        "width": 1820,
-        "height": 180,
+        "width": 2140,
+        "height": 220,
         "color": 4,
-        "content": "## 01 脚本生成路径：选题到 SCRIPT_READY\n\n手动执行后领取一条 `IDEA` 记录，状态改为 `GENERATING_SCRIPT`，读取 `config/glm_script_prompt_config.jsonc` 里的固定提示词，调用 GLM 生成标题、脚本、分镜、template_type，最后写回数据库并置为 `SCRIPT_READY`。下一步由 06 正常首渲染路径领取。"
+        "content": "## 01 脚本生成主路径：IDEA → SCRIPT_READY\n\n保留两种入口：\n- 手动入口：在 n8n 点 **Execute workflow**，领取最早一条 `IDEA`。\n- 自动入口：选题中心“生成视频”调用 `/webhook/video-script-start?task_id=<id>&token=<review_token>`，只领取指定 `IDEA`。\n\n两种入口都会进入同一个 `Postgres - Mark GENERATING_SCRIPT`，调用 GLM 生成脚本/分镜/template_type，并写回 `SCRIPT_READY`。"
       }
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-script-start",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-video-script-start",
+      "name": "Webhook - Video Script Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        520
+      ],
+      "webhookId": "video-script-start-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate one-click video generation webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - Video Script Start').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {id: taskId, task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
+      },
+      "id": "validate-video-script-start",
+      "name": "Code - Validate Video Script Start",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ \"http://localhost:5678/webhook/video-render-start?task_id=\" + $json.id + \"&token=\" + ($json.review_token || \"\") }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "http-trigger-render-start-01",
+      "name": "HTTP Request - Trigger 06 Render Start",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 自动衔接 06\n\n`Postgres - Update SCRIPT_READY` 成功后，会调用 `/webhook/video-render-start`。\n\n这样选题中心一键生成可以从 `IDEA` 继续跑到 06 首渲染，最终进入 `NEED_REVIEW`。",
+        "height": 170,
+        "width": 760
+      },
+      "id": "note-auto-trigger-render-01",
+      "name": "说明 - 自动触发 06 路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1700,
+        -300
+      ]
     }
   ],
   "connections": {
@@ -225,17 +292,50 @@
           }
         ]
       ]
+    },
+    "Webhook - Video Script Start": {
+      "main": [
+        [
+          {
+            "node": "Code - Validate Video Script Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Validate Video Script Start": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Mark GENERATING_SCRIPT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Update SCRIPT_READY": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Trigger 06 Render Start",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
   },
-  "active": false,
+  "active": true,
   "meta": {
     "description": "MVP: 从 video_agent.video_topics 读取 IDEA，调用 GLM-5.1 生成脚本包，再回写 SCRIPT_READY。导入后需要绑定 Postgres credential，并设置 GLM_API_KEY。",
     "templateCredsSetupCompleted": false
   },
   "id": "videoAgentScriptMvp01",
   "versionId": "94a7b2f4-17af-4023-b3e4-ec7cf6903e1e",
-  "description": "第一阶段：脚本生成。手动执行，IDEA -> GENERATING_SCRIPT -> GLM 生成脚本/分镜/template_type -> SCRIPT_READY，后续由 06 分段渲染领取。"
+  "description": "第一阶段：脚本生成。手动入口领取最早 IDEA；选题中心一键生成入口 /webhook/video-script-start 领取指定 IDEA。两种入口都会生成脚本并写回 SCRIPT_READY，随后自动调用 06 的 /webhook/video-render-start。"
 }

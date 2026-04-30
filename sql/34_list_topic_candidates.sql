@@ -21,6 +21,21 @@ WITH listed AS (
     tc.promoted_topic_id,
     vt.status AS promoted_topic_status,
     vt.title AS promoted_topic_title,
+    vt.review_token AS promoted_topic_review_token,
+    CASE vt.status
+      WHEN 'GENERATING_SCRIPT' THEN 10
+      WHEN 'SCRIPT_READY' THEN 15
+      WHEN 'MEDIA_READY' THEN 8
+      WHEN 'GENERATING_AUDIO' THEN 20
+      WHEN 'AUDIO_READY' THEN 35
+      WHEN 'GENERATING_COVER' THEN 45
+      WHEN 'COVER_READY' THEN 60
+      WHEN 'RENDERING_VIDEO' THEN 80
+      WHEN 'NEED_REVIEW' THEN 100
+      WHEN 'FAILED' THEN 100
+      WHEN 'RENDER_FAILED' THEN 100
+      ELSE NULL
+    END AS promoted_topic_progress_percent,
     tc.created_at,
     tc.updated_at
   FROM topic_candidates tc
@@ -50,6 +65,8 @@ SELECT
   NULL::uuid AS promoted_topic_id,
   NULL::text AS promoted_topic_status,
   NULL::text AS promoted_topic_title,
+  NULL::text AS promoted_topic_review_token,
+  NULL::integer AS promoted_topic_progress_percent,
   NULL::timestamptz AS created_at,
   NULL::timestamptz AS updated_at
 WHERE NOT EXISTS (SELECT 1 FROM listed);

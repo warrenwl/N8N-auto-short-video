@@ -15,10 +15,22 @@ function assetUrl(path) {
   return `http://localhost:3001/asset?path=${encodeURIComponent(path)}`;
 }
 
+function parseDbTime(value) {
+  if (!value) return '';
+  if (value instanceof Date) return value;
+  const text = String(value).trim();
+  if (!text) return '';
+  const normalized = /(?:Z|[+-]\d{2}:?\d{2})$/.test(text)
+    ? text
+    : `${text.replace(' ', 'T')}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? '' : date;
+}
+
 function formatLocalTime(value) {
   if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
+  const date = parseDbTime(value);
+  if (!date) return String(value);
   const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -54,8 +66,8 @@ function formatDurationSeconds(value) {
 }
 
 function completedDuration(row) {
-  const started = row.render_started_at ? new Date(row.render_started_at) : null;
-  const finished = row.render_finished_at ? new Date(row.render_finished_at) : null;
+  const started = parseDbTime(row.render_started_at);
+  const finished = parseDbTime(row.render_finished_at);
   if (
     !started ||
     !finished ||
@@ -72,7 +84,7 @@ function activeStartedAt(row) {
   if (status === 'RENDERING_VIDEO') return row.render_started_at || row.updated_at;
   if (status === 'GENERATING_AUDIO') return row.audio_started_at || row.updated_at;
   if (status === 'GENERATING_COVER') return row.media_started_at || row.updated_at;
-  if (status === 'MEDIA_READY' || status === 'SCRIPT_READY' || status === 'AUDIO_READY' || status === 'COVER_READY') {
+  if (status === 'GENERATING_SCRIPT' || status === 'MEDIA_READY' || status === 'SCRIPT_READY' || status === 'AUDIO_READY' || status === 'COVER_READY') {
     return row.updated_at;
   }
   return row.render_started_at || row.audio_started_at || row.media_started_at || row.updated_at;
@@ -80,16 +92,28 @@ function activeStartedAt(row) {
 
 function activeElapsed(row) {
   const startedAt = activeStartedAt(row);
-  const started = startedAt ? new Date(startedAt) : null;
-  if (!started || Number.isNaN(started.getTime())) return '';
+  const started = parseDbTime(startedAt);
+  if (!started) return '';
   return formatDuration(Date.now() - started.getTime());
+}
+
+function stageAgeSeconds(row) {
+  const status = String(row.status || '');
+  if (['SCRIPT_READY', 'AUDIO_READY', 'COVER_READY'].includes(status)) {
+    const updated = parseDbTime(row.updated_at);
+    if (!updated) return Number.NaN;
+    return Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000));
+  }
+  const seconds = Number(row.elapsed_seconds);
+  return Number.isFinite(seconds) ? seconds : Number.NaN;
 }
 
 function statusLabel(status) {
   return {
+    GENERATING_SCRIPT: '生成脚本中',
     SCRIPT_READY: '等待渲染',
     MEDIA_READY: '等待重渲染',
-    GENERATING_AUDIO: '生成语音中',
+    GENERATING_AUDIO: '脚本已完成，生成语音中',
     AUDIO_READY: '语音完成',
     GENERATING_COVER: '生成封面中',
     COVER_READY: '封面完成',
@@ -104,6 +128,7 @@ function statusLabel(status) {
 }
 
 const generatingStatuses = new Set([
+  'GENERATING_SCRIPT',
   'SCRIPT_READY',
   'MEDIA_READY',
   'GENERATING_AUDIO',
@@ -116,15 +141,26 @@ const generatingStatuses = new Set([
 ]);
 
 const progressByStatus = {
-  SCRIPT_READY: {percent: 5, text: '等待 06 工作流领取'},
+  GENERATING_SCRIPT: {percent: 10, text: '正在生成脚本'},
+  SCRIPT_READY: {percent: 15, text: '脚本已完成，等待 06 工作流领取'},
   MEDIA_READY: {percent: 8, text: '等待 06 重渲染入口领取'},
-  GENERATING_AUDIO: {percent: 20, text: '正在生成语音'},
-  AUDIO_READY: {percent: 35, text: '语音已完成'},
-  GENERATING_COVER: {percent: 45, text: '正在生成封面'},
-  COVER_READY: {percent: 60, text: '封面已完成'},
-  RENDERING_VIDEO: {percent: 80, text: '正在合成视频'},
+  GENERATING_AUDIO: {percent: 20, text: '脚本已完成，正在生成语音'},
+  AUDIO_READY: {percent: 35, text: '脚本与语音已完成'},
+  GENERATING_COVER: {percent: 45, text: '语音已完成，正在生成封面'},
+  COVER_READY: {percent: 60, text: '封面已完成，等待合成视频'},
+  RENDERING_VIDEO: {percent: 80, text: '封面与语音已完成，正在合成视频'},
   FAILED: {percent: 100, text: '生成失败'},
   RENDER_FAILED: {percent: 100, text: '渲染失败'},
+};
+
+const staleThresholdSeconds = {
+  GENERATING_SCRIPT: 5 * 60,
+  SCRIPT_READY: 5 * 60,
+  GENERATING_AUDIO: 15 * 60,
+  AUDIO_READY: 10 * 60,
+  GENERATING_COVER: 20 * 60,
+  COVER_READY: 10 * 60,
+  RENDERING_VIDEO: 20 * 60,
 };
 
 function getQuery() {
@@ -145,7 +181,7 @@ const counts = allRows.reduce((acc, row) => {
   const status = String(row.status || '');
   acc[status] = (acc[status] || 0) + 1;
   acc.ALL += 1;
-  const reviewedAt = row.reviewed_at ? new Date(row.reviewed_at) : null;
+  const reviewedAt = parseDbTime(row.reviewed_at);
   if (reviewedAt && !Number.isNaN(reviewedAt.getTime())) {
     const now = new Date();
     const reviewedDay = new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai'}).format(reviewedAt);
@@ -281,6 +317,84 @@ function actionButtons(row) {
   return '';
 }
 
+function recoveryBlock(row, elapsedSeconds) {
+  const status = String(row.status || '');
+  const threshold = staleThresholdSeconds[status];
+  if (!threshold || !Number.isFinite(elapsedSeconds) || elapsedSeconds < threshold) return '';
+
+  const warningText = `当前阶段可能卡住，已运行 ${formatDurationSeconds(elapsedSeconds)}。`;
+  const recoveryActions = {
+    GENERATING_SCRIPT: {
+      action: 'reset_script',
+      label: '重新生成脚本',
+      triggerPath: '/webhook/video-script-start',
+      className: 'recover',
+    },
+    SCRIPT_READY: {
+      action: 'trigger_render',
+      label: '重新触发渲染',
+      triggerPath: '/webhook/video-render-start',
+      className: 'recover',
+    },
+    GENERATING_AUDIO: {
+      action: 'reset_audio',
+      label: '重新生成语音',
+      triggerPath: '/webhook/video-render-start',
+      className: 'recover',
+    },
+    AUDIO_READY: {
+      action: 'trigger_cover',
+      label: '继续生成封面',
+      triggerPath: '/webhook/video-rerender-cover',
+      className: 'recover',
+    },
+    GENERATING_COVER: {
+      action: 'reset_cover',
+      label: '重新生成封面',
+      triggerPath: '/webhook/video-rerender-cover',
+      className: 'recover',
+    },
+    COVER_READY: {
+      action: 'reset_render',
+      label: '重新合成视频',
+      triggerPath: '/webhook/video-rerender-video-only',
+      className: 'video-only',
+    },
+    RENDERING_VIDEO: {
+      action: 'reset_render',
+      label: '重新合成视频',
+      triggerPath: '/webhook/video-rerender-video-only',
+      className: 'video-only',
+    },
+  };
+  const recoveryAction = recoveryActions[status];
+  const recoveryButton = recoveryAction
+    ? `
+      <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('GENERATING', recoveryAction.triggerPath)}>
+        ${hiddenReviewFields(row, recoveryAction.action)}
+        <button class="${escapeHtml(recoveryAction.className)}" type="submit">${escapeHtml(recoveryAction.label)}</button>
+      </form>
+    `
+    : '';
+
+  return `
+    <div class="recovery-card">
+      <div>
+        <strong>需要补救</strong>
+        <span>${escapeHtml(warningText)}</span>
+      </div>
+      <div class="recovery-actions">
+        ${recoveryButton}
+        <form method="GET" action="/webhook/video-review-action" ${inlineActionAttrs('GENERATING')}>
+          ${hiddenReviewFields(row, 'mark_failed')}
+          <input type="hidden" name="note" value="人工标记失败" />
+          <button class="mark-failed" type="submit">标记失败</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
 function progressBlock(row) {
   const status = String(row.status || '');
   if (!generatingStatuses.has(status)) return '';
@@ -288,9 +402,11 @@ function progressBlock(row) {
   const progress = isVideoOnlyRerender
     ? {percent: 65, text: '等待仅重新合成视频入口领取'}
     : progressByStatus[status] || {percent: 0, text: statusLabel(status)};
-  const elapsed = activeElapsed(row) || formatDurationSeconds(row.elapsed_seconds);
+  const elapsedSeconds = Number(row.elapsed_seconds);
+  const elapsed = formatDurationSeconds(elapsedSeconds) || activeElapsed(row);
   const updated = formatLocalTime(row.updated_at || '');
   const error = row.error || '';
+  const recovery = recoveryBlock(row, stageAgeSeconds(row));
 
   return `
     <div class="progress-card">
@@ -305,6 +421,7 @@ function progressBlock(row) {
       </div>
       ${error ? `<div class="error-box">${escapeHtml(error)}</div>` : ''}
     </div>
+    ${recovery}
   `;
 }
 
@@ -394,7 +511,7 @@ const html = `<!doctype html>
     .card.approved { border-left-color: #16a34a; }
     .card.rejected, .card.failed, .card.render_failed { border-left-color: #dc2626; }
     .card.published { border-left-color: #111827; }
-    .card.script_ready, .card.media_ready, .card.generating_audio, .card.audio_ready, .card.generating_cover, .card.cover_ready, .card.rendering_video { border-left-color: #2563eb; }
+    .card.generating_script, .card.script_ready, .card.media_ready, .card.generating_audio, .card.audio_ready, .card.generating_cover, .card.cover_ready, .card.rendering_video { border-left-color: #2563eb; }
     .media { background: #090a0c; border-radius: 8px; overflow: hidden; aspect-ratio: 9 / 16; }
     video { width: 100%; height: 100%; display: block; object-fit: contain; background: #090a0c; }
     .empty { height: 100%; display: grid; place-items: center; color: #9ca3af; font-weight: 800; text-align: center; line-height: 1.7; padding: 18px; box-sizing: border-box; }
@@ -403,7 +520,7 @@ const html = `<!doctype html>
     .status { width: fit-content; padding: 6px 10px; border-radius: 999px; background: #fff7ed; color: #c2410c; font-size: 12px; font-weight: 900; }
     .status.approved { background: #ecfdf5; color: #047857; }
     .status.rejected { background: #fef2f2; color: #b91c1c; }
-    .status.script_ready, .status.generating_audio, .status.audio_ready, .status.generating_cover, .status.cover_ready, .status.rendering_video { background: #eff6ff; color: #1d4ed8; }
+    .status.generating_script, .status.script_ready, .status.generating_audio, .status.audio_ready, .status.generating_cover, .status.cover_ready, .status.rendering_video { background: #eff6ff; color: #1d4ed8; }
     .status.failed, .status.render_failed { background: #fef2f2; color: #b91c1c; }
     h2 { margin: 0; font-size: 26px; line-height: 1.22; letter-spacing: 0; }
     .topic { margin: 0; color: #4b5563; font-size: 15px; line-height: 1.6; }
@@ -418,6 +535,10 @@ const html = `<!doctype html>
     .progress-fill.failed { background: #dc2626; }
     .progress-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; color: #475569; font-size: 12px; font-weight: 800; }
     .error-box { border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; border-radius: 6px; padding: 9px 10px; font-size: 12px; line-height: 1.5; word-break: break-word; }
+    .recovery-card { border: 1px solid #fed7aa; background: #fff7ed; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .recovery-card strong { display: block; color: #9a3412; font-size: 13px; font-weight: 900; margin-bottom: 4px; }
+    .recovery-card span { display: block; color: #7c2d12; font-size: 12px; font-weight: 800; line-height: 1.5; }
+    .recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
     form { margin: 0; }
     button { border: 0; border-radius: 6px; padding: 11px 18px; color: #fff; font-weight: 900; cursor: pointer; font-size: 15px; }
     .approve { background: #16a34a; }
@@ -425,6 +546,8 @@ const html = `<!doctype html>
     .secondary { background: #4b5563; }
     .rerender { background: #2563eb; }
     .video-only { background: #7c3aed; }
+    .recover { background: #ea580c; }
+    .mark-failed { background: #b91c1c; }
     .publish { background: #111827; }
     .withdraw { background: #dc2626; }
     .reject-form { display: flex; gap: 8px; align-items: center; }
@@ -440,7 +563,7 @@ const html = `<!doctype html>
       .tab-summary span { text-align: left; }
       .card { grid-template-columns: 1fr; }
       .media { max-height: 560px; }
-      .actions, .reject-form { flex-direction: column; align-items: stretch; }
+      .actions, .reject-form, .recovery-card, .recovery-actions { flex-direction: column; align-items: stretch; }
       select, input[name="extra_note"] { width: auto; max-width: none; }
       button { width: 100%; }
     }

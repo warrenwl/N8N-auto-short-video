@@ -111,6 +111,30 @@ function actionButtons(row) {
   `;
 }
 
+function promotedActions(row) {
+  const topicId = row.promoted_topic_id || '';
+  const token = row.promoted_topic_review_token || '';
+  const status = String(row.promoted_topic_status || '');
+  const progress = Number(row.promoted_topic_progress_percent);
+  const progressText = Number.isFinite(progress) ? ` · ${Math.round(progress)}%` : '';
+  if (status === 'IDEA' && topicId && token) {
+    return `
+      <form method="GET" action="/webhook/video-script-start" data-inline-action="true" data-reload-delay="1200">
+        <input type="hidden" name="task_id" value="${escapeHtml(topicId)}" />
+        <input type="hidden" name="token" value="${escapeHtml(token)}" />
+        <button class="generate" type="submit">生成视频</button>
+      </form>
+    `;
+  }
+  if (['GENERATING_SCRIPT', 'SCRIPT_READY', 'GENERATING_AUDIO', 'AUDIO_READY', 'GENERATING_COVER', 'COVER_READY', 'RENDERING_VIDEO', 'FAILED', 'RENDER_FAILED'].includes(status)) {
+    return `<a class="progress-link" href="/webhook/video-review-list?status=GENERATING">查看生成进度${escapeHtml(progressText)}</a>`;
+  }
+  if (status === 'NEED_REVIEW') {
+    return `<a class="progress-link" href="/webhook/video-review-list?status=NEED_REVIEW">去审核视频</a>`;
+  }
+  return '';
+}
+
 function metaItem(label, value) {
   if (!value) return '';
   return `
@@ -152,6 +176,7 @@ function renderPromotedCard(row) {
   const createdAt = formatLocalTime(row.created_at);
   const promotedTopicStatus = row.promoted_topic_status || 'IDEA';
   const promotedTitle = row.promoted_topic_title || title;
+  const buttons = promotedActions(row);
 
   return `
     <article class="topic-card promoted-card">
@@ -170,9 +195,11 @@ function renderPromotedCard(row) {
         ${metaItem('入池视频 ID', row.promoted_topic_id || '')}
         ${metaItem('候选 ID', row.id || '')}
         ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}
+        ${metaItem('生成进度', Number.isFinite(Number(row.promoted_topic_progress_percent)) ? `${Math.round(Number(row.promoted_topic_progress_percent))}%` : '')}
         ${metaItem('更新时间', updatedAt)}
         ${metaItem('创建时间', createdAt)}
       </aside>
+      ${buttons ? `<div class="candidate-actions">${buttons}</div>` : ''}
     </article>
   `;
 }
@@ -342,8 +369,10 @@ const html = `<!doctype html>
     form { margin: 0; }
     button { border: 0; border-radius: 6px; padding: 11px 18px; color: #fff; font-weight: 900; cursor: pointer; font-size: 15px; }
     .promote { background: #16a34a; }
+    .generate { background: #111827; }
     .reject { background: #dc2626; }
     .secondary { background: #4b5563; }
+    .progress-link { display: inline-flex; align-items: center; justify-content: center; min-height: 42px; border-radius: 6px; padding: 0 16px; color: #111827; background: #f3f4f6; border: 1px solid #d1d5db; text-decoration: none; font-size: 14px; font-weight: 900; }
     .create-button { background: #111827; margin-top: 12px; }
     button:disabled { opacity: .66; cursor: progress; }
     .none { padding: 42px; text-align: center; color: #4b5563; font-weight: 800; }
@@ -414,6 +443,11 @@ const html = `<!doctype html>
           setTimeout(() => {
             window.location.href = afterSuccess;
           }, 450);
+          return;
+        }
+        const reloadDelay = Number(form.dataset.reloadDelay || 0);
+        if (reloadDelay > 0) {
+          setTimeout(() => window.location.reload(), reloadDelay);
           return;
         }
         window.location.reload();
