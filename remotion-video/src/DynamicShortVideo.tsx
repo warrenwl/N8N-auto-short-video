@@ -35,7 +35,7 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
   const outroSeconds = getOutroSeconds(manifest);
   const timelineEnd = getTimelineEnd(manifest);
   const titleTop = manifest.account?.account_name ? 112 : 74;
-  const titleOpacity = interpolate(frame, [0, 18, 80, 110], [0, 1, 1, 0], {
+  const titleOpacity = interpolate(frame, [0, 18, 80, 120], [0, 0.72, 0.72, 0.18], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
@@ -59,7 +59,7 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
           top: titleTop,
           left: 64,
           right: 64,
-          opacity: Math.max(0.42, titleOpacity),
+          opacity: titleOpacity,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -70,12 +70,12 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
       >
         <div
           style={{
-            color: '#fff',
-            fontSize: layout === 'contrast' ? 32 : 34,
+            color: 'rgba(255,255,255,0.76)',
+            fontSize: layout === 'contrast' ? 29 : 30,
             lineHeight: 1.18,
-            fontWeight: 900,
+            fontWeight: 850,
             maxWidth: layout === 'steps' ? 650 : 720,
-            textShadow: '0 4px 20px rgba(0,0,0,0.58)',
+            textShadow: '0 4px 20px rgba(0,0,0,0.68)',
           }}
         >
           {manifest.title}
@@ -83,9 +83,9 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
         <div
           style={{
             color: layout === 'contrast' ? '#111' : primaryColor,
-            fontSize: layout === 'steps' ? 23 : 25,
+            fontSize: layout === 'steps' ? 20 : 21,
             fontWeight: 900,
-            padding: layout === 'steps' ? '9px 14px' : '10px 16px',
+            padding: layout === 'steps' ? '7px 12px' : '8px 13px',
             borderRadius: layout === 'contrast' ? 8 : layout === 'steps' ? 14 : 999,
             border: layout === 'contrast' ? '0' : `2px solid ${primaryColor}`,
             background: layout === 'contrast'

@@ -15,13 +15,13 @@ export const ProgressBar: React.FC<Props> = ({primaryColor}) => {
 
   return (
     <AbsoluteFill style={{justifyContent: 'flex-end'}}>
-      <div style={{height: 12, background: 'rgba(255,255,255,0.14)'}}>
+      <div style={{height: 5, background: 'rgba(255,255,255,0.1)'}}>
         <div
           style={{
             width: `${width * 100}%`,
             height: '100%',
             background: primaryColor,
-            boxShadow: `0 0 24px ${primaryColor}`,
+            boxShadow: `0 0 16px ${primaryColor}`,
           }}
         />
       </div>

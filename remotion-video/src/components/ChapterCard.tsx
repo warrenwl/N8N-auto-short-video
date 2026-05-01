@@ -54,6 +54,16 @@ const pop = (frame: number, index: number, motionConfig: Shared['motionConfig'])
   return {opacity, transform: `translateY(${y}px)`};
 };
 
+const stickerPop = (frame: number, index: number, motionConfig: Shared['motionConfig']) => {
+  const base = pop(frame, index, motionConfig);
+  const scale = interpolate(frame, [10 + index * 5, 18 + index * 5, 28 + index * 5], [0.82, 1.08, 1], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const rotate = index % 2 === 0 ? -2 : 2;
+  return {...base, transform: `${base.transform} scale(${scale}) rotate(${rotate}deg)`};
+};
+
 const Shell: React.FC<{
   children: React.ReactNode;
   top: number;
@@ -100,60 +110,61 @@ const KnowledgeCard: React.FC<{segment: Segment; total: number; shared: Shared}>
     <Watermark segment={segment} layout="concept" enabled={shared.cardConfig.number_watermark !== false} />
     <div
       style={{
-        display: 'grid',
-        gridTemplateColumns: '10px 1fr',
-        minHeight: 430,
-        borderRadius: 0,
-        overflow: 'hidden',
-        background: 'linear-gradient(90deg, rgba(0,0,0,0.32), rgba(0,0,0,0.08), transparent)',
-        border: 0,
-        boxShadow: 'none',
+        minHeight: 390,
+        paddingLeft: 18,
+        borderLeft: `7px solid ${shared.primaryColor}`,
+        background: 'linear-gradient(90deg, rgba(0,0,0,0.2), rgba(0,0,0,0.04), transparent 72%)',
       }}
     >
-      <div style={{background: `linear-gradient(180deg, ${shared.primaryColor}, ${shared.secondaryColor})`}} />
-      <div style={{padding: '30px 36px 34px'}}>
-        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32}}>
+      <div style={{padding: '18px 0 20px 26px'}}>
+        <div style={{display: 'flex', alignItems: 'center', gap: 18, marginBottom: 28}}>
           <div style={{color: shared.primaryColor, fontSize: 24, fontWeight: 950}}>POINT {String(segment.index).padStart(2, '0')}</div>
-          <div style={{color: 'rgba(255,255,255,0.62)', fontSize: 26, fontWeight: 850}}>{segment.index}/{total}</div>
+          <div style={{width: 86, height: 3, borderRadius: 999, background: `linear-gradient(90deg, ${shared.primaryColor}, transparent)`}} />
+          <div style={{color: 'rgba(255,255,255,0.56)', fontSize: 22, fontWeight: 850}}>{segment.index}/{total}</div>
         </div>
         <div
           style={{
             color: '#fff',
-            fontSize: headlineSize(segment.headline, 74),
-            lineHeight: 1.08,
+            fontSize: headlineSize(segment.headline, 80),
+            lineHeight: 1.04,
             fontWeight: 950,
             letterSpacing: 0,
+            maxWidth: 920,
+            textShadow: '0 5px 28px rgba(0,0,0,0.72)',
           }}
         >
           {segment.headline}
         </div>
         {shared.body ? (
-          <div style={{marginTop: 24, color: 'rgba(255,255,255,0.68)', fontSize: 28, lineHeight: 1.38, fontWeight: 720}}>
+          <div style={{marginTop: 22, maxWidth: 850, color: 'rgba(255,255,255,0.7)', fontSize: 27, lineHeight: 1.4, fontWeight: 720, textShadow: '0 4px 18px rgba(0,0,0,0.7)'}}>
             {shared.body}
           </div>
         ) : null}
-        <div style={{display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 32}}>
+        <div style={{display: 'flex', flexWrap: 'wrap', gap: 18, marginTop: 30}}>
           {shared.keywords.slice(0, 4).map((keyword, index) => (
             <div
               key={`${keyword}-${index}`}
               style={{
-                ...pop(shared.frame, index, shared.motionConfig),
-                padding: '11px 16px',
-                borderRadius: 999,
+                ...stickerPop(shared.frame, index, shared.motionConfig),
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '8px 12px',
+                borderRadius: 10,
+                background: index % 2 ? 'rgba(255,255,255,0.09)' : rgba(shared.primaryColor, 0.16),
+                border: `1px solid ${index % 2 ? 'rgba(255,255,255,0.12)' : rgba(shared.primaryColor, 0.24)}`,
                 color: index % 2 ? shared.secondaryColor : shared.primaryColor,
-                background: 'rgba(255,255,255,0.075)',
-                border: '1px solid rgba(255,255,255,0.12)',
-                fontSize: keyword.length > 7 ? 24 : 28,
-                fontWeight: 900,
+                fontSize: keyword.length > 7 ? 25 : 29,
+                fontWeight: 950,
+                textShadow: `0 0 24px ${rgba(index % 2 ? shared.secondaryColor : shared.primaryColor, 0.42)}`,
+                boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
               }}
             >
-              {keyword}
+              #{keyword}
             </div>
           ))}
         </div>
       </div>
     </div>
-    <div style={{marginTop: 20, width: 130, height: 6, borderRadius: 999, background: `linear-gradient(90deg, ${shared.primaryColor}, ${shared.secondaryColor})`}} />
   </div>
 );
 
@@ -164,9 +175,9 @@ const ListCard: React.FC<{segment: Segment; total: number; shared: Shared}> = ({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '106px 1fr',
-          gap: 22,
-          minHeight: 460,
+          gridTemplateColumns: '116px 1fr',
+          gap: 14,
+          minHeight: 420,
           padding: 0,
           borderRadius: 0,
           background: 'transparent',
@@ -176,19 +187,17 @@ const ListCard: React.FC<{segment: Segment; total: number; shared: Shared}> = ({
       >
         <div
           style={{
-            borderRadius: 999,
-            background: `linear-gradient(180deg, ${rgba(shared.primaryColor, 0.82)}, ${rgba(shared.secondaryColor, 0.22)})`,
-            padding: '24px 16px',
-            color: '#101113',
+            color: rgba(shared.primaryColor, 0.9),
             display: 'flex',
             flexDirection: 'column',
-            justifyContent: 'space-between',
-            boxShadow: '0 18px 54px rgba(0,0,0,0.22)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            textShadow: `0 0 34px ${rgba(shared.primaryColor, 0.34)}`,
           }}
         >
           <div style={{fontSize: 22, fontWeight: 950, writingMode: 'vertical-rl', letterSpacing: 2}}>STEP</div>
-          <div style={{fontSize: 70, lineHeight: 0.9, fontWeight: 950}}>{String(segment.index).padStart(2, '0')}</div>
-          <div style={{fontSize: 18, fontWeight: 900}}>{segment.index}/{total}</div>
+          <div style={{fontSize: 86, lineHeight: 0.9, fontWeight: 950}}>{String(segment.index).padStart(2, '0')}</div>
+          <div style={{width: 3, height: 96, marginTop: 18, borderRadius: 999, background: `linear-gradient(180deg, ${shared.primaryColor}, transparent)`}} />
         </div>
         <div style={{display: 'grid', alignContent: 'center', padding: '16px 0'}}>
           <div style={{color: '#fff', fontSize: headlineSize(segment.headline, 64), lineHeight: 1.12, fontWeight: 950}}>
@@ -199,22 +208,26 @@ const ListCard: React.FC<{segment: Segment; total: number; shared: Shared}> = ({
               {trimText(shared.rawBody, 50)}
             </div>
           ) : null}
-          <div style={{display: 'grid', gap: 12, marginTop: 30}}>
+          <div style={{display: 'grid', gap: 14, marginTop: 28}}>
             {items.map((keyword, index) => (
               <div
                 key={`${keyword}-${index}`}
                 style={{
-                  ...pop(shared.frame, index, shared.motionConfig),
-                  display: 'grid',
-                  gridTemplateColumns: '58px 1fr',
+                  ...stickerPop(shared.frame, index, shared.motionConfig),
+                  display: 'inline-grid',
+                  gridTemplateColumns: '42px auto',
                   alignItems: 'center',
-                  gap: 18,
-                  minHeight: 52,
-                  padding: '6px 4px',
-                  borderRadius: 0,
-                  background: 'transparent',
-                  borderBottom: `1px solid ${index === 0 ? rgba(shared.primaryColor, 0.5) : 'rgba(255,255,255,0.14)'}`,
+                  justifySelf: 'start',
+                  gap: 12,
+                  width: index === 0 ? 860 : index === 1 ? 520 : 700,
+                  maxWidth: '100%',
+                  minHeight: 56,
+                  padding: '8px 16px 10px 10px',
+                  borderRadius: 12,
+                  background: index === 0 ? rgba(shared.primaryColor, 0.18) : 'rgba(0,0,0,0.22)',
+                  border: `1px solid ${index === 0 ? rgba(shared.primaryColor, 0.3) : 'rgba(255,255,255,0.08)'}`,
                   color: '#fff',
+                  boxShadow: '0 14px 38px rgba(0,0,0,0.18)',
                 }}
               >
                 <span style={{color: shared.primaryColor, fontSize: 30, fontWeight: 950}}>{index + 1}</span>
@@ -242,35 +255,32 @@ const ContrastCard: React.FC<{segment: Segment; total: number; shared: Shared}> 
         <div style={{color: '#fff', fontSize: headlineSize(segment.headline, 64), lineHeight: 1.08, fontWeight: 950, maxWidth: 850}}>
           {segment.headline}
         </div>
-        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24}}>
+        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 26, marginTop: 10}}>
           {[
-            {label: '误区', value: left, bg: 'rgba(255,255,255,0.085)', color: '#fff'},
-            {label: '正解', value: right, bg: rgba(shared.primaryColor, 0.22), color: shared.primaryColor},
+            {label: '别这样想', mark: '×', value: left, bg: 'rgba(255,255,255,0.085)', color: 'rgba(255,255,255,0.86)'},
+            {label: '换成这个', mark: '✓', value: right, bg: rgba(shared.primaryColor, 0.22), color: shared.primaryColor},
           ].map((item, index) => (
             <div
-              key={item.label}
+              key={item.value}
               style={{
-                ...pop(shared.frame, index, shared.motionConfig),
+                ...stickerPop(shared.frame, index, shared.motionConfig),
                 minHeight: 250,
-                padding: '26px 10px 26px 0',
+                padding: '8px 8px 24px 0',
                 borderRadius: 0,
                 background: 'transparent',
-                borderTop: `4px solid ${index === 0 ? 'rgba(255,255,255,0.28)' : rgba(shared.primaryColor, 0.8)}`,
                 boxShadow: 'none',
               }}
             >
-              <div style={{color: item.color, fontSize: 32, fontWeight: 950, marginBottom: 28}}>{item.label}</div>
-              <div style={{color: '#fff', fontSize: item.value.length > 8 ? 39 : 48, lineHeight: 1.12, fontWeight: 950}}>
+              <div style={{display: 'flex', alignItems: 'center', gap: 12, color: item.color, fontSize: 28, fontWeight: 950, marginBottom: 26}}>
+                <span style={{display: 'inline-grid', placeItems: 'center', width: 42, height: 42, borderRadius: 999, color: index === 0 ? '#111' : '#111', background: index === 0 ? 'rgba(255,255,255,0.78)' : shared.primaryColor, boxShadow: `0 0 22px ${rgba(index === 0 ? '#ffffff' : shared.primaryColor, 0.28)}`}}>{item.mark}</span>
+                <span>{item.label}</span>
+              </div>
+              <div style={{color: '#fff', fontSize: item.value.length > 8 ? 40 : 52, lineHeight: 1.08, fontWeight: 950, textShadow: '0 5px 24px rgba(0,0,0,0.7)'}}>
                 {item.value}
               </div>
             </div>
           ))}
         </div>
-        {segment.layout_hint ? (
-          <div style={{width: 'fit-content', color: shared.primaryColor, fontSize: 24, lineHeight: 1.2, fontWeight: 900, padding: '10px 14px', borderRadius: 999, background: rgba(shared.primaryColor, 0.12), border: `1px solid ${rgba(shared.primaryColor, 0.24)}`}}>
-            {segment.layout_hint}
-          </div>
-        ) : null}
       </div>
     </div>
   );
@@ -284,26 +294,26 @@ const StoryCard: React.FC<{segment: Segment; total: number; shared: Shared}> = (
       <div
         style={{
           minHeight: 500,
-          padding: '28px 34px',
+          padding: '28px 0',
           borderRadius: 0,
-          background: 'linear-gradient(90deg, rgba(0,0,0,0.26), rgba(0,0,0,0.08), transparent)',
+          background: 'transparent',
           border: 0,
           boxShadow: 'none',
         }}
       >
         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32}}>
-          <div style={{color: shared.secondaryColor, fontSize: 28, fontWeight: 950}}>STORY {String(segment.index).padStart(2, '0')}</div>
+          <div style={{color: shared.secondaryColor, fontSize: 28, fontWeight: 950, textShadow: `0 0 24px ${rgba(shared.secondaryColor, 0.36)}`}}>STORY {String(segment.index).padStart(2, '0')}</div>
           <div style={{color: 'rgba(255,255,255,0.62)', fontSize: 24, fontWeight: 850}}>{segment.index}/{total}</div>
         </div>
-        <div style={{color: '#fff', fontSize: headlineSize(segment.headline, 62), lineHeight: 1.1, fontWeight: 950}}>
+        <div style={{color: '#fff', fontSize: headlineSize(segment.headline, 70), lineHeight: 1.08, fontWeight: 950, maxWidth: 900, textShadow: '0 5px 28px rgba(0,0,0,0.72)'}}>
           {segment.headline}
         </div>
         {shared.body ? (
-          <div style={{marginTop: 20, color: 'rgba(255,255,255,0.66)', fontSize: 24, lineHeight: 1.34, fontWeight: 700}}>
+          <div style={{marginTop: 20, maxWidth: 820, color: 'rgba(255,255,255,0.66)', fontSize: 24, lineHeight: 1.34, fontWeight: 700, textShadow: '0 4px 18px rgba(0,0,0,0.72)'}}>
             {trimText(shared.rawBody, 58)}
           </div>
         ) : null}
-        <div style={{position: 'relative', display: 'grid', gap: 18, marginTop: 34, paddingLeft: 42}}>
+        <div style={{position: 'relative', display: 'grid', gap: 22, marginTop: 34, paddingLeft: 42}}>
           <div style={{position: 'absolute', left: 15, top: 8, bottom: 10, width: 3, borderRadius: 999, background: `linear-gradient(180deg, ${shared.secondaryColor}, ${shared.primaryColor})`}} />
           {points.map((point, index) => (
             <div key={`${point}-${index}`} style={{...pop(shared.frame, index, shared.motionConfig), position: 'relative'}}>

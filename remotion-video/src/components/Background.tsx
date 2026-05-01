@@ -23,18 +23,18 @@ const templateOverlay = (
       <>
         <AbsoluteFill
           style={{
-            opacity: 0.2,
+            opacity: 0.08,
             backgroundImage:
-              `linear-gradient(90deg, transparent 0 16%, ${rgba(primaryColor, 0.24)} 16% 16.8%, transparent 16.8% 100%),
-               linear-gradient(rgba(255,255,255,0.16) 1px, transparent 1px)`,
-            backgroundSize: '100% 100%, 100% 132px',
-            transform: `translateY(${(frame % 132) * -0.06}px)`,
+              `linear-gradient(90deg, transparent 0 14%, ${rgba(primaryColor, 0.28)} 14% 14.35%, transparent 14.35% 100%),
+               linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px)`,
+            backgroundSize: '100% 100%, 100% 180px',
+            transform: `translateY(${(frame % 180) * -0.04}px)`,
           }}
         />
         <AbsoluteFill
           style={{
             background:
-              `linear-gradient(90deg, ${rgba(primaryColor, 0.22)} 0%, transparent 28%, transparent 100%)`,
+              `linear-gradient(90deg, ${rgba(primaryColor, 0.14)} 0%, transparent 26%, transparent 100%)`,
           }}
         />
       </>
@@ -47,16 +47,16 @@ const templateOverlay = (
         <AbsoluteFill
           style={{
             background:
-              `linear-gradient(90deg, rgba(5,7,10,0.76) 0 49.6%, ${rgba(primaryColor, 0.22)} 49.6% 50.4%, rgba(18,12,9,0.74) 50.4% 100%)`,
+              `linear-gradient(90deg, rgba(5,7,10,0.64) 0 49.6%, ${rgba(primaryColor, 0.16)} 49.6% 50.4%, rgba(18,12,9,0.66) 50.4% 100%)`,
           }}
         />
         <AbsoluteFill
           style={{
-            opacity: 0.2,
+            opacity: 0.08,
             backgroundImage:
               'linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px)',
-            backgroundSize: '86px 86px',
-            transform: `translateX(${(frame % 86) * 0.05}px)`,
+            backgroundSize: '120px 120px',
+            transform: `translateX(${(frame % 120) * 0.03}px)`,
           }}
         />
       </>
@@ -75,11 +75,11 @@ const templateOverlay = (
         />
         <AbsoluteFill
           style={{
-            opacity: 0.22,
+            opacity: 0.1,
             backgroundImage:
               `linear-gradient(90deg, transparent 0 22%, ${rgba(secondaryColor, 0.34)} 22% 22.4%, transparent 22.4% 100%),
                radial-gradient(circle, rgba(255,255,255,0.34) 0 2px, transparent 3px)`,
-            backgroundSize: '100% 100%, 96px 126px',
+            backgroundSize: '100% 100%, 130px 170px',
             backgroundPosition: `0 0, 0 ${frame * -0.05}px`,
           }}
         />
@@ -90,11 +90,11 @@ const templateOverlay = (
   return (
     <AbsoluteFill
       style={{
-        opacity: 0.18,
+        opacity: 0.07,
         backgroundImage:
           'linear-gradient(rgba(255,255,255,0.22) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.18) 1px, transparent 1px)',
-        backgroundSize: '72px 72px',
-        transform: `translateY(${(frame % 72) * -0.08}px)`,
+        backgroundSize: '110px 110px',
+        transform: `translateY(${(frame % 110) * -0.04}px)`,
       }}
     />
   );
@@ -162,6 +162,20 @@ export const Background: React.FC<Props> = ({
         }}
       />
       {templateOverlay(layout, primaryColor, secondaryColor, frame)}
+      <AbsoluteFill
+        style={{
+          background:
+            `radial-gradient(circle at 50% 42%, transparent 0%, transparent 48%, rgba(0,0,0,0.42) 100%),
+             linear-gradient(180deg, rgba(0,0,0,0.2) 0%, transparent 24%, transparent 62%, rgba(0,0,0,0.34) 100%)`,
+        }}
+      />
+      <AbsoluteFill
+        style={{
+          opacity: 0.16,
+          background: `linear-gradient(105deg, transparent 0%, transparent ${18 + (frame % 120) * 0.18}%, ${rgba(primaryColor, 0.16)} ${24 + (frame % 120) * 0.18}%, transparent ${34 + (frame % 120) * 0.18}%, transparent 100%)`,
+          mixBlendMode: 'screen',
+        }}
+      />
     </AbsoluteFill>
   );
 };

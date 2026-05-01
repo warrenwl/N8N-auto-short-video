@@ -103,26 +103,24 @@ export const Caption: React.FC<Props> = ({
     <div
       style={{
         position: 'absolute',
-        left: isList ? captionLeft + 28 : captionLeft,
-        right: isContrast ? captionRight + 22 : captionRight,
-        bottom: captionBottom,
-        padding: isStory ? '18px 28px' : isList ? '18px 30px' : '20px 32px',
-        borderRadius: isContrast ? 999 : isList ? 14 : isStory ? 22 : 20,
+        left: isList ? captionLeft + 34 : captionLeft + 18,
+        right: isContrast ? captionRight + 30 : captionRight + 18,
+        bottom: captionBottom + 6,
+        padding: isStory ? '12px 0 12px 18px' : isList ? '12px 0 12px 18px' : '12px 0',
+        borderRadius: 0,
         background: isContrast
-          ? `linear-gradient(90deg, rgba(0,0,0,0.44), ${rgba(primaryColor, 0.14)})`
-          : isList
-            ? 'rgba(0,0,0,0.36)'
-            : isStory
-              ? `linear-gradient(90deg, rgba(0,0,0,0.4), ${rgba(secondaryColor, 0.1)})`
-              : 'rgba(0,0,0,0.42)',
-        border: isList ? `1px solid ${rgba(primaryColor, 0.14)}` : '1px solid rgba(255,255,255,0.1)',
+          ? `linear-gradient(90deg, rgba(0,0,0,0.34), ${rgba(primaryColor, 0.09)}, transparent)`
+          : isList || isStory
+            ? `linear-gradient(90deg, rgba(0,0,0,0.36), transparent 86%)`
+            : 'transparent',
+        borderLeft: isList || isStory ? `4px solid ${rgba(primaryColor, 0.72)}` : '0',
         color: 'white',
         fontSize: scaledFontSize,
-        lineHeight: 1.26,
+        lineHeight: 1.2,
         textAlign: isList || isStory ? 'left' : 'center',
-        fontWeight: 850,
+        fontWeight: 900,
         whiteSpace: 'pre-line',
-        textShadow: '0 3px 14px rgba(0,0,0,0.85)',
+        textShadow: '0 4px 18px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.95)',
         fontFamily:
           'PingFang SC, Hiragino Sans GB, Noto Sans CJK SC, Microsoft YaHei, sans-serif',
         transform: `scale(${emphasis})`,
