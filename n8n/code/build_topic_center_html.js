@@ -240,6 +240,11 @@ const sourceLabel = {
 
 const query = getQuery();
 const activeTab = allowedTabs.has(String(query.status || '').toUpperCase()) ? String(query.status).toUpperCase() : 'ACTIVE';
+const pageSize = 10;
+function positiveInt(value, fallback = 1) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 const rowsAll = $input.all()
   .map((item) => item.json || {})
   .filter((row) => row.is_empty !== true && row.is_empty !== 'true');
@@ -252,17 +257,43 @@ const counts = rowsAll.reduce((acc, row) => {
   return acc;
 }, {ACTIVE: 0, NEW: 0, SCORED: 0, SELECTED: 0, PROMOTED: 0, REJECTED: 0, DUPLICATE: 0, ALL: 0});
 
-const rows = activeTab === 'CREATE'
+const filteredRows = activeTab === 'CREATE' || activeTab === 'AI_GENERATE'
   ? []
   : activeTab === 'ALL'
   ? rowsAll
   : activeTab === 'ACTIVE'
     ? rowsAll.filter((row) => ['NEW', 'SCORED', 'SELECTED'].includes(String(row.status || '')))
     : rowsAll.filter((row) => row.status === activeTab);
+const shouldPaginate = !['AI_GENERATE', 'CREATE'].includes(activeTab);
+const totalRows = filteredRows.length;
+const totalPages = shouldPaginate ? Math.max(1, Math.ceil(totalRows / pageSize)) : 1;
+const currentPage = shouldPaginate ? Math.min(positiveInt(query.page, 1), totalPages) : 1;
+const pageStart = (currentPage - 1) * pageSize;
+const rows = shouldPaginate ? filteredRows.slice(pageStart, pageStart + pageSize) : filteredRows;
 
 function tab(status, label, count = null) {
   const active = activeTab === status ? ' active' : '';
   return `<a class="tab${active}" href="/webhook/topic-center?status=${status}">${escapeHtml(label)}${count === null ? '' : ` <span>${count}</span>`}</a>`;
+}
+
+function pageUrl(page) {
+  return `/webhook/topic-center?status=${encodeURIComponent(activeTab)}&page=${page}`;
+}
+
+function pagination() {
+  if (!shouldPaginate || totalRows <= pageSize) return '';
+  const prev = currentPage > 1
+    ? `<a href="${pageUrl(currentPage - 1)}">上一页</a>`
+    : '<span class="disabled">上一页</span>';
+  const next = currentPage < totalPages
+    ? `<a href="${pageUrl(currentPage + 1)}">下一页</a>`
+    : '<span class="disabled">下一页</span>';
+  return `
+    <nav class="pagination" aria-label="分页">
+      <span>第 ${currentPage} / ${totalPages} 页，共 ${totalRows} 条，每页 ${pageSize} 条</span>
+      <div>${prev}${next}</div>
+    </nav>
+  `;
 }
 
 function actionButtons(row) {
@@ -410,6 +441,12 @@ function renderCandidateCard(row) {
       ? '重复'
       : '候选';
   const buttons = actionButtons(row);
+  const detailParts = [
+    row.angle ? `<div class="angle-box"><span>角度</span><strong>${escapeHtml(row.angle)}</strong></div>` : '',
+    row.opening_hook ? `<div class="angle-box"><span>开头钩子</span><strong>${escapeHtml(row.opening_hook)}</strong></div>` : '',
+    row.risk_note ? `<div class="angle-box"><span>风险提示</span><strong>${escapeHtml(row.risk_note)}</strong></div>` : '',
+    (row.candidate_score_reason || row.score_reason) ? `<div class="angle-box"><span>推荐理由</span><strong>${escapeHtml(row.candidate_score_reason || row.score_reason)}</strong></div>` : '',
+  ].filter(Boolean).join('');
 
   return `
     <article class="${cardClass}">
@@ -422,24 +459,23 @@ function renderCandidateCard(row) {
         </div>
         <h2>${escapeHtml(title)}</h2>
         <p class="topic">${escapeHtml(row.topic || '')}</p>
-        ${row.angle ? `<div class="angle-box"><span>角度</span><strong>${escapeHtml(row.angle)}</strong></div>` : ''}
-        ${row.pain_point ? `<div class="angle-box"><span>痛点</span><strong>${escapeHtml(row.pain_point)}</strong></div>` : ''}
-        ${row.promise ? `<div class="angle-box"><span>收益</span><strong>${escapeHtml(row.promise)}</strong></div>` : ''}
-        ${row.opening_hook ? `<div class="angle-box"><span>开头钩子</span><strong>${escapeHtml(row.opening_hook)}</strong></div>` : ''}
+        <div class="compact-insights">
+          ${row.core_angle ? `<div><span>核心</span><strong>${escapeHtml(row.core_angle)}</strong></div>` : ''}
+          ${row.pain_point ? `<div><span>痛点</span><strong>${escapeHtml(row.pain_point)}</strong></div>` : ''}
+          ${row.promise ? `<div><span>收益</span><strong>${escapeHtml(row.promise)}</strong></div>` : ''}
+        </div>
         ${tags ? `<div class="tag-row neutral">${escapeHtml(tags)}</div>` : ''}
+        ${detailParts ? `<details class="candidate-details"><summary>展开详情</summary><div class="detail-grid">${detailParts}</div></details>` : ''}
       </div>
       <aside class="card-meta">
-        ${metaItem('候选 ID', row.id || '')}
-        ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}
         ${metaItem('受众', row.audience || '')}
-        ${metaItem('核心角度', row.core_angle || '')}
-        ${metaItem('风险提示', row.risk_note || '')}
-        ${metaItem('推荐理由', row.candidate_score_reason || row.score_reason || '')}
+        ${metaItem('平台/账号', `${row.platform || 'douyin'} / ${row.account_key || 'mes'}`)}
         ${source === 'glm' ? metaItem('生成批次', sourceRefText(row.source_ref)) : ''}
         ${row.score ? metaItem('评分', row.score) : ''}
         ${row.promoted_topic_id ? metaItem('入池视频', `${row.promoted_topic_id}${promotedTopicStatus ? `（${promotedTopicStatus}）` : ''}`) : ''}
         ${row.duplicate_of ? metaItem('重复来源', row.duplicate_of) : ''}
         ${metaItem('更新时间', updatedAt)}
+        ${metaItem('候选 ID', row.id || '')}
         ${metaItem('创建时间', createdAt)}
       </aside>
       ${buttons ? `<div class="candidate-actions">${buttons}</div>` : ''}
@@ -631,6 +667,10 @@ const html = `<!doctype html>
     .tab-summary { padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-left: 5px solid #111827; }
     .tab-summary strong { color: #111827; font-size: 16px; white-space: nowrap; }
     .tab-summary span { color: #4b5563; font-size: 13px; line-height: 1.6; font-weight: 800; text-align: right; }
+    .pagination { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #4b5563; font-size: 13px; font-weight: 900; box-shadow: 0 8px 20px rgba(20,28,38,.05); }
+    .pagination div { display: flex; gap: 8px; align-items: center; }
+    .pagination a, .pagination .disabled { min-width: 72px; text-align: center; color: #111827; text-decoration: none; border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 10px; background: #fff; }
+    .pagination .disabled { color: #9ca3af; background: #f3f4f6; cursor: not-allowed; }
     .create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     label { display: grid; gap: 6px; color: #4b5563; font-size: 13px; font-weight: 900; }
     input, textarea, select { width: 100%; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; color: #111827; font-size: 14px; font-family: inherit; box-sizing: border-box; }
@@ -640,7 +680,7 @@ const html = `<!doctype html>
     textarea { min-height: 76px; resize: vertical; }
     .span-2 { grid-column: 1 / -1; }
     .candidate { padding: 18px; display: grid; gap: 12px; }
-    .topic-card { position: relative; overflow: hidden; padding: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr) minmax(260px, 320px); grid-template-areas: "rail main meta" "rail actions meta"; gap: 0; align-items: stretch; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+    .topic-card { position: relative; overflow: hidden; padding: 0; display: grid; grid-template-columns: 48px minmax(0, 1fr) minmax(240px, 290px); grid-template-areas: "rail main meta" "rail actions meta"; gap: 0; align-items: stretch; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
     .topic-card:hover { transform: translateY(-1px); box-shadow: 0 16px 34px rgba(20,28,38,.10); }
     .active-card { --accent: var(--blue); --accent-bg: #eef5ff; --accent-soft: #f8fbff; }
     .promoted-card { --accent: var(--green); --accent-bg: #edfdf5; --accent-soft: #fbfffd; border-color: #cfeedd; }
@@ -648,10 +688,10 @@ const html = `<!doctype html>
     .duplicate-card { --accent: var(--slate); --accent-bg: #f2f4f7; --accent-soft: #fbfcfd; border-color: #d0d5dd; }
     .card-rail { grid-area: rail; background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 72%, #111827)); color: #fff; display: grid; place-items: center; min-height: 100%; }
     .card-rail span { writing-mode: vertical-rl; letter-spacing: 2px; font-size: 12px; font-weight: 900; }
-    .candidate-main, .promoted-main { grid-area: main; min-width: 0; padding: 20px 22px 16px; display: grid; gap: 11px; background: linear-gradient(135deg, var(--accent-soft), #fff 44%); }
-    .card-meta { grid-area: meta; border-left: 1px solid var(--line); background: #fbfcfd; padding: 18px; display: grid; align-content: start; gap: 10px; }
-    .candidate-actions { grid-area: actions; border-top: 1px solid var(--line); padding: 14px 22px 18px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: #fff; }
-    .meta-item { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 8px; align-items: start; }
+    .candidate-main, .promoted-main { grid-area: main; min-width: 0; padding: 16px 18px 12px; display: grid; gap: 9px; background: linear-gradient(135deg, var(--accent-soft), #fff 44%); }
+    .card-meta { grid-area: meta; border-left: 1px solid var(--line); background: #fbfcfd; padding: 14px; display: grid; align-content: start; gap: 8px; }
+    .candidate-actions { grid-area: actions; border-top: 1px solid var(--line); padding: 12px 18px 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: #fff; }
+    .meta-item { display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 7px; align-items: start; }
     .meta-item span { color: #7a8494; font-size: 12px; font-weight: 900; }
     .meta-item strong { color: #273142; font-size: 13px; line-height: 1.45; word-break: break-word; font-weight: 800; }
     .video-state { width: fit-content; padding: 6px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 900; }
@@ -661,6 +701,16 @@ const html = `<!doctype html>
     .angle-box { border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line)); background: var(--accent-bg); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; }
     .angle-box span { color: #6b7280; font-size: 12px; font-weight: 900; }
     .angle-box strong { color: #1f2937; font-size: 14px; line-height: 1.55; }
+    .compact-insights { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .compact-insights div { min-width: 0; border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line)); background: rgba(255,255,255,.72); border-radius: 8px; padding: 8px 10px; display: grid; gap: 3px; }
+    .compact-insights span { color: #7a8494; font-size: 11px; font-weight: 900; }
+    .compact-insights strong { color: #273142; font-size: 12px; line-height: 1.42; font-weight: 850; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .candidate-details { border-top: 1px dashed #d9dee7; padding-top: 8px; }
+    .candidate-details summary { width: fit-content; cursor: pointer; color: #4b5563; font-size: 12px; font-weight: 900; list-style: none; }
+    .candidate-details summary::-webkit-details-marker { display: none; }
+    .candidate-details summary::after { content: " +"; color: var(--accent); }
+    .candidate-details[open] summary::after { content: " -"; }
+    .detail-grid { display: grid; gap: 8px; padding-top: 8px; }
     .candidate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
     .badge, .source { width: fit-content; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 900; }
     .badge.new, .badge.scored, .badge.selected { background: #eff6ff; color: #1d4ed8; }
@@ -668,14 +718,14 @@ const html = `<!doctype html>
     .badge.rejected { background: #fef2f2; color: #b91c1c; }
     .badge.duplicate { background: #f1f5f9; color: #475569; }
     .source { background: #f3f4f6; color: #4b5563; }
-    .candidate h2, .candidate-card h2, .promoted-card h2 { margin: 0; color: var(--ink); font-size: 25px; line-height: 1.22; letter-spacing: 0; }
-    .topic { margin: 0; color: #4b5563; font-size: 15px; line-height: 1.7; max-width: 76ch; }
+    .candidate h2, .candidate-card h2, .promoted-card h2 { margin: 0; color: var(--ink); font-size: 21px; line-height: 1.25; letter-spacing: 0; }
+    .topic { margin: 0; color: #4b5563; font-size: 14px; line-height: 1.55; max-width: 76ch; }
     dl { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 8px 12px; margin: 0; font-size: 13px; line-height: 1.5; }
     dt { color: #6b7280; font-weight: 800; }
     dd { margin: 0; color: #374151; word-break: break-word; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     form { margin: 0; }
-    button { border: 0; border-radius: 6px; padding: 11px 18px; color: #fff; font-weight: 900; cursor: pointer; font-size: 15px; }
+    button { border: 0; border-radius: 6px; padding: 10px 15px; color: #fff; font-weight: 900; cursor: pointer; font-size: 14px; }
     .promote { background: #16a34a; }
     .generate { background: #111827; }
     .reject { background: #dc2626; }
@@ -699,11 +749,14 @@ const html = `<!doctype html>
       .workspace-title::after { content: ""; margin: 0; }
       .panel-head, .tab-summary { align-items: flex-start; flex-direction: column; }
       .tab-summary span { text-align: left; }
+      .pagination { align-items: stretch; flex-direction: column; }
+      .pagination div { justify-content: space-between; }
       .create-grid { grid-template-columns: 1fr; }
       .topic-card { grid-template-columns: 1fr; grid-template-areas: "rail" "main" "meta" "actions"; }
       .card-rail { min-height: auto; height: 10px; }
       .card-rail span { display: none; }
       .card-meta { border-left: 0; border-top: 1px solid var(--line); }
+      .compact-insights { grid-template-columns: 1fr; }
       .actions { flex-direction: column; align-items: stretch; }
       button { width: 100%; }
     }
@@ -1076,7 +1129,9 @@ const html = `<!doctype html>
     ${activeTab === 'AI_GENERATE' ? aiPanel : ''}
     ${activeTab === 'CREATE' ? createPanel : ''}
     ${activeTab === 'AI_GENERATE' || activeTab === 'CREATE' ? '' : intro}
+    ${pagination()}
     ${activeTab === 'AI_GENERATE' || activeTab === 'CREATE' ? '' : (rows.length ? cards : '<div class="none">当前分类没有候选选题</div>')}
+    ${pagination()}
   </main>
 </body>
 </html>`;

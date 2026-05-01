@@ -200,6 +200,11 @@ const rejectOptions = rejectReasons.map((reason) => `<option value="${escapeHtml
 const allowedTabs = new Set(['NEED_REVIEW', 'GENERATING', 'APPROVED', 'REJECTED', 'PUBLISHED', 'ALL']);
 const query = getQuery();
 const activeStatus = allowedTabs.has(String(query.status || '').toUpperCase()) ? String(query.status).toUpperCase() : 'NEED_REVIEW';
+const pageSize = 10;
+function positiveInt(value, fallback = 1) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 const allRows = $input.all().map((item) => item.json || {});
 const counts = allRows.reduce((acc, row) => {
   const status = String(row.status || '');
@@ -216,11 +221,16 @@ const counts = allRows.reduce((acc, row) => {
   return acc;
 }, {NEED_REVIEW: 0, GENERATING: 0, APPROVED: 0, REJECTED: 0, PUBLISHED: 0, ALL: 0, TODAY: 0});
 
-const rows = activeStatus === 'ALL'
+const filteredRows = activeStatus === 'ALL'
   ? allRows
   : activeStatus === 'GENERATING'
     ? allRows.filter((row) => generatingStatuses.has(String(row.status || '')))
     : allRows.filter((row) => row.status === activeStatus);
+const totalRows = filteredRows.length;
+const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+const currentPage = Math.min(positiveInt(query.page, 1), totalPages);
+const pageStart = (currentPage - 1) * pageSize;
+const rows = filteredRows.slice(pageStart, pageStart + pageSize);
 
 const tabIntro = {
   NEED_REVIEW: {
@@ -530,6 +540,26 @@ function tab(status, label, count) {
   return `<a class="tab${active}" href="/webhook/video-review-list?status=${status}">${escapeHtml(label)} <span>${count}</span></a>`;
 }
 
+function pageUrl(page) {
+  return `/webhook/video-review-list?status=${encodeURIComponent(activeStatus)}&page=${page}`;
+}
+
+function pagination() {
+  if (totalRows <= pageSize) return '';
+  const prev = currentPage > 1
+    ? `<a href="${pageUrl(currentPage - 1)}">上一页</a>`
+    : '<span class="disabled">上一页</span>';
+  const next = currentPage < totalPages
+    ? `<a href="${pageUrl(currentPage + 1)}">下一页</a>`
+    : '<span class="disabled">下一页</span>';
+  return `
+    <nav class="pagination" aria-label="分页">
+      <span>第 ${currentPage} / ${totalPages} 页，共 ${totalRows} 条，每页 ${pageSize} 条</span>
+      <div>${prev}${next}</div>
+    </nav>
+  `;
+}
+
 const intro = tabIntro[activeStatus]
   ? `<section class="tab-summary"><strong>${escapeHtml(tabIntro[activeStatus].title)}</strong><span>${escapeHtml(tabIntro[activeStatus].text)}</span></section>`
   : '';
@@ -563,6 +593,10 @@ const html = `<!doctype html>
     .tab-summary { background: #fff; border: 1px solid #e5e7eb; border-left: 5px solid #111827; border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,.06); padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .tab-summary strong { color: #111827; font-size: 16px; white-space: nowrap; }
     .tab-summary span { color: #4b5563; font-size: 13px; line-height: 1.6; font-weight: 800; text-align: right; }
+    .pagination { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; box-shadow: 0 8px 24px rgba(15,23,42,.06); padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #4b5563; font-size: 13px; font-weight: 900; }
+    .pagination div { display: flex; gap: 8px; align-items: center; }
+    .pagination a, .pagination .disabled { min-width: 72px; text-align: center; color: #111827; text-decoration: none; border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 10px; background: #fff; }
+    .pagination .disabled { color: #9ca3af; background: #f3f4f6; cursor: not-allowed; }
     .card { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 20px; background: #fff; border: 1px solid #e5e7eb; border-left: 5px solid #f59e0b; border-radius: 8px; padding: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.06); }
     .card.need_review { border-left-color: #f59e0b; }
     .card.approved { border-left-color: #16a34a; }
@@ -628,6 +662,8 @@ const html = `<!doctype html>
       .workspace-title::after { content: ""; margin: 0; }
       .tab-summary { align-items: flex-start; flex-direction: column; }
       .tab-summary span { text-align: left; }
+      .pagination { align-items: stretch; flex-direction: column; }
+      .pagination div { justify-content: space-between; }
       .card { grid-template-columns: 1fr; }
       .media { max-height: 560px; }
       .actions, .reject-form, .recovery-card, .recovery-actions { flex-direction: column; align-items: stretch; }
@@ -717,7 +753,9 @@ const html = `<!doctype html>
   </header>
   <main>
     ${intro}
+    ${pagination()}
     ${rows.length ? cards : '<div class="none">当前分类没有视频</div>'}
+    ${pagination()}
   </main>
 </body>
 </html>`;
