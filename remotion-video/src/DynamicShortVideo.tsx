@@ -7,7 +7,7 @@ import {ChapterCard} from './components/ChapterCard';
 import {Outro} from './components/Outro';
 import {ProgressBar} from './components/ProgressBar';
 import type {RemotionManifest, Segment} from './types';
-import {getOutroSeconds, getTemplateConfig, getTemplateLabel, getTimelineEnd, getVisualConfig} from './visualConfig';
+import {getOutroSeconds, getTemplateConfig, getTemplateLabel, getTimelineEnd, getVisualConfig, rgba} from './visualConfig';
 
 const frameFromSeconds = (seconds: number, fps: number) => Math.max(0, Math.round(seconds * fps));
 
@@ -31,6 +31,7 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
   const secondaryColor = manifest.theme?.secondary_color || visualConfig.secondary_color || '#58B6FF';
   const backgroundColor = manifest.theme?.background_color || '#111111';
   const templateLabel = getTemplateLabel(manifest);
+  const layout = templateConfig.layout || 'concept';
   const outroSeconds = getOutroSeconds(manifest);
   const timelineEnd = getTimelineEnd(manifest);
   const titleTop = manifest.account?.account_name ? 112 : 74;
@@ -47,6 +48,7 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
         primaryColor={primaryColor}
         secondaryColor={secondaryColor}
         visualConfig={visualConfig}
+        templateConfig={templateConfig}
       />
       {manifest.voice_url ? <Audio src={manifest.voice_url} /> : null}
       <BrandBadge account={manifest.account} visualConfig={visualConfig} />
@@ -61,6 +63,7 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: 24,
           fontFamily:
             'PingFang SC, Hiragino Sans GB, Noto Sans CJK SC, Microsoft YaHei, sans-serif',
         }}
@@ -68,10 +71,10 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
         <div
           style={{
             color: '#fff',
-            fontSize: 34,
+            fontSize: layout === 'contrast' ? 32 : 34,
             lineHeight: 1.18,
             fontWeight: 900,
-            maxWidth: 720,
+            maxWidth: layout === 'steps' ? 650 : 720,
             textShadow: '0 4px 20px rgba(0,0,0,0.58)',
           }}
         >
@@ -79,13 +82,17 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
         </div>
         <div
           style={{
-            color: primaryColor,
-            fontSize: 25,
+            color: layout === 'contrast' ? '#111' : primaryColor,
+            fontSize: layout === 'steps' ? 23 : 25,
             fontWeight: 900,
-            padding: '10px 16px',
-            borderRadius: 999,
-            border: `2px solid ${primaryColor}`,
-            background: 'rgba(0,0,0,0.34)',
+            padding: layout === 'steps' ? '9px 14px' : '10px 16px',
+            borderRadius: layout === 'contrast' ? 8 : layout === 'steps' ? 14 : 999,
+            border: layout === 'contrast' ? '0' : `2px solid ${primaryColor}`,
+            background: layout === 'contrast'
+              ? primaryColor
+              : layout === 'timeline'
+                ? `linear-gradient(90deg, rgba(0,0,0,0.32), ${rgba(secondaryColor, 0.16)})`
+                : 'rgba(0,0,0,0.34)',
           }}
         >
           {templateLabel}
@@ -110,7 +117,9 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
               text={segment.subtitle}
               keywords={segment.keywords}
               primaryColor={primaryColor}
+              secondaryColor={secondaryColor}
               visualConfig={visualConfig}
+              templateConfig={templateConfig}
               platform={manifest.platform}
               durationInFrames={durationInFrames}
             />

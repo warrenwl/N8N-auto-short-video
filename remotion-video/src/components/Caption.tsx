@@ -1,13 +1,15 @@
 import React from 'react';
 import {interpolate, useCurrentFrame} from 'remotion';
-import type {RemotionVisualConfig} from '../types';
+import type {RemotionVisualConfig, TemplateVisualConfig} from '../types';
 import {rgba} from '../visualConfig';
 
 type Props = {
   text: string;
   keywords: string[];
   primaryColor: string;
+  secondaryColor: string;
   visualConfig: RemotionVisualConfig;
+  templateConfig: TemplateVisualConfig;
   platform?: string;
   durationInFrames?: number;
 };
@@ -53,11 +55,21 @@ const paginateLines = (lines: string[], maxLines: number) => {
   return pages.length ? pages : [''];
 };
 
-export const Caption: React.FC<Props> = ({text, keywords, primaryColor, visualConfig, platform, durationInFrames}) => {
+export const Caption: React.FC<Props> = ({
+  text,
+  keywords,
+  primaryColor,
+  secondaryColor,
+  visualConfig,
+  templateConfig,
+  platform,
+  durationInFrames,
+}) => {
   const frame = useCurrentFrame();
   const captionConfig = visualConfig.caption || {};
   const platformProfile =
     visualConfig.platform_profiles?.[platform || 'default'] || visualConfig.platform_profiles?.default || {};
+  const layout = templateConfig.layout || 'concept';
   const captionLeft = platformProfile.caption_left_px ?? captionConfig.left_px ?? 64;
   const captionRight = platformProfile.caption_right_px ?? captionConfig.right_px ?? 64;
   const captionBottom = platformProfile.caption_bottom_px ?? captionConfig.bottom_px ?? 154;
@@ -84,21 +96,30 @@ export const Caption: React.FC<Props> = ({text, keywords, primaryColor, visualCo
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
+  const isContrast = layout === 'contrast';
+  const isList = layout === 'steps';
+  const isStory = layout === 'timeline';
   return (
     <div
       style={{
         position: 'absolute',
-        left: captionLeft,
-        right: captionRight,
+        left: isList ? captionLeft + 28 : captionLeft,
+        right: isContrast ? captionRight + 22 : captionRight,
         bottom: captionBottom,
-        padding: '22px 34px',
-        borderRadius: 22,
-        background: `rgba(0,0,0,${captionConfig.box_opacity ?? 0.58})`,
-        border: '1px solid rgba(255,255,255,0.18)',
+        padding: isStory ? '18px 28px' : isList ? '18px 30px' : '20px 32px',
+        borderRadius: isContrast ? 999 : isList ? 14 : isStory ? 22 : 20,
+        background: isContrast
+          ? `linear-gradient(90deg, rgba(0,0,0,0.44), ${rgba(primaryColor, 0.14)})`
+          : isList
+            ? 'rgba(0,0,0,0.36)'
+            : isStory
+              ? `linear-gradient(90deg, rgba(0,0,0,0.4), ${rgba(secondaryColor, 0.1)})`
+              : 'rgba(0,0,0,0.42)',
+        border: isList ? `1px solid ${rgba(primaryColor, 0.14)}` : '1px solid rgba(255,255,255,0.1)',
         color: 'white',
         fontSize: scaledFontSize,
         lineHeight: 1.26,
-        textAlign: 'center',
+        textAlign: isList || isStory ? 'left' : 'center',
         fontWeight: 850,
         whiteSpace: 'pre-line',
         textShadow: '0 3px 14px rgba(0,0,0,0.85)',
