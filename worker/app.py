@@ -167,11 +167,11 @@ def wrap_text(text: str, max_chars: int = 18) -> str:
 
 def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     candidates = [
-        FONT_PATH,
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        FONT_PATH,
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/Supplemental/Songti.ttc",
     ]
     for candidate in candidates:
@@ -236,6 +236,70 @@ def blend_rgb(a: tuple[int, int, int], b: tuple[int, int, int], ratio: float) ->
     return tuple(clamp(int(a[idx] * (1 - ratio) + b[idx] * ratio)) for idx in range(3))
 
 
+def cover_title_lines(text: str) -> List[str]:
+    value = normalize_display_text(text)
+    if not value:
+        return ["今日观点"]
+    value = re.sub(r"[，。！？；、,!?;:：]+", " ", value).strip()
+    parts = [item for item in value.split() if item]
+    if len(parts) >= 2:
+        return parts[:2]
+    compact = value.replace(" ", "")
+    if len(compact) <= 5:
+        return [compact]
+    if len(compact) <= 8:
+        return [compact[:3], compact[3:]]
+    if len(compact) <= 12:
+        return [compact[:5], compact[5:]]
+    return [compact[:6], truncate_with_ellipsis(compact[6:], 8)]
+
+
+def compact_cover_subtitle(text: str) -> str:
+    value = normalize_display_text(text)
+    value = re.sub(r"这句话真正伤人的地方[，,]?", "", value)
+    value = value.replace("不是放弃选择，而是撤回连接", "不是放弃选择，是撤回连接")
+    return truncate_with_ellipsis(value or "先别急着划走", 18)
+
+
+def draw_cover_message_bubble(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    fill: tuple[int, int, int, int],
+    text_fill: tuple[int, int, int, int],
+    align_right: bool = False,
+) -> None:
+    x1, y1, x2, y2 = box
+    radius = max(18, min(34, (y2 - y1) // 2))
+    draw.rounded_rectangle(box, radius=radius, fill=fill)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    text_x = x1 + (x2 - x1 - text_w) // 2 - bbox[0]
+    text_y = y1 + (y2 - y1 - text_h) // 2 - bbox[1]
+    draw.text((text_x, text_y), text, font=font, fill=text_fill)
+
+
+def draw_centered_label(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    fill: tuple[int, int, int, int],
+    text_fill: tuple[int, int, int, int],
+    radius: int,
+) -> None:
+    x1, y1, x2, y2 = box
+    draw.rounded_rectangle(box, radius=radius, fill=fill)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    text_x = x1 + (x2 - x1 - text_w) // 2 - bbox[0]
+    text_y = y1 + (y2 - y1 - text_h) // 2 - bbox[1]
+    draw.text((text_x, text_y), text, font=font, fill=text_fill)
+
+
 def make_shot_image(
     path: Path,
     title: str,
@@ -296,82 +360,78 @@ def make_shot_image(
     marker_font = load_font(34)
 
     if is_cover:
-        img = Image.new("RGB", (width, height), bg)
+        cover_accent = hex_to_rgb("#F7D35B")
+        warning_red = hex_to_rgb("#E9483D")
+        img = Image.new("RGB", (width, height), (8, 9, 11))
         draw = ImageDraw.Draw(img, "RGBA")
         for y in range(height):
             vertical = y / max(1, height - 1)
-            base = blend_rgb(bg, accent, 0.08 + vertical * 0.16)
-            if y > height * 0.62:
-                base = blend_rgb(base, secondary, (y / height - 0.62) * 0.36)
+            base = blend_rgb((8, 9, 11), (20, 22, 26), vertical * 0.38)
+            if y > height * 0.55:
+                base = blend_rgb(base, (28, 20, 18), (vertical - 0.55) * 0.18)
             draw.line((0, y, width, y), fill=(*base, 255))
 
-        # Short-video cover style: bold title, high contrast, minimal metadata.
-        draw.rectangle((0, 0, width, height), fill=(0, 0, 0, 28))
-        draw.polygon(
-            [
-                (-40, int(height * 0.18)),
-                (width + 70, int(height * 0.07)),
-                (width + 30, int(height * 0.23)),
-                (-60, int(height * 0.36)),
-            ],
-            fill=(*accent, 56),
-        )
-        draw.polygon(
-            [
-                (int(width * 0.12), int(height * 0.78)),
-                (width + 90, int(height * 0.60)),
-                (width + 120, height + 80),
-                (int(width * 0.18), height + 30),
-            ],
-            fill=(*secondary, 58),
-        )
-        draw.rectangle((0, int(height * 0.34), width, int(height * 0.69)), fill=(0, 0, 0, 118))
-        draw.line((86, int(height * 0.31), width - 86, int(height * 0.31)), fill=(*accent, 210), width=7)
-        draw.line((86, int(height * 0.72), width - 86, int(height * 0.72)), fill=(*accent, 170), width=5)
+        # Mature fallback cover: one hook, one huge title, one supporting line.
+        draw.rectangle((0, 0, width, height), fill=(0, 0, 0, 62))
+        draw.ellipse((int(width * 0.58), -170, int(width * 1.22), int(height * 0.32)), fill=(*warning_red, 18))
+        draw.ellipse((-250, int(height * 0.70), int(width * 0.48), height + 120), fill=(*cover_accent, 12))
+        draw.rectangle((0, int(height * 0.28), width, int(height * 0.70)), fill=(0, 0, 0, 76))
 
-        hook = truncate_with_ellipsis(label.replace("口播", ""), 6)
-        hook_text = f"{hook}  ·  30秒看懂"
-        hook_font = load_font(34)
-        hook_bbox = draw.textbbox((0, 0), hook_text, font=hook_font)
-        hook_w = hook_bbox[2] - hook_bbox[0] + 54
-        draw.rounded_rectangle((82, 118, 82 + hook_w, 178), radius=30, fill=(*accent, 230))
-        draw.text((109, 130), hook_text, font=hook_font, fill=(8, 10, 14, 255))
-
-        cover_title = wrap_text(title_text, 5 if len(title_text) <= 10 else 6)
-        cover_title_font = load_font(128 if len(title_text) <= 8 else 112 if len(title_text) <= 12 else 96)
-        draw_centered_stroked(
+        lines = cover_title_lines(title_text)
+        if len(lines) == 1 and len(lines[0]) > 4:
+            lines = [lines[0][:3], lines[0][3:]]
+        badge_font = load_font(42)
+        badge_text = "别忽略这句话"
+        badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
+        badge_w = badge_bbox[2] - badge_bbox[0] + 56
+        badge_x = (width - badge_w) // 2
+        draw_centered_label(
             draw,
-            (width // 2, int(height * 0.48)),
-            cover_title,
-            cover_title_font,
-            fill=(255, 255, 255),
-            spacing=14,
-            stroke_fill=(0, 0, 0),
-            stroke_width=7,
+            (badge_x, 132, badge_x + badge_w, 198),
+            badge_text,
+            badge_font,
+            (*warning_red, 240),
+            (255, 255, 255, 255),
+            33,
         )
 
-        subtitle = truncate_with_ellipsis(support_text, 24)
-        subtitle_font = load_font(42)
-        draw_centered_stroked(
-            draw,
-            (width // 2, int(height * 0.64)),
-            wrap_text(subtitle, 12),
-            subtitle_font,
-            fill=(245, 247, 250),
-            spacing=8,
-            stroke_fill=(0, 0, 0),
-            stroke_width=3,
-        )
+        title_y = int(height * 0.37)
+        for index, line in enumerate(lines[:2]):
+            font = load_font(184 if len(line) <= 4 else 150 if len(line) <= 6 else 120)
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            x = (width - text_w) // 2
+            color = (255, 255, 255, 255) if index == 0 else (*cover_accent, 255)
+            draw.text((x + 7, title_y + 8), line, font=font, fill=(0, 0, 0, 188))
+            draw.text((x, title_y), line, font=font, fill=color, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+            if index == 1:
+                draw.rounded_rectangle(
+                    (x + 10, title_y + text_h + 16, x + text_w - 10, title_y + text_h + 28),
+                    radius=6,
+                    fill=(*warning_red, 230),
+                )
+            title_y += text_h + 34
 
-        chip_y = int(height * 0.78)
-        chip_x = 86
-        for keyword in keywords[:2]:
-            text = truncate_with_ellipsis(keyword, 6)
-            bbox = draw.textbbox((0, 0), text, font=chip_font)
-            chip_w = bbox[2] - bbox[0] + 52
-            draw.rounded_rectangle((chip_x, chip_y, chip_x + chip_w, chip_y + 62), radius=31, fill=(255, 255, 255, 230))
-            draw.text((chip_x + 26, chip_y + 12), text, font=chip_font, fill=(13, 16, 22, 255))
-            chip_x += chip_w + 18
+        subtitle = compact_cover_subtitle(support_text)
+        subtitle_font = load_font(40)
+        subtitle_text = wrap_text(subtitle, 15)
+        subtitle_bbox = draw.multiline_textbbox((0, 0), subtitle_text, font=subtitle_font, spacing=9, align="center")
+        subtitle_h = subtitle_bbox[3] - subtitle_bbox[1]
+        subtitle_y = int(height * 0.76)
+        draw.rounded_rectangle(
+            (86, subtitle_y - subtitle_h // 2 - 28, width - 86, subtitle_y + subtitle_h // 2 + 28),
+            radius=28,
+            fill=(0, 0, 0, 96),
+            outline=(255, 255, 255, 20),
+            width=2,
+        )
+        draw.rounded_rectangle(
+            (106, subtitle_y - subtitle_h // 2 - 6, 118, subtitle_y + subtitle_h // 2 + 6),
+            radius=6,
+            fill=(*warning_red, 235),
+        )
+        draw_centered(draw, (width // 2, subtitle_y), subtitle_text, subtitle_font, fill=(236, 238, 242), spacing=9)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path)

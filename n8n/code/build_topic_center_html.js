@@ -638,18 +638,18 @@ const html = `<!doctype html>
     code { padding: 2px 5px; border-radius: 5px; background: #f3f4f6; color: #374151; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
     .form-hint { margin: 0; color: #6b7280; font-size: 13px; line-height: 1.6; font-weight: 800; }
     .config-warning { margin-bottom: 12px; border: 1px solid #fed7aa; background: #fff7ed; color: #9a3412; border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 900; }
-    .ai-panel { height: 100%; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto auto minmax(220px, 1fr); align-content: stretch; gap: 12px; padding: 16px 18px; box-sizing: border-box; }
-    .ai-panel .panel-head { margin-bottom: 0; }
+    .ai-panel { height: 100%; min-height: 0; overflow: hidden; display: grid; grid-template-columns: minmax(0, 3fr) minmax(330px, 2fr); grid-template-rows: auto minmax(0, 1fr); align-content: stretch; gap: 14px 16px; padding: 16px 18px; box-sizing: border-box; }
+    .ai-panel .panel-head { grid-column: 1 / -1; margin-bottom: 0; }
     .ai-panel .panel-badge { padding: 6px 9px; }
     .ai-panel h2 { margin-bottom: 4px; font-size: 18px; }
     .ai-panel .form-hint { font-size: 12px; line-height: 1.45; }
-    .ai-panel form { min-height: 0; display: grid; align-content: start; gap: 12px; }
+    .ai-panel form { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; display: grid; align-content: start; gap: 12px; padding-right: 4px; }
     .ai-panel .create-grid { gap: 11px 14px; }
     .ai-panel label { gap: 5px; font-size: 12px; }
     .ai-panel input, .ai-panel select { padding: 9px 11px; font-size: 13px; }
     .ai-panel .create-button { margin-top: 0; padding: 11px 16px; }
     .generation-jobs { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 12px; }
-    .ai-panel .generation-jobs { min-height: 0; margin-top: 0; padding-top: 10px; grid-template-rows: auto minmax(0, 1fr); gap: 8px; overflow: hidden; }
+    .ai-panel .generation-jobs { min-height: 0; margin-top: 0; padding: 0 0 0 16px; border-top: 0; border-left: 1px solid var(--line); grid-template-rows: auto minmax(0, 1fr); gap: 8px; overflow: hidden; }
     .jobs-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 8px; background: var(--paper); border-bottom: 1px solid #eef0f3; }
     .jobs-head h3 { margin: 0; font-size: 17px; }
     .jobs-head span { color: #6b7280; font-size: 12px; font-weight: 900; }
@@ -742,7 +742,10 @@ const html = `<!doctype html>
     @media (max-width: 760px) {
       body:has(main.ai-main) { overflow: auto; }
       main.ai-main { height: auto; min-height: 0; overflow: visible; }
-      .ai-panel { height: auto; overflow: visible; }
+      .ai-panel { height: auto; overflow: visible; display: grid; grid-template-columns: 1fr; grid-template-rows: auto; }
+      .ai-panel .panel-head { grid-column: auto; }
+      .ai-panel form { overflow: visible; padding-right: 0; }
+      .ai-panel .generation-jobs { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--line); }
       .ai-panel .jobs-list { max-height: 320px; }
       .topline { align-items: flex-start; flex-direction: column; }
       .title-stack { align-items: flex-start; flex-direction: column; gap: 2px; }
@@ -1067,7 +1070,7 @@ const html = `<!doctype html>
           }
           if (toast) {
             toast.className = 'toast success show';
-            toast.textContent = '已提交生成任务，后台正在调用 GLM。你可以刷新页面，任务状态会保留在下方。';
+            toast.textContent = '已提交生成任务，后台正在调用 GLM。你可以刷新页面，任务状态会保留在右侧。';
           }
           refreshGenerationJobs();
           return;
