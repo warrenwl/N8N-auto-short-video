@@ -22,6 +22,8 @@
       "required_fields": ["headline", "body", "keywords", "subtitle"],
       "accent": "#F8D66D",
       "layout": "concept",
+      // background_mood 控制正片背景气质：clean=冷静知识感，bright=更明亮轻快，conflict=左右冲突感，warm=温暖叙事感。
+      "background_mood": "clean",
       "motion": "steady",
       "keyword_style": "chips",
       "visual_behavior": {
@@ -36,6 +38,8 @@
       "required_fields": ["headline", "body", "keywords", "layout_hint", "subtitle"],
       "accent": "#F8D66D",
       "layout": "steps",
+      // bright 会让清单模板比知识模板更轻快，适合步骤/方法类内容。
+      "background_mood": "bright",
       "motion": "step",
       "keyword_style": "numbered",
       "visual_behavior": {
@@ -50,6 +54,8 @@
       "required_fields": ["headline", "body", "keywords", "layout_hint", "subtitle"],
       "accent": "#58B6FF",
       "layout": "contrast",
+      // conflict 会强化左右冷暖分区，适合误区 vs 正解。
+      "background_mood": "conflict",
       "motion": "snap",
       "keyword_style": "split",
       "visual_behavior": {
@@ -64,6 +70,8 @@
       "required_fields": ["headline", "body", "keywords", "layout_hint", "subtitle"],
       "accent": "#FF8A5B",
       "layout": "timeline",
+      // warm 会让故事模板更偏暖色和叙事氛围。
+      "background_mood": "warm",
       "motion": "drift",
       "keyword_style": "timeline",
       "visual_behavior": {

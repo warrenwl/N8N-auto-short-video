@@ -300,7 +300,7 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 2. `HTTP Request - Generate Audio`：调用 `POST /render/audio`，生成 `voice_main.wav`、`voice_outro.wav`、`voice.wav`、`audio_manifest.json`，并完成字幕时长分配。
 3. `Postgres - Update AUDIO_READY`：回写 `voice_path/audio_duration/audio_engine/render_manifest`，状态改为 `AUDIO_READY`。
 4. `Postgres - Mark GENERATING_COVER`：封面生成开始，状态改为 `GENERATING_COVER`。
-5. `HTTP Request - Generate Cover`：调用 `POST /render/cover`，生成 ComfyUI 封面 `cover_base.png/cover.png`；如果关闭 ComfyUI 或失败且允许 fallback，则生成 placeholder 封面。
+5. `HTTP Request - Generate Cover`：调用 `POST /render/cover`，生成 ComfyUI 封面 `cover_base.png/cover.png`；如果关闭 ComfyUI 或失败且允许 fallback，则生成与 Remotion 底色和模板色适配的主题封面，不展示 ComfyUI 提示词。
 6. `Postgres - Update COVER_READY`：回写 `cover_path/media_manifest/comfyui_prompt_ids`，状态改为 `COVER_READY`。
 7. `Postgres - Mark RENDERING_VIDEO`：视频合成开始，状态改为 `RENDERING_VIDEO`。
 8. `HTTP Request - Render Remotion Video`：调用 `POST /render/remotion`，读取前两步的 `audio_manifest.json` 和 `media_manifest.json`，生成 `subtitles.srt`、`subtitles.json`、`remotion_manifest.json`、`final.mp4`、`manifest.json`。
@@ -358,6 +358,7 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 | `reject` | `NEED_REVIEW` → `REJECTED` | 待审核卡片“拒绝”按钮 |
 | `back_review` | `APPROVED/REJECTED` → `NEED_REVIEW` | 已通过/已拒绝卡片“退回待审核”按钮 |
 | `rerender` | `REJECTED` → `MEDIA_READY` | 已拒绝卡片“重新渲染视频”按钮，自动触发 06 的重渲染入口；重新生成语音/字幕并合成视频，不重新生成封面 |
+| `rerender_cover` | `REJECTED` → `AUDIO_READY` | 已拒绝卡片“重新生成封面”按钮，自动触发 06 的封面重生成入口；复用已有语音，重新生成封面后自动合成视频 |
 | `rerender_video_only` | `REJECTED` → `AUDIO_READY` | 已拒绝卡片“仅重新合成视频”按钮，自动触发 06 的仅重合成入口；复用已有语音/字幕/封面，只重新生成 `final.mp4` |
 | `reset_script` | `GENERATING_SCRIPT` → `IDEA` | 生成中卡片超时后“重新生成脚本”按钮，自动触发 01 |
 | `trigger_render` | `SCRIPT_READY` → `SCRIPT_READY` | 生成中卡片等待超时后“重新触发渲染”按钮，自动触发 06 |
@@ -379,7 +380,7 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 - 自动恢复次数会显示在审核中心卡片中；详细动作会进入“最近事件”。
 - 修改 n8n Code 节点后先运行 `./scripts/check_n8n_code_node_sandbox.js`，避免把 `path` 等 n8n task runner 禁用模块写入 workflow。
 - Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `ALL`。
-- `GENERATING` 会聚合展示生成/重渲染进度状态：`GENERATING_SCRIPT`、`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。选题中心点击“生成视频”后会先进入 `GENERATING_SCRIPT`；点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
+- `GENERATING` 会聚合展示生成/重渲染进度状态：`GENERATING_SCRIPT`、`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。选题中心点击“生成视频”后会先进入 `GENERATING_SCRIPT`；点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“重新生成封面”后，会由 `/webhook/video-rerender-cover` 自动领取，复用语音重出封面并合成视频；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
 - `GENERATING` Tab 会展示 5 秒刷新倒计时，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
 - 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。
@@ -469,7 +470,11 @@ docker compose restart n8n
 - `voice_prompt`：语音风格描述
 - `cfg_value`：控制强度（默认 2.0）
 - `inference_timesteps`：推理步数（默认 10）
-- `max_chars`：分句最大字符数
+- `max_chars`：单次 TTS 切块最大字符数，默认建议 80；过大会让整段旁白像一口气念完
+- `chunk_by_paragraph`：是否按分镜段落拆成多次 TTS；为保证同一条视频音色稳定，当前建议设为 `false`
+- `sentence_pause_seconds`：同一分镜内句子之间插入的静音停顿
+- `paragraph_pause_seconds`：不同分镜/段落之间插入的静音停顿，通常应大于句间停顿
+- `use_reference_audio`：是否启用参考音频；打开后主旁白和片尾会使用同一个参考音频约束音色
 
 ## 快速开始
 

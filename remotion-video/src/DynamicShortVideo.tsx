@@ -35,7 +35,8 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
   const outroSeconds = getOutroSeconds(manifest);
   const timelineEnd = getTimelineEnd(manifest);
   const titleTop = manifest.account?.account_name ? 112 : 74;
-  const titleOpacity = interpolate(frame, [0, 18, 80, 120], [0, 0.72, 0.72, 0.18], {
+  const captionCues = (manifest.caption_cues || []).filter((cue) => cue.text || cue.subtitle);
+  const titleOpacity = interpolate(frame, [0, 16, 46, 78], [0, 0.62, 0.62, 0], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
@@ -113,9 +114,30 @@ export const DynamicShortVideo: React.FC<RemotionManifest> = (manifest) => {
               templateConfig={templateConfig}
               visualConfig={visualConfig}
             />
+            {captionCues.length ? null : (
+              <Caption
+                text={segment.subtitle}
+                keywords={segment.keywords}
+                primaryColor={primaryColor}
+                secondaryColor={secondaryColor}
+                visualConfig={visualConfig}
+                templateConfig={templateConfig}
+                platform={manifest.platform}
+                durationInFrames={durationInFrames}
+              />
+            )}
+          </Sequence>
+        );
+      })}
+
+      {captionCues.map((cue) => {
+        const from = frameFromSeconds(cue.start, fps);
+        const durationInFrames = Math.max(1, frameFromSeconds(Math.max(0.1, cue.end - cue.start), fps));
+        return (
+          <Sequence key={`caption-${cue.index}-${cue.start}`} from={from} durationInFrames={durationInFrames}>
             <Caption
-              text={segment.subtitle}
-              keywords={segment.keywords}
+              text={cue.text || cue.subtitle || ''}
+              keywords={cue.keywords || []}
               primaryColor={primaryColor}
               secondaryColor={secondaryColor}
               visualConfig={visualConfig}

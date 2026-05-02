@@ -19,7 +19,7 @@ import re
 import sys
 import traceback
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -49,6 +49,9 @@ class TTSRequest(BaseModel):
     cfg_value: float = 2.0
     inference_timesteps: int = 10
     max_chars: int = DEFAULT_MAX_CHARS
+    chunk_by_paragraph: bool = True
+    sentence_pause_seconds: float = 0.18
+    paragraph_pause_seconds: float = 0.38
     reference_wav_path: Optional[str] = None
     prompt_wav_path: Optional[str] = None
     prompt_text: Optional[str] = None
@@ -86,44 +89,70 @@ def _load_model():
     return _model
 
 
-def _split_text(text: str, max_chars: int) -> List[str]:
-    text = re.sub(r"\s+", " ", text or "").strip()
-    if not text:
-        return []
-
-    # Split on Chinese and English sentence punctuation while keeping punctuation.
+def _split_long_text(text: str, max_chars: int) -> List[str]:
     parts = re.split(r"(?<=[。！？!?；;\.])\s*", text)
     chunks: List[str] = []
     current = ""
     for part in parts:
+        part = part.strip()
         if not part:
             continue
-        if len(current) + len(part) <= max_chars:
-            current += part
-        else:
-            if current:
-                chunks.append(current.strip())
-            # If one sentence is still too long, hard-split it.
-            while len(part) > max_chars:
-                chunks.append(part[:max_chars].strip())
-                part = part[max_chars:]
-            current = part
+        if current and len(current) + len(part) > max_chars:
+            chunks.append(current.strip())
+            current = ""
+        while len(part) > max_chars:
+            chunks.append(part[:max_chars].strip())
+            part = part[max_chars:]
+        current = f"{current}{part}" if current else part
     if current:
         chunks.append(current.strip())
     return chunks
 
 
+def _split_text(text: str, max_chars: int, chunk_by_paragraph: bool = True) -> List[Tuple[str, bool]]:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return []
+
+    if not chunk_by_paragraph:
+        single_text = re.sub(r"\s+", " ", normalized).strip()
+        return [(chunk, False) for chunk in _split_long_text(single_text, max_chars)]
+
+    # Newlines are shot/paragraph boundaries from the video worker. Keep them
+    # as stronger pause points instead of flattening the whole script.
+    paragraphs = [
+        re.sub(r"[ \t]+", " ", paragraph).strip()
+        for paragraph in re.split(r"\n+", normalized)
+        if paragraph.strip()
+    ]
+    chunks: List[Tuple[str, bool]] = []
+
+    for paragraph_index, paragraph in enumerate(paragraphs):
+        paragraph_chunks: List[str] = []
+        if len(paragraph) <= max_chars:
+            paragraph_chunks.append(paragraph)
+        else:
+            paragraph_chunks.extend(_split_long_text(paragraph, max_chars))
+
+        for chunk_index, chunk in enumerate(paragraph_chunks):
+            is_last_paragraph_chunk = chunk_index == len(paragraph_chunks) - 1
+            has_next_paragraph = paragraph_index < len(paragraphs) - 1
+            chunks.append((chunk, is_last_paragraph_chunk and has_next_paragraph))
+    return chunks
+
+
 def _synthesize(req: TTSRequest) -> tuple[np.ndarray, int]:
     model = _load_model()
-    chunks = _split_text(req.text, max(40, req.max_chars))
+    chunks = _split_text(req.text, max(40, req.max_chars), req.chunk_by_paragraph)
     if not chunks:
         raise ValueError("Text is empty")
 
     waves: List[np.ndarray] = []
     sample_rate = int(getattr(model.tts_model, "sample_rate", 48000))
-    silence = np.zeros(int(sample_rate * 0.15), dtype=np.float32)
+    sentence_pause = max(0.0, float(req.sentence_pause_seconds))
+    paragraph_pause = max(sentence_pause, float(req.paragraph_pause_seconds))
 
-    for chunk in chunks:
+    for index, (chunk, paragraph_break_after) in enumerate(chunks):
         text = chunk
         if req.voice_prompt:
             text = f"({req.voice_prompt.strip()}){chunk}"
@@ -142,10 +171,10 @@ def _synthesize(req: TTSRequest) -> tuple[np.ndarray, int]:
         wav = model.generate(**generate_kwargs)
         wav = np.asarray(wav, dtype=np.float32)
         waves.append(wav)
-        waves.append(silence)
-
-    if waves and len(waves[-1]) == len(silence):
-        waves.pop()
+        if index < len(chunks) - 1:
+            pause_seconds = paragraph_pause if paragraph_break_after else sentence_pause
+            if pause_seconds > 0:
+                waves.append(np.zeros(int(sample_rate * pause_seconds), dtype=np.float32))
     return np.concatenate(waves), sample_rate
 
 

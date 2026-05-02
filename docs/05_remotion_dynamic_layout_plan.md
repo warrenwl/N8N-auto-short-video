@@ -371,6 +371,12 @@ data/output/<task_id>/remotion_manifest.json
 - [x] `manifest.json` 新增 `subtitle_alignment`，记录对齐方法、检测到的静音点、选中的边界和回退原因。
 - [x] Remotion manifest 的 `audio_duration` 改为音频时长与字幕时间轴总长的较大值，避免安全尾帧被裁掉。
 - [x] 验证样例：`subtitle_alignment_smoke_001` 已返回 `subtitle_alignment.method = audio_silence_boundaries`，`final.mp4` 包含 H.264 视频流和 AAC 音频流。
+- [x] M8.1 逐短句字幕 cue：worker 将每个 shot 的长字幕按中文标点与长度拆成 `caption_cues`，并在 cue 内按文本权重分配 1-2 秒级时间窗；可用静音点足够贴近时优先吸附静音点。
+- [x] `subtitles.srt` 改为使用逐短句 cue，`subtitles.json` 同时保存 shot 级 `entries` 和短句级 `caption_cues`。
+- [x] Remotion manifest 新增 `caption_cues`，Remotion 渲染优先按全局 cue 的 `start/end` 显示字幕；无 cue 的旧 manifest 自动回退到原来的段落字幕。
+- [x] 验证样例：`12e99bad-eab4-4a0f-87eb-5947b4a74b93` 从 6 个 shot 级字幕拆出 24 个短句 cue，并成功渲染 `tmp_caption_cues_test.mp4`。
+- [x] M8.2 TTS 音色一致性：VoxCPM 支持 `chunk_by_paragraph` 配置。为避免多次 `generate()` 造成音色/语气漂移，当前默认 `chunk_by_paragraph=false,max_chars=2000`，主旁白尽量单次生成；参考音频已可通过 `use_reference_audio/reference_wav_path` 统一约束主旁白和片尾音色。
+- [x] ComfyUI 失败兜底封面：fallback 不再展示 `visual_prompt_cn/en`，改为基于 `cover_text/title`、分镜摘要、关键词和 Remotion 模板色生成主题封面，避免接口异常时产出“提示词占位图”。
 
 ### M9：视频观感配置化与模板分化
 
@@ -396,7 +402,7 @@ data/output/<task_id>/remotion_manifest.json
 
 ### 风险 3：字幕精确对齐不足
 
-当前字幕是按音频总时长和字幕长度分配，不是逐字 ASR 对齐。第一版接受这个方案，后续可接 Whisper/ASR 做精确时间戳。
+当前已从 shot 级字幕推进到逐短句 cue，对齐粒度从一段 5-10 秒降低到约 1-2 秒。它仍不是逐字 ASR 对齐；如果后续需要卡到每个词，可接 Whisper/ASR 或 TTS 原生时间戳作为最终对齐源。
 
 ### 风险 4：信息版式内容单调
 

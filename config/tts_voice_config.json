@@ -1,9 +1,12 @@
 {
-  "voice_prompt": "温润男声，普通话标准，声音清晰稳定，语气亲切可信，节奏自然偏稳，适合知识口播和生活经验分享，整体风格温和、有陪伴感，不夸张、不急促。",
+  "voice_prompt": "温润男声，普通话标准，声音清晰稳定，语气亲切可信，节奏自然偏稳，适合知识口播和生活经验分享，整体风格温和、有陪伴感，不夸张、不急促。保持整段音色、语速、语气一致，分镜段落之间略作自然停顿。",
   "cfg_value": 2.0,
   "inference_timesteps": 10,
   "max_chars": 2000,
-  "use_reference_audio": false,
+  "chunk_by_paragraph": false,
+  "sentence_pause_seconds": 0,
+  "paragraph_pause_seconds": 0,
+  "use_reference_audio": true,
   "reference_wav_path": "/Users/warrn/study/语音生成/audio/温润男声-参考音频.wav",
   "prompt_wav_path": "",
   "prompt_text": ""

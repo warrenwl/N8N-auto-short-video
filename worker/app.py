@@ -62,6 +62,7 @@ class TTSOptions(BaseModel):
     cfg_value: Optional[float] = None
     inference_timesteps: Optional[int] = None
     max_chars: Optional[int] = None
+    chunk_by_paragraph: Optional[bool] = None
     use_reference_audio: Optional[bool] = None
     reference_wav_path: Optional[str] = None
     prompt_wav_path: Optional[str] = None
@@ -165,10 +166,23 @@ def wrap_text(text: str, max_chars: int = 18) -> str:
 
 
 def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype(FONT_PATH, size=size)
-    except Exception:
-        return ImageFont.load_default()
+    candidates = [
+        FONT_PATH,
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            if Path(candidate).exists():
+                return ImageFont.truetype(candidate, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
 
 
 def draw_centered(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font, fill=(255, 255, 255), spacing=12):
@@ -180,25 +194,232 @@ def draw_centered(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, fon
     draw.multiline_text((x, y), text, font=font, fill=fill, spacing=spacing, align="center")
 
 
-def make_shot_image(path: Path, title: str, shot: Shot, width: int, height: int) -> None:
-    # Simple placeholder image. Later this can be replaced by ComfyUI-generated shot images.
-    img = Image.new("RGB", (width, height), (18, 18, 22))
-    draw = ImageDraw.Draw(img)
-    title_font = load_font(58)
-    body_font = load_font(46)
-    small_font = load_font(28)
+def draw_centered_stroked(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    font,
+    fill=(255, 255, 255),
+    spacing: int = 12,
+    stroke_fill=(0, 0, 0),
+    stroke_width: int = 4,
+) -> None:
+    bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align="center", stroke_width=stroke_width)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+    x = xy[0] - w // 2
+    y = xy[1] - h // 2
+    draw.multiline_text(
+        (x, y),
+        text,
+        font=font,
+        fill=fill,
+        spacing=spacing,
+        align="center",
+        stroke_width=stroke_width,
+        stroke_fill=stroke_fill,
+    )
 
-    # Top title
-    draw_centered(draw, (width // 2, 210), wrap_text(title or "AI Video", 13), title_font, fill=(255, 255, 255), spacing=10)
 
-    # Middle prompt/shot content
-    prompt = shot.visual_prompt_cn or shot.visual_prompt_en or shot.subtitle or "AI generated shot"
-    draw_centered(draw, (width // 2, height // 2), wrap_text(prompt, 16), body_font, fill=(230, 230, 230), spacing=14)
+def hex_to_rgb(hex_color: str, fallback: tuple[int, int, int] = (248, 214, 109)) -> tuple[int, int, int]:
+    value = (hex_color or "").strip().lstrip("#")
+    if len(value) != 6:
+        return fallback
+    try:
+        return tuple(int(value[idx: idx + 2], 16) for idx in (0, 2, 4))  # type: ignore[return-value]
+    except Exception:
+        return fallback
 
-    # Shot number marker
-    marker = f"SHOT {shot.shot_id}"
-    draw.rounded_rectangle((60, height - 170, 260, height - 105), radius=20, outline=(180, 180, 180), width=3)
-    draw.text((85, height - 158), marker, font=small_font, fill=(220, 220, 220))
+
+def blend_rgb(a: tuple[int, int, int], b: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
+    ratio = max(0.0, min(1.0, ratio))
+    return tuple(clamp(int(a[idx] * (1 - ratio) + b[idx] * ratio)) for idx in range(3))
+
+
+def make_shot_image(
+    path: Path,
+    title: str,
+    shot: Shot,
+    width: int,
+    height: int,
+    template_type: str = "knowledge",
+    is_cover: bool = False,
+) -> None:
+    visual_config = load_remotion_visual_config()
+    template_key = normalize_template_type(template_type, visual_config)
+    template_config = (visual_config.get("templates") or {}).get(template_key, {})
+    accent = hex_to_rgb(
+        str(template_config.get("accent") or visual_config.get("fallback_primary_color") or "#F8D66D")
+    )
+    bg = hex_to_rgb(str(visual_config.get("background_color") or "#090A0C"), (9, 10, 12))
+    secondary = hex_to_rgb(str(visual_config.get("secondary_color") or "#FF8A5B"), (255, 138, 91))
+
+    img = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    for y in range(height):
+        vertical = y / max(1, height - 1)
+        base = blend_rgb(bg, blend_rgb(accent, secondary, 0.32), 0.10 + vertical * 0.08)
+        draw.line((0, y, width, y), fill=(*base, 255))
+
+    # Large soft shapes mimic the Remotion video palette without exposing prompt text.
+    draw.ellipse((-width * 0.34, int(height * 0.06), int(width * 0.78), int(height * 0.48)), fill=(*accent, 42))
+    draw.ellipse((int(width * 0.34), int(height * 0.52), int(width * 1.24), int(height * 1.05)), fill=(*secondary, 34))
+    draw.polygon(
+        [
+            (int(width * 0.05), int(height * 0.23)),
+            (int(width * 0.95), int(height * 0.16)),
+            (int(width * 0.86), int(height * 0.22)),
+            (int(width * 0.12), int(height * 0.31)),
+        ],
+        fill=(*accent, 32),
+    )
+
+    title_text = truncate_with_ellipsis(title or "今日观点", 16)
+    support_candidates = [
+        normalize_display_text(shot.headline or ""),
+        normalize_display_text(shot.subtitle or ""),
+        normalize_display_text(shot.body or ""),
+    ]
+    support_text = next(
+        (item for item in support_candidates if item and item != normalize_display_text(title_text)),
+        "值得认真看完的一条口播",
+    )
+    support_text = truncate_with_ellipsis(support_text, 38)
+    keywords = normalize_keywords(shot.keywords, support_text, title_text)[:3]
+    label = str(template_config.get("label") or "主题口播")
+
+    title_font = load_font(94 if len(title_text) <= 9 else 80)
+    support_font = load_font(42)
+    badge_font = load_font(30)
+    chip_font = load_font(32)
+    marker_font = load_font(34)
+
+    if is_cover:
+        img = Image.new("RGB", (width, height), bg)
+        draw = ImageDraw.Draw(img, "RGBA")
+        for y in range(height):
+            vertical = y / max(1, height - 1)
+            base = blend_rgb(bg, accent, 0.08 + vertical * 0.16)
+            if y > height * 0.62:
+                base = blend_rgb(base, secondary, (y / height - 0.62) * 0.36)
+            draw.line((0, y, width, y), fill=(*base, 255))
+
+        # Short-video cover style: bold title, high contrast, minimal metadata.
+        draw.rectangle((0, 0, width, height), fill=(0, 0, 0, 28))
+        draw.polygon(
+            [
+                (-40, int(height * 0.18)),
+                (width + 70, int(height * 0.07)),
+                (width + 30, int(height * 0.23)),
+                (-60, int(height * 0.36)),
+            ],
+            fill=(*accent, 56),
+        )
+        draw.polygon(
+            [
+                (int(width * 0.12), int(height * 0.78)),
+                (width + 90, int(height * 0.60)),
+                (width + 120, height + 80),
+                (int(width * 0.18), height + 30),
+            ],
+            fill=(*secondary, 58),
+        )
+        draw.rectangle((0, int(height * 0.34), width, int(height * 0.69)), fill=(0, 0, 0, 118))
+        draw.line((86, int(height * 0.31), width - 86, int(height * 0.31)), fill=(*accent, 210), width=7)
+        draw.line((86, int(height * 0.72), width - 86, int(height * 0.72)), fill=(*accent, 170), width=5)
+
+        hook = truncate_with_ellipsis(label.replace("口播", ""), 6)
+        hook_text = f"{hook}  ·  30秒看懂"
+        hook_font = load_font(34)
+        hook_bbox = draw.textbbox((0, 0), hook_text, font=hook_font)
+        hook_w = hook_bbox[2] - hook_bbox[0] + 54
+        draw.rounded_rectangle((82, 118, 82 + hook_w, 178), radius=30, fill=(*accent, 230))
+        draw.text((109, 130), hook_text, font=hook_font, fill=(8, 10, 14, 255))
+
+        cover_title = wrap_text(title_text, 5 if len(title_text) <= 10 else 6)
+        cover_title_font = load_font(128 if len(title_text) <= 8 else 112 if len(title_text) <= 12 else 96)
+        draw_centered_stroked(
+            draw,
+            (width // 2, int(height * 0.48)),
+            cover_title,
+            cover_title_font,
+            fill=(255, 255, 255),
+            spacing=14,
+            stroke_fill=(0, 0, 0),
+            stroke_width=7,
+        )
+
+        subtitle = truncate_with_ellipsis(support_text, 24)
+        subtitle_font = load_font(42)
+        draw_centered_stroked(
+            draw,
+            (width // 2, int(height * 0.64)),
+            wrap_text(subtitle, 12),
+            subtitle_font,
+            fill=(245, 247, 250),
+            spacing=8,
+            stroke_fill=(0, 0, 0),
+            stroke_width=3,
+        )
+
+        chip_y = int(height * 0.78)
+        chip_x = 86
+        for keyword in keywords[:2]:
+            text = truncate_with_ellipsis(keyword, 6)
+            bbox = draw.textbbox((0, 0), text, font=chip_font)
+            chip_w = bbox[2] - bbox[0] + 52
+            draw.rounded_rectangle((chip_x, chip_y, chip_x + chip_w, chip_y + 62), radius=31, fill=(255, 255, 255, 230))
+            draw.text((chip_x + 26, chip_y + 12), text, font=chip_font, fill=(13, 16, 22, 255))
+            chip_x += chip_w + 18
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(path)
+        return
+
+    draw.rounded_rectangle((64, 108, width - 64, 172), radius=28, fill=(255, 255, 255, 22), outline=(*accent, 96), width=2)
+    draw.text((98, 126), label, font=badge_font, fill=(*accent, 255))
+    right_label = "主题封面" if is_cover else "分镜画面"
+    right_bbox = draw.textbbox((0, 0), right_label, font=badge_font)
+    draw.text((width - 98 - (right_bbox[2] - right_bbox[0]), 126), right_label, font=badge_font, fill=(255, 255, 255, 142))
+
+    title_box = (70, int(height * 0.28), width - 70, int(height * 0.52))
+    draw.rounded_rectangle(title_box, radius=44, fill=(0, 0, 0, 72), outline=(255, 255, 255, 30), width=2)
+    draw_centered(
+        draw,
+        (width // 2, int(height * 0.40)),
+        wrap_text(title_text, 8),
+        title_font,
+        fill=(255, 255, 255),
+        spacing=16,
+    )
+
+    support_box = (86, int(height * 0.56), width - 86, int(height * 0.68))
+    draw.rounded_rectangle(support_box, radius=28, fill=(255, 255, 255, 28), outline=(*accent, 42), width=2)
+    draw_centered(
+        draw,
+        (width // 2, int(height * 0.62)),
+        wrap_text(support_text, 17),
+        support_font,
+        fill=(242, 244, 248),
+        spacing=10,
+    )
+
+    chip_x = 88
+    chip_y = int(height * 0.73)
+    for keyword in keywords:
+        text = truncate_with_ellipsis(keyword, 8)
+        bbox = draw.textbbox((0, 0), text, font=chip_font)
+        chip_w = min(width - 176, bbox[2] - bbox[0] + 52)
+        draw.rounded_rectangle((chip_x, chip_y, chip_x + chip_w, chip_y + 62), radius=31, fill=(*accent, 56), outline=(*accent, 130), width=2)
+        draw.text((chip_x + 26, chip_y + 13), text, font=chip_font, fill=(255, 255, 255, 235))
+        chip_x += chip_w + 18
+        if chip_x > width - 220:
+            break
+
+    marker = "封面" if is_cover else (f"SHOT {shot.shot_id}" if shot.shot_id else "SHOT")
+    draw.text((88, height - 150), marker, font=marker_font, fill=(255, 255, 255, 128))
+    draw.line((88, height - 94, width - 88, height - 94), fill=(*accent, 120), width=4)
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path)
 
@@ -342,16 +563,18 @@ def seconds_to_srt_time(seconds: float) -> str:
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 
-def write_srt(path: Path, shots: List[Shot], durations: List[float]) -> None:
-    t = 0.0
+def write_srt_entries(path: Path, entries: List[Dict[str, Any]]) -> None:
     blocks = []
-    for item in subtitle_entries(shots, durations):
+    for idx, item in enumerate(entries, start=1):
         start = item["start"]
         end = item["end"]
-        subtitle = item["subtitle"]
-        idx = item["index"]
+        subtitle = item.get("text") or item.get("subtitle") or ""
         blocks.append(f"{idx}\n{seconds_to_srt_time(start)} --> {seconds_to_srt_time(end)}\n{subtitle}\n")
     path.write_text("\n".join(blocks), encoding="utf-8")
+
+
+def write_srt(path: Path, shots: List[Shot], durations: List[float], caption_cues: Optional[List[Dict[str, Any]]] = None) -> None:
+    write_srt_entries(path, caption_cues or subtitle_entries(shots, durations))
 
 
 def subtitle_entries(shots: List[Shot], durations: List[float]) -> List[Dict[str, Any]]:
@@ -374,6 +597,138 @@ def subtitle_entries(shots: List[Shot], durations: List[float]) -> List[Dict[str
 
 def subtitle_text(shot: Shot) -> str:
     return shot.subtitle or shot.visual_prompt_cn or shot.visual_prompt_en or ""
+
+
+def split_caption_phrases(text: str, max_chars: int = 18) -> List[str]:
+    cleaned = re.sub(r"\s+", "", safe_text(text, 1000))
+    if not cleaned:
+        return []
+    phrases: List[str] = []
+    current = ""
+
+    def push_current() -> None:
+        nonlocal current
+        value = current.strip()
+        if value:
+            phrases.append(value)
+        current = ""
+
+    for ch in cleaned:
+        current += ch
+        is_punctuation = ch in "。！？!?；;"
+        is_soft_punctuation = ch in "，、,"
+        if is_punctuation or (is_soft_punctuation and len(current) >= max(8, int(max_chars * 0.55))) or len(current) >= max_chars:
+            push_current()
+    push_current()
+
+    # Avoid lonely punctuation or very short tail cues that flash too quickly.
+    merged: List[str] = []
+    for phrase in phrases:
+        if merged and (len(phrase) <= 3 or re.fullmatch(r"[，。！？、,!?；;]+", phrase)):
+            merged[-1] = f"{merged[-1]}{phrase}"
+        else:
+            merged.append(phrase)
+    return merged
+
+
+def text_weight(text: str) -> int:
+    return max(1, len(re.sub(r"\s+", "", safe_text(text, 1000))))
+
+
+def weighted_phrase_durations(phrases: List[str], total: float) -> List[float]:
+    if not phrases:
+        return []
+    weights = [text_weight(item) for item in phrases]
+    weight_total = sum(weights) or len(phrases)
+    min_duration = 0.55 if total < 4 else 0.72
+    durations = [max(min_duration, total * weight / weight_total) for weight in weights]
+    drift = total - sum(durations)
+    durations[-1] = max(min_duration, durations[-1] + drift)
+    if sum(durations) > total and total > 0:
+        scale = total / sum(durations)
+        durations = [max(0.42, item * scale) for item in durations]
+        drift = total - sum(durations)
+        durations[-1] = max(0.42, durations[-1] + drift)
+    return [round(item, 3) for item in durations]
+
+
+def pick_phrase_boundaries(
+    local_silences: List[float],
+    expected_boundaries: List[float],
+    total: float,
+) -> List[float]:
+    if not expected_boundaries:
+        return []
+    boundaries: List[float] = []
+    last = 0.0
+    max_drift = min(0.72, max(0.32, total * 0.16))
+    remaining = sorted(point for point in local_silences if 0.35 < point < total - 0.35)
+    for idx, target in enumerate(expected_boundaries):
+        min_remaining = len(expected_boundaries) - idx - 1
+        viable = [
+            point
+            for point in remaining
+            if point > last + 0.35 and len([future for future in remaining if future > point + 0.35]) >= min_remaining
+        ]
+        if not viable:
+            return []
+        chosen = min(viable, key=lambda point: abs(point - target))
+        if abs(chosen - target) > max_drift:
+            return []
+        boundaries.append(chosen)
+        last = chosen
+        remaining = [point for point in remaining if point > chosen]
+    return boundaries
+
+
+def build_caption_cues(
+    shots: List[Shot],
+    durations: List[float],
+    subtitle_alignment: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    entries = subtitle_entries(shots, durations)
+    silence_midpoints = [
+        float(item)
+        for item in (subtitle_alignment or {}).get("silence_midpoints", [])
+        if isinstance(item, (int, float))
+    ]
+    cues: List[Dict[str, Any]] = []
+    cue_index = 1
+    for shot, entry in zip(shots, entries):
+        start = float(entry["start"])
+        end = float(entry["end"])
+        total = max(0.1, end - start)
+        phrases = split_caption_phrases(str(entry["subtitle"]))
+        if not phrases:
+            continue
+        durations_for_phrases = weighted_phrase_durations(phrases, total)
+        expected = []
+        acc = 0.0
+        for dur in durations_for_phrases[:-1]:
+            acc += dur
+            expected.append(round(acc, 3))
+        local_silences = [round(point - start, 3) for point in silence_midpoints if start + 0.2 < point < end - 0.2]
+        boundaries = pick_phrase_boundaries(local_silences, expected, total)
+        marks = [0.0, *(boundaries or expected), total]
+        for phrase_idx, phrase in enumerate(phrases):
+            cue_start = start + marks[phrase_idx]
+            cue_end = start + marks[phrase_idx + 1]
+            if cue_end <= cue_start:
+                continue
+            cues.append({
+                "index": cue_index,
+                "shot_index": entry["index"],
+                "phrase_index": phrase_idx + 1,
+                "start": round(cue_start, 3),
+                "end": round(cue_end, 3),
+                "duration": round(cue_end - cue_start, 3),
+                "text": phrase,
+                "subtitle": phrase,
+                "keywords": normalize_keywords(shot.keywords, phrase, ""),
+                "alignment_method": "silence_phrase_boundaries" if boundaries else "weighted_phrase_fallback",
+            })
+            cue_index += 1
+    return cues
 
 
 def subtitle_weight(shot: Shot) -> int:
@@ -581,6 +936,12 @@ def render_tts_file(req: RenderRequest, text: str, output_path: Path) -> float:
         "inference_timesteps": options.get("inference_timesteps", 10),
         "max_chars": options.get("max_chars", 2000),
     }
+    if "chunk_by_paragraph" in options:
+        payload["chunk_by_paragraph"] = bool(options.get("chunk_by_paragraph"))
+    for key in ["sentence_pause_seconds", "paragraph_pause_seconds"]:
+        value = options.get(key)
+        if value is not None:
+            payload[key] = value
     for key in ["reference_wav_path", "prompt_wav_path", "prompt_text"]:
         value = options.get(key)
         if value:
@@ -779,6 +1140,7 @@ def build_remotion_manifest(
     account_brand: Dict[str, Any],
 ) -> Dict[str, Any]:
     entries = subtitle_entries(shots, durations)
+    caption_cues = build_caption_cues(shots, durations, subtitle_alignment)
     timeline_duration = max(audio_duration or 0.0, sum(durations))
     template_type = normalize_template_type(req.template_type, visual_config)
     template_config = (visual_config.get("templates") or {}).get(template_type, {})
@@ -824,6 +1186,7 @@ def build_remotion_manifest(
         "fps": req.fps,
         "template_type": template_type,
         "subtitle_alignment": subtitle_alignment,
+        "caption_cues": caption_cues,
         "visual_config": visual_config,
         "account": account_brand,
         "theme": {
@@ -977,9 +1340,9 @@ def generate_cover_stage(req: RenderRequest) -> Dict[str, Any]:
             if not req.comfyui_options.fallback_to_placeholder:
                 raise
             media_errors["cover"] = str(exc)[:1000]
-            make_shot_image(cover_path, req.cover_text or req.title, normalized_shots[0], req.width, req.height)
+            make_shot_image(cover_path, req.cover_text or req.title, normalized_shots[0], req.width, req.height, req.template_type, is_cover=True)
     else:
-        make_shot_image(cover_path, req.cover_text or req.title, normalized_shots[0], req.width, req.height)
+        make_shot_image(cover_path, req.cover_text or req.title, normalized_shots[0], req.width, req.height, req.template_type, is_cover=True)
 
     media_manifest = {
         "status": "ok",
@@ -1030,10 +1393,14 @@ def render_video_stage(req: RenderRequest) -> Dict[str, Any]:
         cover_path = Path(str(cover_stage.get("cover_path") or paths["cover"]))
 
     subtitle_path = paths["subtitles_srt"]
-    write_srt(subtitle_path, shots, durations)
+    caption_cues = build_caption_cues(shots, durations, subtitle_alignment)
+    write_srt(subtitle_path, shots, durations, caption_cues)
     subtitles_json_path = paths["subtitles_json"]
     subtitles_json_path.write_text(
-        json.dumps(subtitle_entries(shots, durations), ensure_ascii=False, indent=2),
+        json.dumps({
+            "entries": subtitle_entries(shots, durations),
+            "caption_cues": caption_cues,
+        }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -1063,7 +1430,7 @@ def render_video_stage(req: RenderRequest) -> Dict[str, Any]:
             for idx, (shot, duration) in enumerate(zip(shots, durations), start=1):
                 image_path = paths["images_dir"] / f"shot_{idx:03}.png"
                 clip_path = paths["clips_dir"] / f"clip_{idx:03}.mp4"
-                make_shot_image(image_path, req.title, shot, req.width, req.height)
+                make_shot_image(image_path, req.title, shot, req.width, req.height, req.template_type)
                 render_clip(image_path, clip_path, duration, req.fps, req.width, req.height)
                 image_paths.append(str(image_path))
                 clip_paths.append(str(clip_path))
@@ -1266,15 +1633,19 @@ def render(req: RenderRequest):
                 if not req.comfyui_options.fallback_to_placeholder:
                     raise
                 media_errors["cover"] = str(exc)[:1000]
-                make_shot_image(cover_path, req.cover_text or req.title, shots[0], req.width, req.height)
+                make_shot_image(cover_path, req.cover_text or req.title, shots[0], req.width, req.height, req.template_type, is_cover=True)
         else:
-            make_shot_image(cover_path, req.cover_text or req.title, shots[0], req.width, req.height)
+            make_shot_image(cover_path, req.cover_text or req.title, shots[0], req.width, req.height, req.template_type, is_cover=True)
 
         subtitle_path = task_dir / "subtitles.srt"
-        write_srt(subtitle_path, shots, durations)
+        caption_cues = build_caption_cues(shots, durations, subtitle_alignment)
+        write_srt(subtitle_path, shots, durations, caption_cues)
         subtitles_json_path = task_dir / "subtitles.json"
         subtitles_json_path.write_text(
-            json.dumps(subtitle_entries(shots, durations), ensure_ascii=False, indent=2),
+            json.dumps({
+                "entries": subtitle_entries(shots, durations),
+                "caption_cues": caption_cues,
+            }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -1299,9 +1670,9 @@ def render(req: RenderRequest):
                         if not req.comfyui_options.fallback_to_placeholder:
                             raise
                         media_errors[f"shot_{idx:03}"] = str(exc)[:1000]
-                        make_shot_image(image_path, req.title, shot, req.width, req.height)
+                        make_shot_image(image_path, req.title, shot, req.width, req.height, req.template_type)
                 else:
-                    make_shot_image(image_path, req.title, shot, req.width, req.height)
+                    make_shot_image(image_path, req.title, shot, req.width, req.height, req.template_type)
                 render_clip(image_path, clip_path, duration, req.fps, req.width, req.height)
                 image_paths.append(str(image_path))
                 clip_paths.append(str(clip_path))

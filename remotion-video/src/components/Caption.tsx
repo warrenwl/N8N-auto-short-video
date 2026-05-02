@@ -34,16 +34,25 @@ const splitForHighlight = (text: string, keywords: string[]) => {
 const wrapCaptionLines = (text: string, maxChars: number) => {
   const lines: string[] = [];
   let current = '';
+  const pushLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    if (/^[，。！？；,!?;]+$/.test(trimmed) && lines.length) {
+      lines[lines.length - 1] = `${lines[lines.length - 1]}${trimmed}`;
+      return;
+    }
+    lines.push(trimmed);
+  };
   for (const ch of text) {
     current += ch;
     const isSoftBreak = '，；,;'.includes(ch) && current.length >= Math.floor(maxChars * 0.58);
     const isHardBreak = '。！？!?'.includes(ch);
     if (current.length >= maxChars || isSoftBreak || isHardBreak) {
-      lines.push(current.trim());
+      pushLine(current);
       current = '';
     }
   }
-  if (current.trim()) lines.push(current.trim());
+  if (current.trim()) pushLine(current);
   return lines;
 };
 
@@ -72,7 +81,7 @@ export const Caption: React.FC<Props> = ({
   const layout = templateConfig.layout || 'concept';
   const captionLeft = platformProfile.caption_left_px ?? captionConfig.left_px ?? 64;
   const captionRight = platformProfile.caption_right_px ?? captionConfig.right_px ?? 64;
-  const captionBottom = platformProfile.caption_bottom_px ?? captionConfig.bottom_px ?? 154;
+  const captionBottom = Math.max(126, (platformProfile.caption_bottom_px ?? captionConfig.bottom_px ?? 154) - 18);
   const lines = wrapCaptionLines(text, captionConfig.max_chars_per_line ?? 18);
   const pages = paginateLines(lines, captionConfig.max_lines ?? 2);
   const pageFrameCount = Math.max(24, Math.floor((durationInFrames || 1) / pages.length));
@@ -99,25 +108,22 @@ export const Caption: React.FC<Props> = ({
   const isContrast = layout === 'contrast';
   const isList = layout === 'steps';
   const isStory = layout === 'timeline';
+  const accentColor = isStory ? secondaryColor : primaryColor;
   return (
     <div
       style={{
         position: 'absolute',
-        left: isList ? captionLeft + 34 : captionLeft + 18,
-        right: isContrast ? captionRight + 30 : captionRight + 18,
-        bottom: captionBottom + 6,
-        padding: isStory ? '12px 0 12px 18px' : isList ? '12px 0 12px 18px' : '12px 0',
+        left: captionLeft + 42,
+        right: captionRight + 42,
+        bottom: captionBottom + 2,
+        padding: '12px 0 12px 18px',
         borderRadius: 0,
-        background: isContrast
-          ? `linear-gradient(90deg, rgba(0,0,0,0.34), ${rgba(primaryColor, 0.09)}, transparent)`
-          : isList || isStory
-            ? `linear-gradient(90deg, rgba(0,0,0,0.36), transparent 86%)`
-            : 'transparent',
-        borderLeft: isList || isStory ? `4px solid ${rgba(primaryColor, 0.72)}` : '0',
+        background: `linear-gradient(90deg, rgba(0,0,0,0.34), ${rgba(accentColor, isContrast ? 0.1 : 0.06)}, transparent 82%)`,
+        borderLeft: `3px solid ${rgba(accentColor, 0.74)}`,
         color: 'white',
         fontSize: scaledFontSize,
         lineHeight: 1.2,
-        textAlign: isList || isStory ? 'left' : 'center',
+        textAlign: 'left',
         fontWeight: 900,
         whiteSpace: 'pre-line',
         textShadow: '0 4px 18px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.95)',

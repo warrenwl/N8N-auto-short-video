@@ -11,6 +11,19 @@ export type Segment = {
   visual_prompt?: string;
 };
 
+export type CaptionCue = {
+  index: number;
+  shot_index?: number;
+  phrase_index?: number;
+  start: number;
+  end: number;
+  duration: number;
+  text: string;
+  subtitle?: string;
+  keywords?: string[];
+  alignment_method?: string;
+};
+
 export type Theme = {
   style: string;
   primary_color: string;
@@ -32,6 +45,7 @@ export type TemplateVisualConfig = {
   layout?: 'concept' | 'steps' | 'contrast' | 'timeline';
   motion?: 'steady' | 'step' | 'snap' | 'drift';
   keyword_style?: 'chips' | 'numbered' | 'split' | 'timeline';
+  background_mood?: 'clean' | 'bright' | 'conflict' | 'warm';
 };
 
 export type RemotionVisualConfig = {
@@ -132,6 +146,7 @@ export type RemotionManifest = {
   template_type?: string;
   source_audio_duration?: number;
   subtitle_alignment?: SubtitleAlignment;
+  caption_cues?: CaptionCue[];
   visual_config?: RemotionVisualConfig;
   account?: AccountBrand;
   theme: Theme;
