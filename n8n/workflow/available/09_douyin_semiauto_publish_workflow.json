@@ -11,7 +11,7 @@
         "options": {}
       },
       "id": "webhook-douyin-publish-start-09",
-      "name": "Webhook - Douyin Publish Start",
+      "name": "Webhook - 开始抖音发布",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -25,7 +25,7 @@
         "jsCode": "// n8n Code node: Validate Douyin Publish Start Params\n// Expected query: ?task_id=<video_topics.id>&token=<review_token>\n\nconst source = $json || {};\nconst query = source.query || source.params || source;\n\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\n\nif (!taskId) {\n  throw new Error('缺少 task_id 参数');\n}\n\nif (!token) {\n  throw new Error('缺少 token 参数');\n}\n\nreturn [\n  {\n    json: {\n      task_id: taskId,\n      token,\n      platform: 'douyin',\n      received_at: new Date().toISOString(),\n    },\n  },\n];\n"
       },
       "id": "validate-douyin-publish-start-09",
-      "name": "Code - Validate Douyin Publish Start Params",
+      "name": "代码 - 校验抖音发布参数",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -42,7 +42,7 @@
         }
       },
       "id": "start-douyin-publish-job-09",
-      "name": "Postgres - Start Douyin Publish Job",
+      "name": "数据库 - 创建或复用抖音发布任务",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -61,7 +61,7 @@
         "jsCode": "// n8n Code node: Build Douyin Package Request\n// Input: one row from video_publish_jobs.\n// Output: JSON body for publish-helper /package/douyin.\n\nfunction env(name, fallback = '') {\n  try {\n    if (typeof $env !== 'undefined' && $env[name]) return $env[name];\n  } catch (error) {}\n  return fallback;\n}\n\nfunction normalizeHashtags(value) {\n  if (!value) return [];\n  if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);\n  return String(value)\n    .split(/[，,\\s]+/)\n    .map(s => s.trim())\n    .filter(Boolean)\n    .map(s => s.startsWith('#') ? s : `#${s}`)\n    .slice(0, 8);\n}\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\nconst publicFileBaseUrl = env('PUBLIC_FILE_BASE_URL', '').replace(/\\/$/, '');\n\nreturn inputItems.map(item => {\n  const row = item.json;\n  if (row.success === false || row.success === 'false') {\n    throw new Error(`无法启动抖音发布任务：${row.result_code || 'UNKNOWN'}`);\n  }\n\n  const hashtags = normalizeHashtags(row.hashtags);\n  const title = row.title || '抖音待发布视频';\n\n  let caption = row.caption || '';\n  if (!caption.trim()) {\n    caption = `${title}\\n\\n${hashtags.join(' ')}`.trim();\n  }\n\n  return {\n    json: {\n      job_id: String(row.id),\n      video_topic_id: row.video_topic_id,\n      title,\n      caption,\n      hashtags,\n      video_path: row.video_path,\n      cover_path: row.cover_path || '',\n      manual_confirm_token: row.manual_confirm_token,\n      public_file_base_url: publicFileBaseUrl\n    }\n  };\n});\n"
       },
       "id": "build-douyin-package-request-09",
-      "name": "Code - Build Douyin Package Request",
+      "name": "代码 - 构建抖音发布包请求",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -96,7 +96,7 @@
         }
       },
       "id": "create-douyin-package-09",
-      "name": "HTTP Request - Create Douyin Package",
+      "name": "HTTP请求 - 创建抖音发布包",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -113,7 +113,7 @@
         }
       },
       "id": "update-douyin-package-ready-09",
-      "name": "Postgres - Update Douyin PACKAGE_READY",
+      "name": "数据库 - 更新抖音发布包就绪",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -132,7 +132,7 @@
         "jsCode": "// n8n Code node: Build ServerChan Message\n// Input: publish-helper package response.\n// Output: ServerChan title/desp and manual confirmation links.\n\nfunction env(name, fallback = '') {\n  // n8n Code 节点中通常可以通过 $env 读取环境变量。\n  try {\n    if (typeof $env !== 'undefined' && $env[name]) return $env[name];\n  } catch (e) {}\n  return fallback;\n}\n\nconst publicN8nBase = env('PUBLIC_N8N_BASE_URL', 'http://localhost:5678').replace(/\\/$/, '');\nconst serverchanSendKey = env('SERVERCHAN_SENDKEY', '').trim();\nconst serverchanUrl = serverchanSendKey ? `https://sctapi.ftqq.com/${serverchanSendKey}.send` : '';\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const data = item.json;\n  const rawJobId = data.job_id || data.id;\n  const jobId = encodeURIComponent(rawJobId);\n  const token = encodeURIComponent(data.manual_confirm_token || data.token || '');\n\n  const doneUrl = `${publicN8nBase}/webhook/douyin-manual-publish-action?action=published&job_id=${jobId}&token=${token}`;\n  const skipUrl = `${publicN8nBase}/webhook/douyin-manual-publish-action?action=skip&job_id=${jobId}&token=${token}`;\n  const downloadPageUrl = data.download_page_url || data.video_url || '';\n  const videoDownloadUrl = data.video_download_url || data.video_url || '';\n\n  const title = `🎬 抖音视频待发布：${data.title || '未命名视频'}`;\n  const hashtags = Array.isArray(data.hashtags) ? data.hashtags.join(' ') : (data.hashtags || '');\n\n  const desp = [\n    '# 🎬 抖音视频待发布',\n    '',\n    `**标题：** ${data.title || ''}`,\n    '',\n    '## 文案',\n    '',\n    data.caption || '',\n    '',\n    '## 话题',\n    '',\n    hashtags,\n    '',\n    '## 下载',\n    '',\n    downloadPageUrl ? `- [打开下载页面](${downloadPageUrl})` : '- 下载页面缺失',\n    videoDownloadUrl ? `- [直接下载视频 final.mp4](${videoDownloadUrl})` : '- 视频链接缺失',\n    data.cover_url ? `- [下载封面 cover.png](${data.cover_url})` : '- 封面链接缺失',\n    data.caption_url ? `- [下载文案 caption.txt](${data.caption_url})` : '',\n    '',\n    '## 操作步骤',\n    '',\n    '1. 在手机上打开下载页面，先预览确认视频。',\n    '2. 复制上面的文案和话题。',\n    '3. 打开抖音 App，手动上传并确认发布。',\n    '4. 发布完成后点击下面的“我已发布”。',\n    '',\n    '> 微信内如果只能播放不能保存，请点右上角选择“在浏览器打开”，再点下载视频文件。',\n    '',\n    `✅ [我已发布](${doneUrl})`,\n    '',\n    `⏸ [暂不发布](${skipUrl})`\n  ].filter(Boolean).join('\\n');\n\n  return {\n    json: {\n      ...data,\n      job_id: String(rawJobId),\n      manual_published_url: doneUrl,\n      manual_skip_url: skipUrl,\n      serverchan_title: title,\n      serverchan_desp: desp,\n      remind_message: desp,\n      serverchan_url: serverchanUrl || 'http://publish-helper:8010/serverchan-skip',\n      serverchan_enabled: Boolean(serverchanUrl)\n    }\n  };\n});\n"
       },
       "id": "build-serverchan-message-09",
-      "name": "Code - Build ServerChan Message",
+      "name": "代码 - 构建Server酱提醒",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -168,7 +168,7 @@
         }
       },
       "id": "send-serverchan-09",
-      "name": "HTTP Request - Send ServerChan Reminder",
+      "name": "HTTP请求 - 发送Server酱提醒",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -178,10 +178,10 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node: Normalize ServerChan Response\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const res = item.json;\n  let remindMessage = '';\n  let serverchanEnabled = true;\n  try {\n    const messageNode = $('Code - Build ServerChan Message').first().json;\n    serverchanEnabled = messageNode.serverchan_enabled !== false;\n    remindMessage = String(messageNode.remind_message || '');\n  } catch (error) {}\n  const remindMessageBase64 = Buffer.from(remindMessage, 'utf8').toString('base64');\n\n  if (!serverchanEnabled) {\n    return {\n      json: {\n        ...res,\n        remind_status: 'SKIPPED_NO_SENDKEY',\n        remind_message_base64: remindMessageBase64,\n        remind_response_json: JSON.stringify(res || {}),\n      },\n    };\n  }\n\n  const ok = res && (res.code === 0 || res.errno === 0 || res.message === 'success' || res.data);\n  return {\n    json: {\n      ...res,\n      remind_status: ok ? 'SENT' : 'SENT_OR_UNKNOWN',\n      remind_message_base64: remindMessageBase64,\n      remind_response_json: JSON.stringify(res || {})\n    }\n  };\n});\n"
+        "jsCode": "// n8n Code node: Normalize ServerChan Response\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const res = item.json;\n  let remindMessage = '';\n  let serverchanEnabled = true;\n  try {\n    const messageNode = $('代码 - 构建Server酱提醒').first().json;\n    serverchanEnabled = messageNode.serverchan_enabled !== false;\n    remindMessage = String(messageNode.remind_message || '');\n  } catch (error) {}\n  const remindMessageBase64 = Buffer.from(remindMessage, 'utf8').toString('base64');\n\n  if (!serverchanEnabled) {\n    return {\n      json: {\n        ...res,\n        remind_status: 'SKIPPED_NO_SENDKEY',\n        remind_message_base64: remindMessageBase64,\n        remind_response_json: JSON.stringify(res || {}),\n      },\n    };\n  }\n\n  const ok = res && (res.code === 0 || res.errno === 0 || res.message === 'success' || res.data);\n  return {\n    json: {\n      ...res,\n      remind_status: ok ? 'SENT' : 'SENT_OR_UNKNOWN',\n      remind_message_base64: remindMessageBase64,\n      remind_response_json: JSON.stringify(res || {})\n    }\n  };\n});\n"
       },
       "id": "normalize-serverchan-response-09",
-      "name": "Code - Normalize ServerChan Response",
+      "name": "代码 - 规范化Server酱响应",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -194,11 +194,11 @@
         "operation": "executeQuery",
         "query": "-- ServerChan reminder was sent or skipped.\n-- $1 remind_status\n-- $2 remind_message\n-- $3 remind_response json\n-- $4 job_id\n\nWITH updated_job AS (\n  UPDATE video_publish_jobs\n  SET\n    status = 'REMIND_SENT',\n    remind_channel = 'serverchan',\n    remind_status = $1,\n    remind_message = NULLIF(convert_from(decode($2, 'base64'), 'UTF8'), ''),\n    remind_response = COALESCE(NULLIF($3, '')::jsonb, '{}'::jsonb),\n    reminded_at = NOW(),\n    updated_at = NOW()\nWHERE id = $4::bigint\n    AND status IN ('PACKAGE_READY', 'REMINDING', 'REMIND_SENT')\n  RETURNING *\n), updated_topic AS (\n  UPDATE video_topics vt\n  SET\n    publish_status = 'REMIND_SENT',\n    updated_at = NOW()\n  FROM updated_job uj\n  WHERE vt.id = uj.video_topic_id\n  RETURNING vt.id\n)\nSELECT * FROM updated_job;\n",
         "options": {
-          "queryReplacement": "={{ [ $json.remind_status, $json.remind_message_base64, $json.remind_response_json, $('Code - Build ServerChan Message').first().json.job_id ] }}"
+          "queryReplacement": "={{ [ $json.remind_status, $json.remind_message_base64, $json.remind_response_json, $('代码 - 构建Server酱提醒').first().json.job_id ] }}"
         }
       },
       "id": "mark-douyin-remind-sent-09",
-      "name": "Postgres - Mark Douyin REMIND_SENT",
+      "name": "数据库 - 标记抖音提醒已发送",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -217,7 +217,7 @@
         "jsCode": "// n8n Code node: Build Douyin Publish Start Result\n\nconst row = $json || {};\nconst explicitSuccess = row.success;\nconst success = explicitSuccess === false || explicitSuccess === 'false'\n  ? false\n  : Boolean(row.id);\n\nreturn [\n  {\n    json: {\n      success,\n      response_status_code: success ? 200 : 409,\n      response_json: {\n        success,\n        result_code: row.result_code || (success ? 'OK' : 'INVALID_TASK_OR_TOKEN'),\n        job_id: row.id || null,\n        video_topic_id: row.video_topic_id || null,\n        status: row.status || null,\n        video_url: row.video_url || null,\n        download_page_url: row.download_page_url || null,\n        video_download_url: row.video_download_url || null,\n        cover_url: row.cover_url || null,\n        caption_url: row.caption_url || null,\n        metadata_url: row.metadata_url || null,\n        reminded_at: row.reminded_at || null,\n      },\n    },\n  },\n];\n"
       },
       "id": "build-douyin-publish-start-result-09",
-      "name": "Code - Build Douyin Publish Start Result",
+      "name": "代码 - 生成抖音发布启动结果",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -242,7 +242,7 @@
         }
       },
       "id": "respond-douyin-publish-start-09",
-      "name": "Respond to Webhook - Douyin Publish Start",
+      "name": "响应Webhook - 返回抖音发布启动结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
@@ -258,7 +258,7 @@
         "options": {}
       },
       "id": "webhook-douyin-manual-action-09",
-      "name": "Webhook - Douyin Manual Publish Action",
+      "name": "Webhook - 抖音手动发布确认",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -272,7 +272,7 @@
         "jsCode": "/**\n * n8n Code 节点：Validate Manual Publish Params\n * Webhook URL 示例：\n * /webhook/douyin-manual-publish-action?action=published&job_id=123&token=xxx\n * /webhook/douyin-manual-publish-action?action=skip&job_id=123&token=xxx&note=今天不发\n */\n\nconst query = $json.query || $json || {};\nconst actionRaw = String(query.action || '').toLowerCase();\nconst jobId = query.job_id || query.id;\nconst token = query.token;\nconst note = query.note || '';\nconst publishedUrl = query.published_url || '';\n\nif (!jobId) throw new Error('缺少 job_id');\nif (!token) throw new Error('缺少 token');\n\nlet actionResult;\nif (['published', 'done', 'yes', 'manual_published'].includes(actionRaw)) {\n  actionResult = 'MANUAL_PUBLISHED';\n} else if (['skip', 'skipped', 'no', 'later', 'manual_skipped'].includes(actionRaw)) {\n  actionResult = 'MANUAL_SKIPPED';\n} else {\n  throw new Error('action 只能是 published 或 skip');\n}\n\nreturn [{\n  json: {\n    job_id: String(jobId),\n    token: String(token),\n    action_result: actionResult,\n    note: String(note),\n    published_url: String(publishedUrl)\n  }\n}];\n"
       },
       "id": "validate-manual-publish-09",
-      "name": "Code - Validate Manual Publish Params",
+      "name": "代码 - 校验手动发布参数",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -289,7 +289,7 @@
         }
       },
       "id": "update-manual-publish-decision-09",
-      "name": "Postgres - Update Douyin Manual Publish Decision",
+      "name": "数据库 - 更新抖音手动发布结果",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -308,7 +308,7 @@
         "jsCode": "// n8n Code node: Build Manual Publish Result HTML\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst inputItems = typeof items !== 'undefined' ? items : $input.all();\n\nreturn inputItems.map(item => {\n  const row = item.json || {};\n  const success = row.success === true || row.success === 'true';\n  if (!success) {\n    const html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>发布确认失败</title>\n  <style>\n    body { font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; background:#f6f7f9; margin:0; padding:28px; }\n    .card { max-width:720px; margin:0 auto; background:white; border-radius:18px; padding:28px; box-shadow:0 8px 30px rgba(0,0,0,.08); }\n    h1 { margin:0 0 16px; color:#dc2626; }\n    .row { line-height:1.9; color:#333; }\n  </style>\n</head>\n<body>\n  <div class=\"card\">\n    <h1>发布确认失败</h1>\n    <div class=\"row\"><strong>结果：</strong>${escapeHtml(row.result_code || 'UNKNOWN')}</div>\n    <div class=\"row\">常见原因：链接已过期、任务不存在，或 token 不匹配。</div>\n  </div>\n</body>\n</html>`;\n    return { json: { response_status_code: 409, response_html: html } };\n  }\n\n  const isPublished = row.status === 'MANUAL_PUBLISHED';\n  const title = isPublished ? '已标记为已发布' : '已标记为暂不发布';\n  const color = isPublished ? '#16a34a' : '#f59e0b';\n\n  const html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>${escapeHtml(title)}</title>\n  <style>\n    body { font-family: -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; background:#f6f7f9; margin:0; padding:28px; }\n    .card { max-width:720px; margin:0 auto; background:white; border-radius:18px; padding:28px; box-shadow:0 8px 30px rgba(0,0,0,.08); }\n    h1 { margin:0 0 16px; color:${color}; }\n    .row { line-height:1.9; color:#333; }\n    .muted { color:#777; font-size:14px; margin-top:16px; }\n  </style>\n</head>\n<body>\n  <div class=\"card\">\n    <h1>${escapeHtml(title)}</h1>\n    <div class=\"row\"><strong>发布任务 ID：</strong>${escapeHtml(row.id)}</div>\n    <div class=\"row\"><strong>视频任务 ID：</strong>${escapeHtml(row.video_topic_id)}</div>\n    <div class=\"row\"><strong>当前状态：</strong>${escapeHtml(row.status)}</div>\n    <div class=\"row\"><strong>标题：</strong>${escapeHtml(row.title)}</div>\n    <div class=\"muted\">你可以关闭这个页面，状态已回写到 PostgreSQL。</div>\n  </div>\n</body>\n</html>`;\n\n  return {\n    json: {\n      response_status_code: 200,\n      response_html: html\n    }\n  };\n});\n"
       },
       "id": "build-manual-publish-result-09",
-      "name": "Code - Build Manual Publish Result HTML",
+      "name": "代码 - 生成手动发布结果页面",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -333,44 +333,12 @@
         }
       },
       "id": "respond-manual-publish-result-09",
-      "name": "Respond to Webhook - Manual Publish Result",
+      "name": "响应Webhook - 返回手动发布结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
         1120,
         660
-      ]
-    },
-    {
-      "parameters": {
-        "width": 1320,
-        "height": 190,
-        "color": 4,
-        "content": "## 抖音半自动发布开始路径\n\n审核中心“已通过”Tab 点击 **直接发布到抖音** 后，会调用 `/webhook/douyin-publish-start?task_id=<id>&token=<review_token>`。本路径只允许 `APPROVED` 视频，生成 `/data/publish/douyin/<job_id>/` 发布包并推送 Server酱微信提醒。若未配置 `SERVERCHAN_SENDKEY`，仍会生成发布包，提醒状态记录为 `SKIPPED_NO_SENDKEY`。"
-      },
-      "id": "note-douyin-start-path-09",
-      "name": "说明 - 抖音发布开始路径",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [
-        -20,
-        -150
-      ]
-    },
-    {
-      "parameters": {
-        "width": 1320,
-        "height": 190,
-        "color": 5,
-        "content": "## 抖音手动发布确认路径\n\n微信提醒里的链接会调用 `/webhook/douyin-manual-publish-action?action=published|skip&job_id=<job_id>&token=<manual_confirm_token>`。`published` 会把视频主题改为 `PUBLISHED`；`skip` 会让主题保持 `APPROVED`，方便之后再次发布。"
-      },
-      "id": "note-douyin-manual-path-09",
-      "name": "说明 - 手动发布确认路径",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [
-        -20,
-        410
       ]
     },
     {
@@ -381,7 +349,7 @@
         "options": {}
       },
       "id": "webhook-douyin-publish-withdraw-09",
-      "name": "Webhook - Douyin Publish Withdraw",
+      "name": "Webhook - 撤回抖音发布",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -395,7 +363,7 @@
         "jsCode": "// n8n Code node: Validate Douyin Publish Start Params\n// Expected query: ?task_id=<video_topics.id>&token=<review_token>\n\nconst source = $json || {};\nconst query = source.query || source.params || source;\n\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\n\nif (!taskId) {\n  throw new Error('缺少 task_id 参数');\n}\n\nif (!token) {\n  throw new Error('缺少 token 参数');\n}\n\nreturn [\n  {\n    json: {\n      task_id: taskId,\n      token,\n      platform: 'douyin',\n      received_at: new Date().toISOString(),\n    },\n  },\n];\n"
       },
       "id": "validate-douyin-publish-withdraw-09",
-      "name": "Code - Validate Douyin Publish Withdraw Params",
+      "name": "代码 - 校验撤回发布参数",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -412,7 +380,7 @@
         }
       },
       "id": "withdraw-douyin-publish-job-09",
-      "name": "Postgres - Withdraw Douyin Publish Job",
+      "name": "数据库 - 撤回抖音发布任务",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -431,7 +399,7 @@
         "jsCode": "// n8n Code node: Build Douyin Publish Start Result\n\nconst row = $json || {};\nconst explicitSuccess = row.success;\nconst success = explicitSuccess === false || explicitSuccess === 'false'\n  ? false\n  : Boolean(row.id);\n\nreturn [\n  {\n    json: {\n      success,\n      response_status_code: success ? 200 : 409,\n      response_json: {\n        success,\n        result_code: row.result_code || (success ? 'OK' : 'INVALID_TASK_OR_TOKEN'),\n        job_id: row.id || null,\n        video_topic_id: row.video_topic_id || null,\n        status: row.status || null,\n        video_url: row.video_url || null,\n        download_page_url: row.download_page_url || null,\n        video_download_url: row.video_download_url || null,\n        cover_url: row.cover_url || null,\n        caption_url: row.caption_url || null,\n        metadata_url: row.metadata_url || null,\n        reminded_at: row.reminded_at || null,\n      },\n    },\n  },\n];\n"
       },
       "id": "build-douyin-withdraw-result-09",
-      "name": "Code - Build Douyin Withdraw Result",
+      "name": "代码 - 生成撤回发布结果",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -456,28 +424,12 @@
         }
       },
       "id": "respond-douyin-withdraw-09",
-      "name": "Respond to Webhook - Douyin Publish Withdraw",
+      "name": "响应Webhook - 返回撤回发布结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
         1120,
         1220
-      ]
-    },
-    {
-      "parameters": {
-        "width": 1320,
-        "height": 180,
-        "color": 6,
-        "content": "## 抖音发布撤回路径\n\n审核中心发布中状态点击 **撤回发布** 后，会调用 `/webhook/douyin-publish-withdraw?task_id=<id>&token=<review_token>`。它把当前活跃发布任务标记为 `MANUAL_SKIPPED`，并让视频保持/回到 `APPROVED`，清空 `publish_status`，方便之后重新发布。"
-      },
-      "id": "note-douyin-withdraw-path-09",
-      "name": "说明 - 发布撤回路径",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [
-        -20,
-        980
       ]
     },
     {
@@ -506,237 +458,301 @@
         "options": {}
       },
       "id": "if-douyin-publish-job-ready-09",
-      "name": "IF - Douyin Publish Job Ready",
+      "name": "条件判断 - 抖音发布任务已就绪",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
         -980,
         -20
       ]
+    },
+    {
+      "parameters": {
+        "content": "## 抖音发布开始路径\n\n审核中心“直接发布到抖音”调用 `/webhook/douyin-publish-start`。\n\n只允许 `APPROVED` 视频，生成发布包并通过 Server酱发送提醒。",
+        "height": 150,
+        "width": 1320,
+        "color": 4
+      },
+      "id": "说明-抖音发布开始路径",
+      "name": "说明 - 抖音发布开始路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -190
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 抖音发布任务就绪判断\n\n判断发布任务是否已有可复用发布包。\n\n若已就绪则直接复用并提醒；否则继续创建发布包。",
+        "height": 150,
+        "width": 760,
+        "color": 7
+      },
+      "id": "说明-抖音发布任务就绪判断",
+      "name": "说明 - 抖音发布任务就绪判断",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1220,
+        -230
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 手动发布确认路径\n\n微信提醒里的“我已发布 / 暂不发布”会调用 `/webhook/douyin-manual-publish-action`。\n\n确认已发布会把视频状态改为 `PUBLISHED`；暂不发布保持 `APPROVED`。",
+        "height": 150,
+        "width": 1320,
+        "color": 5
+      },
+      "id": "说明-手动发布确认路径",
+      "name": "说明 - 手动发布确认路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 发布撤回路径\n\n审核中心发布中状态点击“撤回发布”会调用 `/webhook/douyin-publish-withdraw`。\n\n把当前活跃发布任务标记为 `MANUAL_SKIPPED`，视频保持或回到 `APPROVED`。",
+        "height": 150,
+        "width": 1320,
+        "color": 6
+      },
+      "id": "说明-发布撤回路径",
+      "name": "说明 - 发布撤回路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        990
+      ]
     }
   ],
   "connections": {
-    "Webhook - Douyin Publish Start": {
+    "Webhook - 开始抖音发布": {
       "main": [
         [
           {
-            "node": "Code - Validate Douyin Publish Start Params",
+            "node": "代码 - 校验抖音发布参数",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Validate Douyin Publish Start Params": {
+    "代码 - 校验抖音发布参数": {
       "main": [
         [
           {
-            "node": "Postgres - Start Douyin Publish Job",
+            "node": "数据库 - 创建或复用抖音发布任务",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Start Douyin Publish Job": {
+    "数据库 - 创建或复用抖音发布任务": {
       "main": [
         [
           {
-            "node": "IF - Douyin Publish Job Ready",
+            "node": "条件判断 - 抖音发布任务已就绪",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Build Douyin Package Request": {
+    "代码 - 构建抖音发布包请求": {
       "main": [
         [
           {
-            "node": "HTTP Request - Create Douyin Package",
+            "node": "HTTP请求 - 创建抖音发布包",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP Request - Create Douyin Package": {
+    "HTTP请求 - 创建抖音发布包": {
       "main": [
         [
           {
-            "node": "Postgres - Update Douyin PACKAGE_READY",
+            "node": "数据库 - 更新抖音发布包就绪",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Update Douyin PACKAGE_READY": {
+    "数据库 - 更新抖音发布包就绪": {
       "main": [
         [
           {
-            "node": "Code - Build ServerChan Message",
+            "node": "代码 - 构建Server酱提醒",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Build ServerChan Message": {
+    "代码 - 构建Server酱提醒": {
       "main": [
         [
           {
-            "node": "HTTP Request - Send ServerChan Reminder",
+            "node": "HTTP请求 - 发送Server酱提醒",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP Request - Send ServerChan Reminder": {
+    "HTTP请求 - 发送Server酱提醒": {
       "main": [
         [
           {
-            "node": "Code - Normalize ServerChan Response",
+            "node": "代码 - 规范化Server酱响应",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Normalize ServerChan Response": {
+    "代码 - 规范化Server酱响应": {
       "main": [
         [
           {
-            "node": "Postgres - Mark Douyin REMIND_SENT",
+            "node": "数据库 - 标记抖音提醒已发送",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Mark Douyin REMIND_SENT": {
+    "数据库 - 标记抖音提醒已发送": {
       "main": [
         [
           {
-            "node": "Code - Build Douyin Publish Start Result",
+            "node": "代码 - 生成抖音发布启动结果",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Build Douyin Publish Start Result": {
+    "代码 - 生成抖音发布启动结果": {
       "main": [
         [
           {
-            "node": "Respond to Webhook - Douyin Publish Start",
+            "node": "响应Webhook - 返回抖音发布启动结果",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Webhook - Douyin Manual Publish Action": {
+    "Webhook - 抖音手动发布确认": {
       "main": [
         [
           {
-            "node": "Code - Validate Manual Publish Params",
+            "node": "代码 - 校验手动发布参数",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Validate Manual Publish Params": {
+    "代码 - 校验手动发布参数": {
       "main": [
         [
           {
-            "node": "Postgres - Update Douyin Manual Publish Decision",
+            "node": "数据库 - 更新抖音手动发布结果",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Update Douyin Manual Publish Decision": {
+    "数据库 - 更新抖音手动发布结果": {
       "main": [
         [
           {
-            "node": "Code - Build Manual Publish Result HTML",
+            "node": "代码 - 生成手动发布结果页面",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Build Manual Publish Result HTML": {
+    "代码 - 生成手动发布结果页面": {
       "main": [
         [
           {
-            "node": "Respond to Webhook - Manual Publish Result",
+            "node": "响应Webhook - 返回手动发布结果",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Webhook - Douyin Publish Withdraw": {
+    "Webhook - 撤回抖音发布": {
       "main": [
         [
           {
-            "node": "Code - Validate Douyin Publish Withdraw Params",
+            "node": "代码 - 校验撤回发布参数",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Validate Douyin Publish Withdraw Params": {
+    "代码 - 校验撤回发布参数": {
       "main": [
         [
           {
-            "node": "Postgres - Withdraw Douyin Publish Job",
+            "node": "数据库 - 撤回抖音发布任务",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Withdraw Douyin Publish Job": {
+    "数据库 - 撤回抖音发布任务": {
       "main": [
         [
           {
-            "node": "Code - Build Douyin Withdraw Result",
+            "node": "代码 - 生成撤回发布结果",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Build Douyin Withdraw Result": {
+    "代码 - 生成撤回发布结果": {
       "main": [
         [
           {
-            "node": "Respond to Webhook - Douyin Publish Withdraw",
+            "node": "响应Webhook - 返回撤回发布结果",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "IF - Douyin Publish Job Ready": {
+    "条件判断 - 抖音发布任务已就绪": {
       "main": [
         [
           {
-            "node": "Code - Build Douyin Package Request",
+            "node": "代码 - 构建抖音发布包请求",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Code - Build Douyin Publish Start Result",
+            "node": "代码 - 生成抖音发布启动结果",
             "type": "main",
             "index": 0
           }
@@ -747,7 +763,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "09-douyin-semiauto-publish-workflow",
+  "versionId": "workflow-notes-separated-from-nodes",
   "meta": {
     "templateCredsSetupCompleted": true
   },

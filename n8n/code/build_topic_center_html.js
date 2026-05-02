@@ -34,7 +34,7 @@ function formatLocalTime(value) {
 
 function getQuery() {
   try {
-    return $('Webhook - Topic Center').first().json.query || {};
+    return $('Webhook - 选题中心页面').first().json.query || {};
   } catch (error) {
     return {};
   }

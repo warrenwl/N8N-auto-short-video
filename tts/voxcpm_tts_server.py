@@ -14,6 +14,7 @@ Endpoints:
 from __future__ import annotations
 
 import io
+import gc
 import os
 import re
 import sys
@@ -40,6 +41,19 @@ if VOXCPM_DIR and Path(VOXCPM_DIR).exists():
 
 app = FastAPI(title="Local VoxCPM TTS Server", version="0.1.0")
 _model = None
+
+
+def _clear_torch_cache() -> None:
+    try:
+        import torch
+
+        if hasattr(torch, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    gc.collect()
 
 
 class TTSRequest(BaseModel):
@@ -143,6 +157,7 @@ def _split_text(text: str, max_chars: int, chunk_by_paragraph: bool = True) -> L
 
 def _synthesize(req: TTSRequest) -> tuple[np.ndarray, int]:
     model = _load_model()
+    _clear_torch_cache()
     chunks = _split_text(req.text, max(40, req.max_chars), req.chunk_by_paragraph)
     if not chunks:
         raise ValueError("Text is empty")
@@ -168,9 +183,12 @@ def _synthesize(req: TTSRequest) -> tuple[np.ndarray, int]:
         if req.prompt_text:
             generate_kwargs["prompt_text"] = req.prompt_text
 
-        wav = model.generate(**generate_kwargs)
-        wav = np.asarray(wav, dtype=np.float32)
-        waves.append(wav)
+        try:
+            wav = model.generate(**generate_kwargs)
+            wav = np.asarray(wav, dtype=np.float32)
+            waves.append(wav)
+        finally:
+            _clear_torch_cache()
         if index < len(chunks) - 1:
             pause_seconds = paragraph_pause if paragraph_break_after else sentence_pause
             if pause_seconds > 0:
@@ -200,6 +218,8 @@ def tts(req: TTSRequest):
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        _clear_torch_cache()
 
 
 @app.post("/tts_file")
@@ -219,3 +239,5 @@ def tts_file(req: TTSFileRequest):
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        _clear_torch_cache()

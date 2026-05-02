@@ -34,7 +34,7 @@ function text(value) {
   return String(value || '').trim();
 }
 
-const request = $('Code - Build Topic Generate Request').first().json;
+const request = $('代码 - 构建AI生成候选请求').first().json;
 const response = $input.first().json;
 const rawText = extractText(response);
 const cleaned = cleanJsonText(rawText);

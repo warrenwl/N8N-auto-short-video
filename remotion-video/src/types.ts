@@ -46,6 +46,14 @@ export type TemplateVisualConfig = {
   motion?: 'steady' | 'step' | 'snap' | 'drift';
   keyword_style?: 'chips' | 'numbered' | 'split' | 'timeline';
   background_mood?: 'clean' | 'bright' | 'conflict' | 'warm';
+  contrast?: {
+    left_eyebrow?: string;
+    right_eyebrow?: string;
+    left_label?: string;
+    right_label?: string;
+    left_fallback?: string;
+    right_fallback?: string;
+  };
 };
 
 export type RemotionVisualConfig = {

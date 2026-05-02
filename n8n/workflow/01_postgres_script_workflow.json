@@ -4,7 +4,7 @@
     {
       "parameters": {},
       "id": "manual-trigger",
-      "name": "Manual Trigger",
+      "name": "手动触发",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
@@ -18,7 +18,7 @@
         "query": "SELECT\n  id,\n  topic,\n  platform,\n  style,\n  duration_seconds,\n  language,\n  target_audience,\n  status,\n  created_at,\n  updated_at\nFROM video_topics\nWHERE status = 'IDEA'\nORDER BY created_at ASC\nLIMIT 1;"
       },
       "id": "select-idea",
-      "name": "Postgres - Select One IDEA",
+      "name": "数据库 - 领取一条IDEA",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -41,7 +41,7 @@
         }
       },
       "id": "mark-generating",
-      "name": "Postgres - Mark GENERATING_SCRIPT",
+      "name": "数据库 - 标记生成脚本中",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -60,7 +60,7 @@
         "jsCode": "// n8n Code 节点：Build LLM Request Body\n// 读取 /config/glm_script_prompt_config.jsonc 中的 GLM 提示词配置。\n\nconst fs = require('fs');\nconst item = $input.first().json;\nconst configPath = $env.GLM_SCRIPT_PROMPT_CONFIG_PATH || '/config/glm_script_prompt_config.jsonc';\n\nconst fallbackConfig = {\n  model: 'glm-5.1',\n  temperature: 0.7,\n  max_tokens: 8000,\n  system_prompt: '你是一个专业短视频编导、内容运营和平台风控助手。你的任务是生成可执行的短视频脚本包。必须只输出严格 JSON。',\n  user_prompt_template: '请根据选题生成短视频脚本包。\\n选题：{{topic}}\\n平台：{{platform}}\\n风格：{{style}}\\n目标时长：{{duration_seconds}} 秒\\n语言：{{language}}\\n目标用户：{{target_audience}}\\n必须输出严格 JSON，包含 title、hook、script、cover_text、template_type、hashtags、shots、risk_check。'\n};\n\nfunction stripJsonComments(text) {\n  return String(text || '')\n    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, '')\n    .replace(/(^|[^:])\\/\\/.*$/gm, '$1');\n}\n\nfunction readPromptConfig() {\n  try {\n    if (!fs.existsSync(configPath)) return fallbackConfig;\n    const data = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));\n    return { ...fallbackConfig, ...data };\n  } catch (error) {\n    throw new Error('读取 GLM 提示词配置失败：' + configPath + '；' + error.message);\n  }\n}\n\nfunction renderTemplate(template, values) {\n  return String(template || '').replace(/{{\\s*([a-zA-Z0-9_]+)\\s*}}/g, (_, key) => {\n    const value = values[key];\n    return value === undefined || value === null || value === '' ? '' : String(value);\n  });\n}\n\nconst values = {\n  topic: item.topic,\n  platform: item.platform,\n  style: item.style,\n  duration_seconds: item.duration_seconds,\n  language: item.language || 'zh-CN',\n  target_audience: item.target_audience || '普通短视频用户'\n};\nconst promptConfig = readPromptConfig();\nconst systemPrompt = renderTemplate(promptConfig.system_prompt, values);\nconst userPrompt = renderTemplate(promptConfig.user_prompt_template, values);\n\nreturn [\n  {\n    json: {\n      ...item,\n      prompt_config_path: configPath,\n      llm_request_body: {\n        model: promptConfig.model || 'glm-5.1',\n        temperature: promptConfig.temperature ?? 0.7,\n        max_tokens: promptConfig.max_tokens ?? 8000,\n        response_format: { type: 'json_object' },\n        messages: [\n          { role: 'system', content: systemPrompt },\n          { role: 'user', content: userPrompt }\n        ]\n      }\n    }\n  }\n];\n"
       },
       "id": "build-llm-request",
-      "name": "Code - Build LLM Request",
+      "name": "代码 - 构建LLM请求",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -98,7 +98,7 @@
         "specifyBody": "json"
       },
       "id": "http-llm",
-      "name": "HTTP Request - LLM",
+      "name": "HTTP请求 - 调用LLM",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -108,10 +108,10 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code 节点：Parse LLM Response\n// 作用：兼容 OpenAI-compatible HTTP Response / n8n AI 节点的常见输出格式，解析 JSON，并整理成 Postgres 更新字段。\n\nfunction extractText(json) {\n  if (!json || typeof json !== 'object') return '';\n\n  // 如果 HTTP Request 使用了 “Put Response in Field = llm_response”\n  if (json.llm_response?.choices?.[0]?.message?.content) {\n    return json.llm_response.choices[0].message.content;\n  }\n\n  // OpenAI-compatible 原始响应\n  if (json.choices?.[0]?.message?.content) {\n    return json.choices[0].message.content;\n  }\n\n  // 一些 n8n AI / LLM 节点常见字段\n  if (typeof json.output === 'string') return json.output;\n  if (typeof json.text === 'string') return json.text;\n  if (typeof json.response === 'string') return json.response;\n  if (typeof json.message?.content === 'string') return json.message.content;\n\n  // 万不得已：尝试把整个对象当作文本解析\n  return JSON.stringify(json);\n}\n\nfunction cleanJsonText(text) {\n  let s = String(text || '').trim();\n  s = s.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n\n  // 如果模型输出前后有废话，截取第一个 { 到最后一个 }\n  const start = s.indexOf('{');\n  const end = s.lastIndexOf('}');\n  if (start >= 0 && end > start) {\n    s = s.slice(start, end + 1);\n  }\n  return s;\n}\n\nconst input = $input.first().json;\nconst source = $('Postgres - Mark GENERATING_SCRIPT').first().json;\nconst raw = extractText(input);\nconst cleaned = cleanJsonText(raw);\n\nlet data;\ntry {\n  data = JSON.parse(cleaned);\n} catch (err) {\n  throw new Error(`LLM 输出不是合法 JSON：${err.message}\\n原始输出：${raw.slice(0, 1000)}`);\n}\n\nconst hashtags = Array.isArray(data.hashtags) ? data.hashtags : [];\nconst shots = Array.isArray(data.shots) ? data.shots : [];\nconst templateType = ['knowledge', 'list', 'contrast', 'story'].includes(data.template_type) ? data.template_type : 'knowledge';\nconst riskCheck = data.risk_check && typeof data.risk_check === 'object' ? data.risk_check : {};\n\nreturn [\n  {\n    json: {\n      id: source.id,\n      topic: source.topic,\n      platform: source.platform,\n      style: source.style,\n      duration_seconds: source.duration_seconds,\n      title: data.title || '',\n      hook: data.hook || '',\n      script: data.script || '',\n      cover_text: data.cover_text || '',\n      hashtags,\n      hashtags_json: JSON.stringify(hashtags),\n      shots,\n      shots_json: JSON.stringify(shots),\n      template_type: templateType,\n      risk_check: riskCheck,\n      risk_check_json: JSON.stringify(riskCheck),\n      status: 'SCRIPT_READY',\n      updated_at: new Date().toISOString()\n    }\n  }\n];\n"
+        "jsCode": "// n8n Code 节点：Parse LLM Response\n// 作用：兼容 OpenAI-compatible HTTP Response / n8n AI 节点的常见输出格式，解析 JSON，并整理成 Postgres 更新字段。\n\nfunction extractText(json) {\n  if (!json || typeof json !== 'object') return '';\n\n  // 如果 HTTP Request 使用了 “Put Response in Field = llm_response”\n  if (json.llm_response?.choices?.[0]?.message?.content) {\n    return json.llm_response.choices[0].message.content;\n  }\n\n  // OpenAI-compatible 原始响应\n  if (json.choices?.[0]?.message?.content) {\n    return json.choices[0].message.content;\n  }\n\n  // 一些 n8n AI / LLM 节点常见字段\n  if (typeof json.output === 'string') return json.output;\n  if (typeof json.text === 'string') return json.text;\n  if (typeof json.response === 'string') return json.response;\n  if (typeof json.message?.content === 'string') return json.message.content;\n\n  // 万不得已：尝试把整个对象当作文本解析\n  return JSON.stringify(json);\n}\n\nfunction cleanJsonText(text) {\n  let s = String(text || '').trim();\n  s = s.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n\n  // 如果模型输出前后有废话，截取第一个 { 到最后一个 }\n  const start = s.indexOf('{');\n  const end = s.lastIndexOf('}');\n  if (start >= 0 && end > start) {\n    s = s.slice(start, end + 1);\n  }\n  return s;\n}\n\nconst input = $input.first().json;\nconst source = $('数据库 - 标记生成脚本中').first().json;\nconst raw = extractText(input);\nconst cleaned = cleanJsonText(raw);\n\nlet data;\ntry {\n  data = JSON.parse(cleaned);\n} catch (err) {\n  throw new Error(`LLM 输出不是合法 JSON：${err.message}\\n原始输出：${raw.slice(0, 1000)}`);\n}\n\nconst hashtags = Array.isArray(data.hashtags) ? data.hashtags : [];\nconst shots = Array.isArray(data.shots) ? data.shots : [];\nconst templateType = ['knowledge', 'list', 'contrast', 'story'].includes(data.template_type) ? data.template_type : 'knowledge';\nconst riskCheck = data.risk_check && typeof data.risk_check === 'object' ? data.risk_check : {};\n\nreturn [\n  {\n    json: {\n      id: source.id,\n      topic: source.topic,\n      platform: source.platform,\n      style: source.style,\n      duration_seconds: source.duration_seconds,\n      title: data.title || '',\n      hook: data.hook || '',\n      script: data.script || '',\n      cover_text: data.cover_text || '',\n      hashtags,\n      hashtags_json: JSON.stringify(hashtags),\n      shots,\n      shots_json: JSON.stringify(shots),\n      template_type: templateType,\n      risk_check: riskCheck,\n      risk_check_json: JSON.stringify(riskCheck),\n      status: 'SCRIPT_READY',\n      updated_at: new Date().toISOString()\n    }\n  }\n];\n"
       },
       "id": "parse-llm",
-      "name": "Code - Parse LLM Response",
+      "name": "代码 - 解析LLM响应",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -128,7 +128,7 @@
         }
       },
       "id": "update-script-ready",
-      "name": "Postgres - Update SCRIPT_READY",
+      "name": "数据库 - 更新为SCRIPT_READY",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
@@ -143,22 +143,6 @@
       }
     },
     {
-      "id": "note-script-generation-path",
-      "name": "说明 - 01 脚本生成路径",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [
-        -20,
-        -300
-      ],
-      "parameters": {
-        "width": 2140,
-        "height": 220,
-        "color": 4,
-        "content": "## 01 脚本生成主路径：IDEA → SCRIPT_READY\n\n保留两种入口：\n- 手动入口：在 n8n 点 **Execute workflow**，领取最早一条 `IDEA`。\n- 自动入口：选题中心“生成视频”调用 `/webhook/video-script-start?task_id=<id>&token=<review_token>`，只领取指定 `IDEA`。\n\n两种入口都会进入同一个 `Postgres - Mark GENERATING_SCRIPT`，调用 GLM 生成脚本/分镜/template_type，并写回 `SCRIPT_READY`。\n\nV3：本路径会写入 `video_task_events`，记录脚本阶段开始和完成，便于审核中心展示最近事件。"
-      }
-    },
-    {
       "parameters": {
         "httpMethod": "GET",
         "path": "video-script-start",
@@ -166,7 +150,7 @@
         "options": {}
       },
       "id": "webhook-video-script-start",
-      "name": "Webhook - Video Script Start",
+      "name": "Webhook - 启动脚本生成",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
@@ -177,10 +161,10 @@
     },
     {
       "parameters": {
-        "jsCode": "// Validate one-click video generation webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - Video Script Start').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {id: taskId, task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
+        "jsCode": "// Validate one-click video generation webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - 启动脚本生成').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {id: taskId, task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
       },
       "id": "validate-video-script-start",
-      "name": "Code - Validate Video Script Start",
+      "name": "代码 - 校验脚本生成参数",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -202,7 +186,7 @@
         }
       },
       "id": "http-trigger-render-start-01",
-      "name": "HTTP Request - Trigger 06 Render Start",
+      "name": "HTTP请求 - 触发06开始渲染",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -212,114 +196,147 @@
     },
     {
       "parameters": {
-        "content": "## 自动衔接 06\n\n`Postgres - Update SCRIPT_READY` 成功后，会调用 `/webhook/video-render-start`。\n\n这样选题中心一键生成可以从 `IDEA` 继续跑到 06 首渲染，最终进入 `NEED_REVIEW`。",
-        "height": 170,
-        "width": 760
+        "content": "## 01 脚本生成主路径：IDEA → SCRIPT_READY\n\n手动执行工作流时，领取最早一条 `IDEA`。选题中心自动入口会先校验指定 `task_id + review_token`，再进入同一条脚本生成链路。\n\n本路径调用 GLM 生成脚本、分镜、字幕和 `template_type`，最后写回 `SCRIPT_READY`。",
+        "height": 160,
+        "width": 2140,
+        "color": 4
       },
-      "id": "note-auto-trigger-render-01",
-      "name": "说明 - 自动触发 06 路径",
+      "id": "说明-01-脚本生成主路径",
+      "name": "说明 - 01 脚本生成主路径",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        1700,
-        -300
+        -20,
+        -190
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 选题中心自动入口\n\n访问 `/webhook/video-script-start`。只领取指定 `IDEA` 记录，适配选题中心“生成视频”按钮。\n\n校验通过后进入上方脚本生成主链路。",
+        "height": 150,
+        "width": 980,
+        "color": 5
+      },
+      "id": "说明-选题中心自动入口",
+      "name": "说明 - 选题中心自动入口",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        330
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 自动衔接 06 渲染\n\n`SCRIPT_READY` 写回成功后调用 `/webhook/video-render-start`。\n\n这样选题中心一键生成可以从 `IDEA` 自动跑到首渲染。",
+        "height": 150,
+        "width": 760,
+        "color": 6
+      },
+      "id": "说明-自动衔接06渲染",
+      "name": "说明 - 自动衔接06渲染",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1720,
+        260
       ]
     }
   ],
   "connections": {
-    "Manual Trigger": {
+    "手动触发": {
       "main": [
         [
           {
-            "node": "Postgres - Select One IDEA",
+            "node": "数据库 - 领取一条IDEA",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Select One IDEA": {
+    "数据库 - 领取一条IDEA": {
       "main": [
         [
           {
-            "node": "Postgres - Mark GENERATING_SCRIPT",
+            "node": "数据库 - 标记生成脚本中",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Mark GENERATING_SCRIPT": {
+    "数据库 - 标记生成脚本中": {
       "main": [
         [
           {
-            "node": "Code - Build LLM Request",
+            "node": "代码 - 构建LLM请求",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Build LLM Request": {
+    "代码 - 构建LLM请求": {
       "main": [
         [
           {
-            "node": "HTTP Request - LLM",
+            "node": "HTTP请求 - 调用LLM",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "HTTP Request - LLM": {
+    "HTTP请求 - 调用LLM": {
       "main": [
         [
           {
-            "node": "Code - Parse LLM Response",
+            "node": "代码 - 解析LLM响应",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Parse LLM Response": {
+    "代码 - 解析LLM响应": {
       "main": [
         [
           {
-            "node": "Postgres - Update SCRIPT_READY",
+            "node": "数据库 - 更新为SCRIPT_READY",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Webhook - Video Script Start": {
+    "Webhook - 启动脚本生成": {
       "main": [
         [
           {
-            "node": "Code - Validate Video Script Start",
+            "node": "代码 - 校验脚本生成参数",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Code - Validate Video Script Start": {
+    "代码 - 校验脚本生成参数": {
       "main": [
         [
           {
-            "node": "Postgres - Mark GENERATING_SCRIPT",
+            "node": "数据库 - 标记生成脚本中",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres - Update SCRIPT_READY": {
+    "数据库 - 更新为SCRIPT_READY": {
       "main": [
         [
           {
-            "node": "HTTP Request - Trigger 06 Render Start",
+            "node": "HTTP请求 - 触发06开始渲染",
             "type": "main",
             "index": 0
           }
@@ -336,6 +353,6 @@
     "templateCredsSetupCompleted": false
   },
   "id": "videoAgentScriptMvp01",
-  "versionId": "94a7b2f4-17af-4023-b3e4-ec7cf6903e1e",
+  "versionId": "workflow-notes-separated-from-nodes",
   "description": "第一阶段：脚本生成。手动入口领取最早 IDEA；选题中心一键生成入口 /webhook/video-script-start 领取指定 IDEA。两种入口都会生成脚本并写回 SCRIPT_READY，随后自动调用 06 的 /webhook/video-render-start。"
 }

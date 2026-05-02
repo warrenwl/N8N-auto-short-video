@@ -189,7 +189,7 @@ const staleThresholdSeconds = {
 
 function getQuery() {
   try {
-    return $('Webhook - Review List').first().json.query || {};
+    return $('Webhook - 审核中心列表').first().json.query || {};
   } catch (error) {
     return {};
   }
@@ -698,8 +698,12 @@ const html = `<!doctype html>
         if (triggerPath) {
           const taskId = params.get('task_id') || '';
           const token = params.get('token') || '';
-          fetch(triggerPath + '?task_id=' + encodeURIComponent(taskId) + '&token=' + encodeURIComponent(token), {cache: 'no-store'})
-            .catch(() => {});
+          const triggerUrl = triggerPath + '?task_id=' + encodeURIComponent(taskId) + '&token=' + encodeURIComponent(token);
+          const triggerResponse = await fetch(triggerUrl, {cache: 'no-store'});
+          if (!triggerResponse.ok) {
+            window.location.href = triggerUrl;
+            return;
+          }
         }
 
         window.location.reload();

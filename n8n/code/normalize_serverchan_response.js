@@ -7,7 +7,7 @@ return inputItems.map(item => {
   let remindMessage = '';
   let serverchanEnabled = true;
   try {
-    const messageNode = $('Code - Build ServerChan Message').first().json;
+    const messageNode = $('代码 - 构建Server酱提醒').first().json;
     serverchanEnabled = messageNode.serverchan_enabled !== false;
     remindMessage = String(messageNode.remind_message || '');
   } catch (error) {}

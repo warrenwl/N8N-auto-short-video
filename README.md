@@ -82,7 +82,7 @@ n8n/workflow/available/
 - `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送 Server酱微信提醒。
 - `10_auto_recovery_workflow.json`：生成中任务自动巡检，每 5 分钟扫描超时任务并按阶段自动恢复。
 
-`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入、GLM 生成候选和确认入池闭环；`/webhook/topic-center` 中 `AI生成` Tab 会调用 `/webhook/topic-generate`，生成结果只写入 `topic_candidates(NEW, source=glm)`，不会自动入池或自动生成视频。`手动录入` Tab 来源固定为 `manual`。`已入池` Tab 中 `IDEA` 状态视频会显示“生成视频”按钮，点击后调用 01 的 `/webhook/video-script-start`，01 写回 `SCRIPT_READY` 后自动调用 06 的 `/webhook/video-render-start`，最终进入 `NEED_REVIEW`。
+`00` 的计划文档见 `docs/00_topic_idea_pipeline_plan.md`，目标是补齐 `video_topics(IDEA)` 的来源：人工录入 / 批量导入 / GLM 生成 / 候选池筛选 / 确认入池。当前已完成人工录入、GLM 生成候选和确认入池闭环；`/webhook/topic-center` 中 `AI生成` 标签页会调用 `/webhook/topic-generate`，生成结果只写入 `topic_candidates(NEW, source=glm)`，不会自动入池或自动生成视频。`手动录入` 标签页来源固定为 `manual`。`已入池` 标签页中 `IDEA` 状态视频会显示“生成视频”按钮，点击后调用 01 的 `/webhook/video-script-start`，01 写回 `SCRIPT_READY` 后自动调用 06 的 `/webhook/video-render-start`，最终进入 `NEED_REVIEW`。
 
 后续新增的 `/webhook/topic-center` 需要和现有 `/webhook/video-review-list` 互相预留跳转入口：选题中心可直接进入视频审核中心，视频审核中心也可直接回到选题中心。
 
@@ -118,7 +118,7 @@ n8n/workflow/available/
 config/topic_idea_config.jsonc
 ```
 
-修改这个文件后，重新打开 `/webhook/topic-center?status=AI_GENERATE` 或重新触发 `/webhook/topic-generate` 即可生效。该配置控制 `AI生成` Tab 的默认下拉数据和 GLM 选题提示词。`分类` 是一级内容领域，`选题方向` 是该分类下的二级栏目/生成范围，GLM 会再生成具体候选选题：
+修改这个文件后，重新打开 `/webhook/topic-center?status=AI_GENERATE` 或重新触发 `/webhook/topic-generate` 即可生效。该配置控制 `AI生成` 标签页的默认下拉数据和 GLM 选题提示词。`分类` 是一级内容领域，`选题方向` 是该分类下的二级栏目/生成范围，GLM 会再生成具体候选选题：
 
 ```jsonc
 {
@@ -156,7 +156,7 @@ config/topic_idea_config.jsonc
 
 `AI生成` 的风格已拆成 `tone` 和 `content_structure`：`tone` 控制表达语气，`content_structure` 控制切入结构。GLM 候选输出会额外要求 `core_angle/pain_point/promise/opening_hook/risk_note/score_reason`，这些字段保存在候选 `raw_payload.raw_candidate` 中，并在候选卡片展示。重复判断也会同时参考 `topic/title/core_angle`，比单纯标题精确匹配更稳一点。
 
-`AI生成` 采用异步任务：点击后先写入 `topic_generation_jobs(RUNNING)` 并立即返回，页面下方“生成任务”区域会展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`。刷新页面不会丢失进度；GLM 完成后 job 会变为 `SUCCEEDED`，并写入 `topic_candidates.status = NEW`、`source = glm`、`source_ref = glm:<batch_id>`。GLM prompt、响应、生成参数会写入候选 `raw_payload`。`template_type` 不在候选阶段填写，仍由 01 脚本生成阶段根据正文内容输出并写回 `video_topics.template_type`。
+`AI生成` 采用异步任务：点击后先写入 `topic_generation_jobs(RUNNING)` 并立即返回，页面右侧“生成任务”区域会展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`。刷新页面不会丢失进度；GLM 完成后 job 会变为 `SUCCEEDED`，并写入 `topic_candidates.status = NEW`、`source = glm`、`source_ref = glm:<batch_id>`。GLM prompt、响应、生成参数会写入候选 `raw_payload`。`template_type` 不在候选阶段填写，仍由 01 脚本生成阶段根据正文内容输出并写回 `video_topics.template_type`。
 
 GLM-5.1 会消耗较多 reasoning tokens，M5 候选生成默认 `max_tokens = 8000`；如果后台分支失败导致任务长期停在 `RUNNING`，任务列表轮询会把超过 5 分钟的 job 自动标记为 `FAILED` 并展示失败原因。
 
@@ -292,19 +292,19 @@ worker 渲染时会把头像复制到当前任务的 `output/<task_id>/account_l
 
 画布分为两条路径：
 
-- 上半区“正常首渲染路径”：在 n8n 里点 `Execute workflow` 会领取最早一条 `SCRIPT_READY` 记录；由 01 自动调用 `/webhook/video-render-start?task_id=...&token=...` 时只领取指定 `SCRIPT_READY` 记录。两种入口都会完整执行语音/字幕、ComfyUI 封面、Remotion 合成。
+- 上半区“正常首渲染路径”：在 n8n 里点“执行工作流”会领取最早一条 `SCRIPT_READY` 记录；由 01 自动调用 `/webhook/video-render-start?task_id=...&token=...` 时只领取指定 `SCRIPT_READY` 记录。两种入口都会完整执行语音/字幕、ComfyUI 封面、Remotion 合成。
 - 下半区“已拒绝重渲染路径”：由审核中心“重新渲染视频”按钮自动调用 `/webhook/video-rerender-split`，领取 `MEDIA_READY + RERENDER_REQUESTED` 记录，只重新生成语音/字幕并 Remotion 合成，跳过 ComfyUI/封面生成。
 - 第三条“仅重新合成视频路径”：由审核中心“仅重新合成视频”按钮自动调用 `/webhook/video-rerender-video-only`，领取 `AUDIO_READY + VIDEO_RERENDER_REQUESTED` 记录，复用已有语音/字幕/封面，只重新执行 Remotion 合成。
 
-1. `Postgres - Claim SCRIPT_READY Split`：领取一条 `SCRIPT_READY`，状态改为 `GENERATING_AUDIO`。
-2. `HTTP Request - Generate Audio`：调用 `POST /render/audio`，生成 `voice_main.wav`、`voice_outro.wav`、`voice.wav`、`audio_manifest.json`，并完成字幕时长分配。
-3. `Postgres - Update AUDIO_READY`：回写 `voice_path/audio_duration/audio_engine/render_manifest`，状态改为 `AUDIO_READY`。
-4. `Postgres - Mark GENERATING_COVER`：封面生成开始，状态改为 `GENERATING_COVER`。
-5. `HTTP Request - Generate Cover`：调用 `POST /render/cover`，生成 ComfyUI 封面 `cover_base.png/cover.png`；如果关闭 ComfyUI 或失败且允许 fallback，则生成与 Remotion 底色和模板色适配的主题封面，不展示 ComfyUI 提示词。
-6. `Postgres - Update COVER_READY`：回写 `cover_path/media_manifest/comfyui_prompt_ids`，状态改为 `COVER_READY`。
-7. `Postgres - Mark RENDERING_VIDEO`：视频合成开始，状态改为 `RENDERING_VIDEO`。
-8. `HTTP Request - Render Remotion Video`：调用 `POST /render/remotion`，读取前两步的 `audio_manifest.json` 和 `media_manifest.json`，生成 `subtitles.srt`、`subtitles.json`、`remotion_manifest.json`、`final.mp4`、`manifest.json`。
-9. `Postgres - Update NEED_REVIEW Split`：回写最终视频、字幕、manifest 等字段，状态改为 `NEED_REVIEW`。
+1. `数据库 - 领取SCRIPT_READY首渲染`：领取一条 `SCRIPT_READY`，状态改为 `GENERATING_AUDIO`。
+2. `HTTP请求 - 生成语音`：调用 `POST /render/audio`，生成 `voice_main.wav`、`voice_outro.wav`、`voice.wav`、`audio_manifest.json`，并完成字幕时长分配。
+3. `数据库 - 更新为AUDIO_READY`：回写 `voice_path/audio_duration/audio_engine/render_manifest`，状态改为 `AUDIO_READY`。
+4. `数据库 - 标记生成封面中`：封面生成开始，状态改为 `GENERATING_COVER`。
+5. `HTTP请求 - 生成封面`：调用 `POST /render/cover`，生成 ComfyUI 封面 `cover_base.png/cover.png`；如果关闭 ComfyUI 或失败且允许 fallback，则生成与 Remotion 底色和模板色适配的主题封面，不展示 ComfyUI 提示词。
+6. `数据库 - 更新为COVER_READY`：回写 `cover_path/media_manifest/comfyui_prompt_ids`，状态改为 `COVER_READY`。
+7. `数据库 - 标记合成视频中`：视频合成开始，状态改为 `RENDERING_VIDEO`。
+8. `HTTP请求 - 合成Remotion视频`：调用 `POST /render/remotion`，读取前两步的 `audio_manifest.json` 和 `media_manifest.json`，生成 `subtitles.srt`、`subtitles.json`、`remotion_manifest.json`、`final.mp4`、`manifest.json`。
+9. `数据库 - 更新为NEED_REVIEW首渲染`：回写最终视频、字幕、manifest 等字段，状态改为 `NEED_REVIEW`。
 
 保留的兼容入口：
 
@@ -334,7 +334,7 @@ docker exec -i n8n-video-postgres psql -U n8n -d video_agent < sql/38_add_auto_r
 http://localhost:5678/webhook/video-review-list
 ```
 
-可选 Tab 参数：
+可选标签页参数：
 
 ```text
 http://localhost:5678/webhook/video-review-list?status=NEED_REVIEW
@@ -362,7 +362,8 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 | `rerender_video_only` | `REJECTED` → `AUDIO_READY` | 已拒绝卡片“仅重新合成视频”按钮，自动触发 06 的仅重合成入口；复用已有语音/字幕/封面，只重新生成 `final.mp4` |
 | `reset_script` | `GENERATING_SCRIPT` → `IDEA` | 生成中卡片超时后“重新生成脚本”按钮，自动触发 01 |
 | `trigger_render` | `SCRIPT_READY` → `SCRIPT_READY` | 生成中卡片等待超时后“重新触发渲染”按钮，自动触发 06 |
-| `reset_audio` | `GENERATING_AUDIO` → `SCRIPT_READY` | 生成中卡片超时后“重新生成语音”按钮，自动触发 06 正常首渲染入口 |
+| `reset_audio` | `GENERATING_AUDIO` → `SCRIPT_READY` | 正常首渲染语音阶段超时后“重新生成语音”按钮，自动触发 06 正常首渲染入口 |
+| `rerender_audio_retry` | `GENERATING_AUDIO + RERENDER_REQUESTED` → `MEDIA_READY` | 已拒绝“重新渲染视频”的语音阶段失败或超时后，自动恢复到重渲染入口并重新触发 `/webhook/video-rerender-split` |
 | `trigger_cover` | `AUDIO_READY` → `AUDIO_READY` | 生成中卡片等待超时后“继续生成封面”按钮，自动触发 06 封面恢复入口 |
 | `reset_cover` | `GENERATING_COVER` → `AUDIO_READY` | 生成中卡片超时后“重新生成封面”按钮，复用语音并自动触发 06 封面恢复入口 |
 | `reset_render` | `COVER_READY/RENDERING_VIDEO` → `AUDIO_READY` | 生成中卡片超时后“重新合成视频”按钮，复用语音/封面并自动触发 06 仅重合成入口 |
@@ -371,24 +372,24 @@ http://localhost:5678/webhook/video-review-action?action=<action>&task_id=<任�
 页面展示规则：
 
 - 顶部展示 `待审核/生成中/已通过/已拒绝/已发布/今日审核` 统计。
-- `生成中` Tab 会按阶段展示进度；当 `GENERATING_SCRIPT` 超过 5 分钟、`GENERATING_AUDIO` 超过 15 分钟、`GENERATING_COVER/RENDERING_VIDEO` 超过 20 分钟时，卡片会显示“需要补救”区域。
+- `生成中` 标签页会按阶段展示进度；当 `GENERATING_SCRIPT` 超过 5 分钟、正常首渲染 `GENERATING_AUDIO` 超过 15 分钟、重渲染 `GENERATING_AUDIO + RERENDER_REQUESTED` 超过 5 分钟、`GENERATING_COVER/RENDERING_VIDEO` 超过 20 分钟时，卡片会显示“需要补救”区域。
 - 当前补救支持：脚本、等待渲染、语音、封面、视频合成阶段都能按阶段恢复；任一超时生成中任务可“标记失败”，避免任务长期挂在中间状态。
 - 封面/视频合成恢复会显式携带数据库中的 `voice_path/audio_duration/audio_engine`。即使 output 目录里的旧 `audio_manifest.json` 被清理，worker 也会优先用已有语音重建音频 manifest，避免误重新生成语音。
 - 每个视频卡片会展示“最近事件”折叠区，数据来自 `video_task_events`。01/06/08/10 会记录脚本、语音、封面、视频合成、人工审核、人工补救、自动恢复和失败标记等事件。
-- `10_自动巡检与恢复_生成中任务` 每 5 分钟扫描超时生成中任务，并按同一套补救策略自动触发 01/06；每条任务最多自动恢复 2 次，仍超时会标记 `FAILED`、禁用后续自动恢复并通过 Server酱提醒。
+- `10_自动巡检与恢复_生成中任务` 每 5 分钟扫描超时生成中任务，并按同一套补救策略自动触发 01/06；每条任务最多自动恢复 2 次，仍超时会标记 `FAILED`、禁用后续自动恢复并通过 Server酱提醒。已拒绝“重新渲染视频”的语音生成失败会由 06 立即写入 `error/review_note` 和 `STAGE_FAILED` 事件，10 看到该错误 1 分钟后即可恢复重试。
 - `10` 也会先做产物探测修复：如果 `GENERATING_COVER` 已经落盘 `cover.png/media_manifest.json` 但数据库没回写，会补齐封面字段并触发“仅重新合成视频”；如果 `RENDERING_VIDEO` 已经落盘 `final.mp4/manifest.json` 但数据库没回写，会补齐成片字段并直接进入 `NEED_REVIEW`。
 - 自动恢复次数会显示在审核中心卡片中；详细动作会进入“最近事件”。
 - 修改 n8n Code 节点后先运行 `./scripts/check_n8n_code_node_sandbox.js`，避免把 `path` 等 n8n task runner 禁用模块写入 workflow。
-- Tab 支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `ALL`。
+- 标签页支持查看 `NEED_REVIEW`、`GENERATING`、`APPROVED`、`REJECTED`、`PUBLISHED` 和 `ALL`。
 - `GENERATING` 会聚合展示生成/重渲染进度状态：`GENERATING_SCRIPT`、`SCRIPT_READY`、`MEDIA_READY`、`GENERATING_AUDIO`、`AUDIO_READY`、`GENERATING_COVER`、`COVER_READY`、`RENDERING_VIDEO`、`FAILED`、`RENDER_FAILED`。选题中心点击“生成视频”后会先进入 `GENERATING_SCRIPT`；点击“重新渲染视频”后，记录会先进入这里，并由 06 的 `/webhook/video-rerender-split` 自动领取；点击“重新生成封面”后，会由 `/webhook/video-rerender-cover` 自动领取，复用语音重出封面并合成视频；点击“仅重新合成视频”后，会由 `/webhook/video-rerender-video-only` 自动领取，只跑 Remotion 合成，直到处理完成后回到 `NEED_REVIEW`。
-- `GENERATING` Tab 会展示 5 秒刷新倒计时，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
+- `GENERATING` 标签页会展示 5 秒刷新倒计时，并在卡片里展示阶段进度条、百分比、更新时间、已用时间；失败状态会展示 `error` 里的错误信息。
 - 完成时间使用 `render_finished_at → media_finished_at → created_at → updated_at` 的优先级，并按 `Asia/Shanghai` 格式化成本地可读时间，例如 `2026-04-29 11:00:12`，不会直接展示带 `T/Z` 的 ISO 时间。
 - 拒绝原因默认用下拉选择：`脚本不行`、`画面不行`、`声音不行`、`字幕不行`、`整体重做`；旁边的补充说明可选，提交后会和下拉原因合并写入 `review_note`。
 - 视频预览读取 `video_path` 指向的本地文件，路径通常是 `/data/output/<task_id>/final.mp4`，对应宿主机目录 `data/output/<task_id>/final.mp4`。
 - 如果数据库记录还在，但本地 `final.mp4` 已被清理或移动，页面会显示“视频文件不可预览 / 本地文件可能已被清理”。这种记录需要重新渲染或恢复文件后才能预览。
 - Remotion renderer 的 `/asset` 静态资源接口支持 `HEAD` 和 `Range` 请求，浏览器 `<video>` 可以正常读取 metadata、拖动和播放已存在的视频文件。
 - `待审核`标签里的通过/拒绝会进入审核动作完成页，页面按最终状态上色并提供“返回对应列表 / 查看待审核 / 查看已通过 / 查看已拒绝”按钮；其他标签里的退回/重渲染/仅重新合成视频/发布相关动作会在当前列表页内执行，成功后刷新当前页，不再展示二级结果页。
-- `APPROVED` 视频未进入发布链路时，显示“退回待审核 / 直接发布到抖音”；进入发布链路后，隐藏这两个按钮，显示“撤回发布 / 再次发送提醒”；确认已手动发布后，视频状态变为 `PUBLISHED`，进入“已发布”Tab 且不再显示操作按钮。
+- `APPROVED` 视频未进入发布链路时，显示“退回待审核 / 直接发布到抖音”；进入发布链路后，隐藏这两个按钮，显示“撤回发布 / 再次发送提醒”；确认已手动发布后，视频状态变为 `PUBLISHED`，进入“已发布”标签页且不再显示操作按钮。
 
 导入/更新审核中心工作流：
 
@@ -410,7 +411,7 @@ docker compose restart n8n
 
 ### 09 抖音半自动发布
 
-`09_抖音半自动发布` 为审核中心 `已通过` Tab 的“直接发布到抖音”按钮提供后端链路。它不会自动登录或代发抖音，而是生成手机可下载的发布包，并通过 Server酱推送微信提醒。
+`09_抖音半自动发布` 为审核中心 `已通过` 标签页的“直接发布到抖音”按钮提供后端链路。它不会自动登录或代发抖音，而是生成手机可下载的发布包，并通过 Server酱推送微信提醒。
 
 发布链路：
 

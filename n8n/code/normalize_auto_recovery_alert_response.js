@@ -4,7 +4,7 @@ return $input.all().map((item) => {
   const res = item.json || {};
   let serverchanEnabled = true;
   try {
-    serverchanEnabled = $('Code - Build Auto Recovery Alert').first().json.serverchan_enabled !== false;
+    serverchanEnabled = $('代码 - 构建自动恢复提醒').first().json.serverchan_enabled !== false;
   } catch (error) {}
 
   const ok = res && (res.code === 0 || res.errno === 0 || res.message === 'success' || res.data);

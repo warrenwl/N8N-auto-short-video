@@ -8,7 +8,7 @@ WITH thresholds AS (
     ('GENERATING_SCRIPT'::text, 5 * 60, 'script'::text, 'IDEA'::text, 'RECOVERY_REQUESTED'::text, 'video-script-start'::text, '自动恢复：脚本生成超时，退回 IDEA 并重新请求 GLM'::text),
     ('SCRIPT_READY'::text, 5 * 60, 'render'::text, 'SCRIPT_READY'::text, 'RECOVERY_REQUESTED'::text, 'video-render-start'::text, '自动恢复：等待渲染超时，重新触发 06'::text),
     ('GENERATING_AUDIO'::text, 15 * 60, 'audio'::text, 'SCRIPT_READY'::text, 'RECOVERY_REQUESTED'::text, 'video-render-start'::text, '自动恢复：语音生成超时，退回脚本完成状态并重新生成语音'::text),
-    ('AUDIO_READY'::text, 10 * 60, 'cover'::text, 'AUDIO_READY'::text, 'COVER_RECOVERY_REQUESTED'::text, 'video-rerender-cover'::text, '自动恢复：语音完成后等待超时，继续生成封面'::text),
+    ('AUDIO_READY'::text, 10 * 60, 'auto'::text, 'AUDIO_READY'::text, 'AUTO_RECOVERY_REQUESTED'::text, 'auto'::text, '自动恢复：语音完成后等待超时，按当前补救意图继续'::text),
     ('GENERATING_COVER'::text, 20 * 60, 'cover'::text, 'AUDIO_READY'::text, 'COVER_RECOVERY_REQUESTED'::text, 'video-rerender-cover'::text, '自动恢复：封面生成超时，复用语音重新生成封面'::text),
     ('COVER_READY'::text, 10 * 60, 'video'::text, 'AUDIO_READY'::text, 'VIDEO_RERENDER_REQUESTED'::text, 'video-rerender-video-only'::text, '自动恢复：封面完成后等待超时，复用素材重新合成视频'::text),
     ('RENDERING_VIDEO'::text, 20 * 60, 'video'::text, 'AUDIO_READY'::text, 'VIDEO_RERENDER_REQUESTED'::text, 'video-rerender-video-only'::text, '自动恢复：视频合成超时，复用素材重新合成视频'::text)
@@ -16,12 +16,38 @@ WITH thresholds AS (
 ), candidates AS (
   SELECT
     vt.*,
-    th.stage,
-    th.next_status,
-    th.review_status AS next_review_status,
-    th.webhook_path,
-    th.message,
-    th.threshold_seconds,
+    CASE
+      WHEN vt.status = 'AUDIO_READY' AND vt.review_status = 'VIDEO_RERENDER_REQUESTED' THEN 'video'::text
+      WHEN vt.status = 'AUDIO_READY' THEN 'cover'::text
+      ELSE th.stage
+    END AS stage,
+    CASE
+      WHEN vt.status = 'GENERATING_AUDIO' AND vt.review_status = 'RERENDER_REQUESTED' THEN 'MEDIA_READY'::text
+      ELSE th.next_status
+    END AS next_status,
+    CASE
+      WHEN vt.status = 'GENERATING_AUDIO' AND vt.review_status = 'RERENDER_REQUESTED' THEN 'RERENDER_REQUESTED'::text
+      WHEN vt.status = 'AUDIO_READY' AND vt.review_status = 'VIDEO_RERENDER_REQUESTED' THEN 'VIDEO_RERENDER_REQUESTED'::text
+      WHEN vt.status = 'AUDIO_READY' THEN 'COVER_RECOVERY_REQUESTED'::text
+      ELSE th.review_status
+    END AS next_review_status,
+    CASE
+      WHEN vt.status = 'GENERATING_AUDIO' AND vt.review_status = 'RERENDER_REQUESTED' THEN 'video-rerender-split'::text
+      WHEN vt.status = 'AUDIO_READY' AND vt.review_status = 'VIDEO_RERENDER_REQUESTED' THEN 'video-rerender-video-only'::text
+      WHEN vt.status = 'AUDIO_READY' THEN 'video-rerender-cover'::text
+      ELSE th.webhook_path
+    END AS webhook_path,
+    CASE
+      WHEN vt.status = 'GENERATING_AUDIO' AND vt.review_status = 'RERENDER_REQUESTED' THEN '自动恢复：重渲染语音生成超时或失败，恢复到重渲染入口重新领取'::text
+      WHEN vt.status = 'AUDIO_READY' AND vt.review_status = 'VIDEO_RERENDER_REQUESTED' THEN '自动恢复：仅重新合成视频等待超时，重新触发视频合成'::text
+      WHEN vt.status = 'AUDIO_READY' THEN '自动恢复：语音完成后等待超时，继续生成封面'::text
+      ELSE th.message
+    END AS message,
+    CASE
+      WHEN vt.status = 'GENERATING_AUDIO' AND vt.review_status = 'RERENDER_REQUESTED' AND vt.error IS NOT NULL THEN 60
+      WHEN vt.status = 'GENERATING_AUDIO' AND vt.review_status = 'RERENDER_REQUESTED' THEN 5 * 60
+      ELSE th.threshold_seconds
+    END AS threshold_seconds,
     EXTRACT(EPOCH FROM (
       now() - COALESCE(
         CASE
@@ -64,11 +90,11 @@ WITH thresholds AS (
     shots_json = CASE WHEN tr.next_status = 'IDEA' THEN '[]'::jsonb ELSE vt.shots_json END,
     risk_check = CASE WHEN tr.next_status = 'IDEA' THEN '{}'::jsonb ELSE vt.risk_check END,
     template_type = CASE WHEN tr.next_status = 'IDEA' THEN 'knowledge' ELSE vt.template_type END,
-    audio_started_at = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_started_at END,
-    audio_finished_at = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_finished_at END,
-    voice_path = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.voice_path END,
-    audio_duration = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_duration END,
-    audio_engine = CASE WHEN tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_engine END,
+    audio_started_at = CASE WHEN tr.next_status IN ('MEDIA_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_started_at END,
+    audio_finished_at = CASE WHEN tr.next_status IN ('MEDIA_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_finished_at END,
+    voice_path = CASE WHEN tr.next_status IN ('MEDIA_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.voice_path END,
+    audio_duration = CASE WHEN tr.next_status IN ('MEDIA_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_duration END,
+    audio_engine = CASE WHEN tr.next_status IN ('MEDIA_READY', 'SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.audio_engine END,
     media_started_at = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.media_started_at END,
     media_finished_at = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.media_finished_at END,
     cover_path = CASE WHEN tr.next_review_status = 'COVER_RECOVERY_REQUESTED' OR tr.next_status IN ('SCRIPT_READY', 'IDEA') THEN NULL ELSE vt.cover_path END,

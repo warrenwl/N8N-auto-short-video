@@ -22,6 +22,7 @@ type Shared = {
   activeKeywordIndex: number;
   primaryColor: string;
   secondaryColor: string;
+  templateConfig: TemplateVisualConfig;
   cardConfig: NonNullable<RemotionVisualConfig['card']>;
   motionConfig: NonNullable<RemotionVisualConfig['motion']>;
 };
@@ -312,55 +313,181 @@ const ListCard: React.FC<{segment: Segment; total: number; shared: Shared}> = ({
 };
 
 const ContrastCard: React.FC<{segment: Segment; total: number; shared: Shared}> = ({segment, total, shared}) => {
-  const left = shared.keywords[0] || '误区';
-  const right = shared.keywords[1] || shared.keywords[0] || '正解';
+  const contrastConfig = shared.templateConfig.contrast || {};
+  const left = shared.keywords[0] || contrastConfig.left_fallback || '误区';
+  const right = shared.keywords[1] || shared.keywords[0] || contrastConfig.right_fallback || '正解';
+  const summary = trimText(shared.rawBody, right.length > 6 ? 34 : 40);
   const push = interpolate(shared.frame, [0, shared.segmentFrames * 0.42, shared.segmentFrames * 0.72], [0, 0, 1], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
+  const glow = interpolate(shared.frame, [0, 16, shared.segmentFrames * 0.65], [0.22, 0.48, 0.62], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+  });
+  const panels = [
+    {
+      eyebrow: contrastConfig.left_eyebrow || '旧想法',
+      label: contrastConfig.left_label || '先放下',
+      mark: '×',
+      value: left,
+      body: compactHeadline(segment.headline, 18),
+      active: false,
+    },
+    {
+      eyebrow: contrastConfig.right_eyebrow || '新答案',
+      label: contrastConfig.right_label || '真正要换成',
+      mark: '✓',
+      value: right,
+      body: summary,
+      active: true,
+    },
+  ];
   return (
-    <div style={{position: 'relative'}}>
+    <div style={{position: 'relative', minHeight: 560}}>
       <Watermark segment={segment} layout="contrast" enabled={shared.cardConfig.number_watermark !== false} frame={shared.frame} />
-      <div style={{display: 'grid', gap: 20}}>
-        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', maxWidth: 980}}>
-          <div style={{color: shared.primaryColor, fontSize: 29, fontWeight: 950}}>别再卡在旧想法</div>
-          <div style={{color: 'rgba(255,255,255,0.66)', fontSize: 27, fontWeight: 850}}>{segment.index}/{total}</div>
+      <div
+        style={{
+          position: 'absolute',
+          left: 500,
+          top: 18,
+          bottom: 34,
+          width: 6,
+          borderRadius: 999,
+          background: `linear-gradient(180deg, transparent, ${rgba(shared.primaryColor, 0.82)}, transparent)`,
+          boxShadow: `0 0 34px ${rgba(shared.primaryColor, 0.36)}`,
+          opacity: 0.72,
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          left: 520,
+          right: -26,
+          top: 70,
+          height: 330,
+          borderRadius: 34,
+          background: `radial-gradient(circle at 42% 46%, ${rgba(shared.primaryColor, glow)}, ${rgba(shared.primaryColor, 0.12)} 42%, rgba(0,0,0,0) 72%)`,
+          filter: 'blur(2px)',
+          opacity: 0.88,
+        }}
+      />
+      <div style={{position: 'relative'}}>
+        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 28}}>
+          <div style={{color: 'rgba(255,255,255,0.62)', fontSize: 26, fontWeight: 850}}>{segment.index}/{total}</div>
         </div>
-        <div style={{color: '#fff', fontSize: headlineSize(segment.headline, 50), lineHeight: 1.1, fontWeight: 950, maxWidth: 930}}>
-          {compactHeadline(segment.headline, 22)}
-        </div>
-        <div style={{display: 'grid', gridTemplateColumns: '0.9fr 1.1fr', gap: 28, marginTop: 16}}>
-          {[
-            {label: '先放下', mark: '×', value: left, bg: 'rgba(255,255,255,0.085)', color: 'rgba(255,255,255,0.7)'},
-            {label: '换成这个', mark: '✓', value: right, bg: rgba(shared.primaryColor, 0.22), color: shared.primaryColor},
-          ].map((item, index) => (
-            <div
-              key={item.value}
-              style={{
-                ...stickerPop(shared.frame, index, shared.motionConfig),
-                minHeight: 230,
-                padding: '8px 8px 24px 0',
-                borderRadius: 0,
-                background: 'transparent',
-                boxShadow: 'none',
-                opacity: index === 0 ? 0.72 - push * 0.24 : 0.78 + push * 0.22,
-                transform: `${stickerPop(shared.frame, index, shared.motionConfig).transform} translateX(${index === 0 ? -push * 22 : push * 28}px) scale(${index === 0 ? 1 - push * 0.04 : 1 + push * 0.035})`,
-              }}
-            >
-              <div style={{display: 'flex', alignItems: 'center', gap: 12, color: item.color, fontSize: 30, fontWeight: 950, marginBottom: 24}}>
-                <span style={{display: 'inline-grid', placeItems: 'center', width: 42, height: 42, borderRadius: 999, color: index === 0 ? '#111' : '#111', background: index === 0 ? 'rgba(255,255,255,0.78)' : shared.primaryColor, boxShadow: `0 0 22px ${rgba(index === 0 ? '#ffffff' : shared.primaryColor, 0.28)}`}}>{item.mark}</span>
-                <span>{item.label}</span>
-              </div>
-              <div style={{color: '#fff', fontSize: item.value.length > 8 ? (index === 0 ? 33 : 42) : (index === 0 ? 42 : 54), lineHeight: 1.08, fontWeight: 950, textShadow: '0 5px 24px rgba(0,0,0,0.7)', textDecoration: index === 0 ? 'line-through' : 'none', textDecorationColor: index === 0 ? rgba(shared.primaryColor, 0.85) : undefined, textDecorationThickness: index === 0 ? 5 : undefined}}>
-                {item.value}
-              </div>
-              {index === 1 ? (
-                <div style={{marginTop: 22, color: 'rgba(255,255,255,0.78)', fontSize: 27, lineHeight: 1.32, fontWeight: 800, maxWidth: 430, textShadow: '0 4px 18px rgba(0,0,0,0.72)'}}>
-                  {trimText(shared.rawBody, 28)}
+        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: 62}}>
+          {panels.map((panel, index) => {
+            const wordSize = panel.value.length > 8 ? 58 : panel.value.length > 5 ? 72 : 88;
+            const isActive = panel.active;
+            const panelMotion = pop(shared.frame, 0, shared.motionConfig);
+            return (
+              <div
+                key={panel.label}
+                style={{
+                  ...panelMotion,
+                  minHeight: 430,
+                  padding: '20px 8px 0',
+                  opacity: isActive ? 0.88 + push * 0.12 : 0.72 - push * 0.22,
+                  transform: panelMotion.transform,
+                }}
+              >
+                <div
+                  style={{
+                    color: isActive ? shared.primaryColor : 'rgba(255,255,255,0.56)',
+                    fontSize: 29,
+                    fontWeight: 950,
+                    marginBottom: 22,
+                    textShadow: isActive ? `0 0 24px ${rgba(shared.primaryColor, 0.24)}` : '0 4px 18px rgba(0,0,0,0.52)',
+                  }}
+                >
+                  {panel.eyebrow}
                 </div>
-              ) : null}
-            </div>
-          ))}
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    minHeight: 52,
+                    padding: '8px 17px 9px 12px',
+                    borderRadius: 999,
+                    color: isActive ? '#111' : 'rgba(255,255,255,0.72)',
+                    background: isActive ? shared.primaryColor : 'rgba(255,255,255,0.1)',
+                    border: isActive ? 0 : '1px solid rgba(255,255,255,0.16)',
+                    boxShadow: isActive ? `0 0 30px ${rgba(shared.primaryColor, 0.38)}` : '0 12px 34px rgba(0,0,0,0.16)',
+                    fontSize: 29,
+                    fontWeight: 950,
+                  }}
+                >
+                  <span
+                    style={{
+                      display: 'inline-grid',
+                      placeItems: 'center',
+                      width: 34,
+                      height: 34,
+                      borderRadius: 999,
+                      background: isActive ? 'rgba(0,0,0,0.14)' : 'rgba(255,255,255,0.68)',
+                      color: '#111',
+                    }}
+                  >
+                    {panel.mark}
+                  </span>
+                  <span>{panel.label}</span>
+                </div>
+                <div
+                  style={{
+                    position: 'relative',
+                    marginTop: 28,
+                    maxWidth: 440,
+                    color: '#fff',
+                    fontSize: wordSize,
+                    lineHeight: 0.98,
+                    fontWeight: 950,
+                    textShadow: isActive
+                      ? `0 7px 30px rgba(0,0,0,0.8), 0 0 38px ${rgba(shared.primaryColor, 0.34)}`
+                      : '0 5px 24px rgba(0,0,0,0.68)',
+                    textDecoration: isActive ? 'none' : 'line-through',
+                    textDecorationColor: rgba(shared.primaryColor, 0.86),
+                    textDecorationThickness: isActive ? undefined : 5,
+                  }}
+                >
+                  <span
+                    style={{
+                      position: 'absolute',
+                      left: -10,
+                      top: -36,
+                      color: isActive ? rgba(shared.primaryColor, 0.18) : 'rgba(255,255,255,0.06)',
+                      fontSize: wordSize * 1.14,
+                      lineHeight: 1,
+                      fontWeight: 950,
+                      WebkitTextStroke: `1px ${isActive ? rgba(shared.primaryColor, 0.18) : 'rgba(255,255,255,0.08)'}`,
+                    }}
+                  >
+                    {panel.value}
+                  </span>
+                  <span style={{position: 'relative', color: isActive ? '#fff' : 'rgba(255,255,255,0.78)'}}>{panel.value}</span>
+                </div>
+                {panel.body ? (
+                  <div
+                    style={{
+                      marginTop: 26,
+                      maxWidth: 430,
+                      minHeight: 116,
+                      paddingLeft: 18,
+                      borderLeft: `4px solid ${isActive ? rgba(shared.primaryColor, 0.86) : 'rgba(255,255,255,0.24)'}`,
+                      color: isActive ? 'rgba(255,255,255,0.84)' : 'rgba(255,255,255,0.56)',
+                      fontSize: isActive ? 30 : 28,
+                      lineHeight: 1.28,
+                      fontWeight: isActive ? 850 : 780,
+                      textShadow: '0 4px 18px rgba(0,0,0,0.76)',
+                    }}
+                  >
+                    <span style={{opacity: isActive ? 1 : 0.74}}>{panel.body}</span>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -481,6 +608,7 @@ export const ChapterCard: React.FC<Props> = ({
     activeKeywordIndex,
     primaryColor,
     secondaryColor,
+    templateConfig,
     cardConfig,
     motionConfig,
   };

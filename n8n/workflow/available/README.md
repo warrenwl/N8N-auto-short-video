@@ -15,7 +15,7 @@
 
 `http://localhost:5678/webhook/topic-center`
 
-选题中心支持 AI 生成候选、人工新增候选、确认入池到 `video_topics(IDEA)`、拒绝和标记重复。`AI生成` Tab 读取 `config/topic_idea_config.jsonc`；分类与选题方向是一级/二级联动关系：先选分类，再自动带出该分类下的二级方向，二者都支持自定义。数量默认 1 条，提供 1/2/5/10 下拉，并保留自定义输入；目标受众和内容风格也支持默认下拉与自定义输入。调用 `/webhook/topic-generate` 后会先创建 `topic_generation_jobs(RUNNING)` 并立即返回，页面下方“生成任务”区域展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`；刷新页面不会丢进度，GLM 成功后任务变为 `SUCCEEDED` 并写入 `topic_candidates(NEW, source=glm)`。人工录入是独立 Tab，来源固定为 `manual`。`已入池` Tab 中 `IDEA` 状态视频会显示“生成视频”按钮，点击后触发 01，01 写回 `SCRIPT_READY` 后自动触发 06，最终进入视频审核中心。页面顶部有“视频审核中心”入口；视频审核中心顶部也有“选题中心”入口。
+选题中心支持 AI 生成候选、人工新增候选、确认入池到 `video_topics(IDEA)`、拒绝和标记重复。`AI生成` 标签页读取 `config/topic_idea_config.jsonc`；分类与选题方向是一级/二级联动关系：先选分类，再自动带出该分类下的二级方向，二者都支持自定义。数量默认 1 条，提供 1/2/5/10 下拉，并保留自定义输入；目标受众和内容风格也支持默认下拉与自定义输入。调用 `/webhook/topic-generate` 后会先创建 `topic_generation_jobs(RUNNING)` 并立即返回，页面右侧“生成任务”区域展示 5 秒刷新倒计时并轮询 `/webhook/topic-generation-jobs`；刷新页面不会丢进度，GLM 成功后任务变为 `SUCCEEDED` 并写入 `topic_candidates(NEW, source=glm)`。人工录入是独立标签页，来源固定为 `manual`。`已入池` 标签页中 `IDEA` 状态视频会显示“生成视频”按钮，点击后触发 01，01 写回 `SCRIPT_READY` 后自动触发 06，最终进入视频审核中心。页面顶部有“视频审核中心”入口；视频审核中心顶部也有“选题中心”入口。
 
 M5 候选生成默认 `max_tokens = 8000`，避免 GLM-5.1 reasoning tokens 过多时截断 JSON 正文。超过 5 分钟仍停在 `RUNNING` 的生成任务会由任务列表轮询接口自动标记为 `FAILED`。
 
@@ -29,9 +29,9 @@ M5 候选生成默认 `max_tokens = 8000`，避免 GLM-5.1 reasoning tokens 过�
 
 `待审核`标签里的“通过/拒绝”仍会进入审核结果页，方便确认最终状态；其他标签里的管理按钮会在当前页内执行，成功后刷新当前页，不再展示二级结果页。
 
-`APPROVED` 视频未进入发布链路时显示“退回待审核 / 直接发布到抖音”；进入发布链路后显示“撤回发布 / 再次发送提醒”；确认已手动发布后视频变为 `PUBLISHED`，进入“已发布”Tab 且不再显示操作按钮。
+`APPROVED` 视频未进入发布链路时显示“退回待审核 / 直接发布到抖音”；进入发布链路后显示“撤回发布 / 再次发送提醒”；确认已手动发布后视频变为 `PUBLISHED`，进入“已发布”标签页且不再显示操作按钮。
 
-`生成中` Tab 会展示 5 秒刷新倒计时并更新阶段进度。任务超过阈值后会出现“需要补救”区域：脚本阶段可重新触发 01，等待渲染/语音阶段可重新触发 06 首渲染，封面阶段可调用 06 的 `/webhook/video-rerender-cover` 复用语音重新生成封面并继续合成，视频合成阶段可调用 `/webhook/video-rerender-video-only` 复用已有素材重新合成；任何超时生成中任务都可以点击“标记失败”，避免长期卡在中间状态。
+`生成中` 标签页会展示 5 秒刷新倒计时并更新阶段进度。任务超过阈值后会出现“需要补救”区域：脚本阶段可重新触发 01，等待渲染/语音阶段可重新触发 06 首渲染，封面阶段可调用 06 的 `/webhook/video-rerender-cover` 复用语音重新生成封面并继续合成，视频合成阶段可调用 `/webhook/video-rerender-video-only` 复用已有素材重新合成；任何超时生成中任务都可以点击“标记失败”，避免长期卡在中间状态。
 
 06 的恢复请求会把数据库里的 `voice_path/audio_duration/audio_engine` 显式传给 worker；如果本地 output 目录里的旧 `audio_manifest.json` 不存在，worker 会用已有语音重建音频 manifest，避免恢复封面或视频合成时误重新生成语音。
 

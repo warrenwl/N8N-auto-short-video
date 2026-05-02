@@ -58,10 +58,20 @@
       "background_mood": "conflict",
       "motion": "snap",
       "keyword_style": "split",
+      // Contrast 模板面板文案，影响所有 template_type=contrast 的视频：
+      // left_* 控制左侧旧观点，right_* 控制右侧新观点；keywords[0]/keywords[1] 仍由 GLM 每条视频动态生成。
+      "contrast": {
+        "left_eyebrow": "旧想法",
+        "right_eyebrow": "新答案",
+        "left_label": "先放下",
+        "right_label": "真正要换成",
+        "left_fallback": "误区",
+        "right_fallback": "正解"
+      },
       "visual_behavior": {
-        "main_card": "对比卡：显示“误区 / 正解”双栏，用蓝橙色制造反差。",
-        "keywords": "A/B 分裂式关键词，适合把错误理解和正确做法并列。",
-        "transition": "更干脆的切换节奏，适合纠偏表达。"
+        "main_card": "对比卡：左侧旧观点弱化，右侧反转关键词放大为第二视觉中心，适合“不是 A，而是 B”的纠偏表达。",
+        "keywords": "第一个关键词作为旧观点/误区，第二个关键词作为正解/反转点；面板标题和 fallback 来自 contrast 配置，不写死具体内容。",
+        "transition": "旧观点后退，右侧结论推进并发光，强化观点替换感。"
       }
     },
     "story": {
