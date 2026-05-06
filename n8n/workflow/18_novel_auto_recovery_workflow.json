@@ -1,0 +1,163 @@
+{
+  "id": "novelAutoRecoveryV1Workflow18",
+  "name": "18_小说自动恢复",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "schedule-auto-recovery-18",
+      "name": "定时触发 - 每5分钟",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -700,
+        -140
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "manual-auto-recovery-18",
+      "name": "手动触发",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Novel auto recovery: retry stale jobs or fail exhausted jobs.\nWITH obsolete_notifications AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'CANCELLED',\n    error_message = '自动恢复：章节已不处于待审核，取消过期提醒任务',\n    finished_at = NOW(),\n    updated_at = NOW()\n  FROM novel_chapters c\n  WHERE c.id = j.chapter_id\n    AND j.job_type = 'NOTIFY_REVIEW'\n    AND j.status IN ('PENDING', 'RUNNING')\n    AND c.status <> 'NEED_REVIEW'\n  RETURNING\n    'OBSOLETE_NOTIFY_CANCELLED'::text AS event_type,\n    j.id AS job_id,\n    j.project_id,\n    j.chapter_id,\n    j.job_type,\n    j.chapter_no,\n    'PENDING_OR_RUNNING'::text AS old_status,\n    j.status AS new_status,\n    j.error_message\n), obsolete_chapter_generations AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'CANCELLED',\n    error_message = '自动恢复：同章已有候选稿或正式稿，取消重复章节生成任务',\n    finished_at = NOW(),\n    updated_at = NOW()\n  WHERE j.job_type = 'GENERATE_CHAPTER'\n    AND j.status = 'PENDING'\n    AND EXISTS (\n      SELECT 1\n      FROM novel_chapters c\n      LEFT JOIN novel_chapter_outlines o ON o.id = c.outline_id\n      WHERE c.project_id = j.project_id\n        AND c.chapter_no = j.chapter_no\n        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')\n        AND (o.id IS NULL OR c.created_at >= o.updated_at)\n    )\n  RETURNING\n    'OBSOLETE_CHAPTER_GENERATION_CANCELLED'::text AS event_type,\n    j.id AS job_id,\n    j.project_id,\n    j.chapter_id,\n    j.job_type,\n    j.chapter_no,\n    'PENDING'::text AS old_status,\n    j.status AS new_status,\n    j.error_message\n), stale AS (\n  SELECT\n    j.*,\n    CASE\n      WHEN j.job_type IN ('GENERATE_BIBLE', 'GENERATE_OUTLINE', 'PLAN_CHAPTER_DIRECTOR') THEN INTERVAL '6 minutes'\n      WHEN j.job_type IN ('REVIEW_CHAPTER', 'REWRITE_CHAPTER') THEN INTERVAL '6 minutes'\n      ELSE INTERVAL '20 minutes'\n    END AS stale_interval\n  FROM novel_generation_jobs j\n  WHERE j.status = 'RUNNING'\n    AND j.started_at IS NOT NULL\n    AND j.started_at < NOW() - CASE\n      WHEN j.job_type IN ('GENERATE_BIBLE', 'GENERATE_OUTLINE', 'PLAN_CHAPTER_DIRECTOR') THEN INTERVAL '6 minutes'\n      WHEN j.job_type IN ('REVIEW_CHAPTER', 'REWRITE_CHAPTER') THEN INTERVAL '6 minutes'\n      ELSE INTERVAL '20 minutes'\n    END\n  ORDER BY j.started_at ASC\n  FOR UPDATE SKIP LOCKED\n  LIMIT 20\n), recovered AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'PENDING',\n    error_message = COALESCE(j.error_message, '自动恢复：任务超时，重新排队'),\n    started_at = NULL,\n    updated_at = NOW()\n  FROM stale st\n  WHERE j.id = st.id\n    AND st.attempt_count < st.max_attempts\n  RETURNING\n    'AUTO_RECOVERY_RETRY'::text AS event_type,\n    j.id AS job_id,\n    j.project_id,\n    j.chapter_id,\n    j.job_type,\n    j.chapter_no,\n    'RUNNING'::text AS old_status,\n    j.status AS new_status,\n    j.error_message\n), failed AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'FAILED',\n    error_message = '自动恢复：任务超时且达到最大重试次数',\n    finished_at = NOW(),\n    updated_at = NOW()\n  FROM stale st\n  WHERE j.id = st.id\n    AND st.attempt_count >= st.max_attempts\n  RETURNING\n    'AUTO_RECOVERY_FAILED'::text AS event_type,\n    j.id AS job_id,\n    j.project_id,\n    j.chapter_id,\n    j.job_type,\n    j.chapter_no,\n    'RUNNING'::text AS old_status,\n    j.status AS new_status,\n    j.error_message\n), failed_review_chapters AS (\n  UPDATE novel_chapters c\n  SET\n    status = 'FAILED',\n    error = f.error_message\n  FROM failed f\n  WHERE c.id = f.chapter_id\n    AND f.job_type = 'REVIEW_CHAPTER'\n    AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW')\n  RETURNING c.id\n), failed_rewrite_jobs AS (\n  SELECT *\n  FROM failed\n  WHERE job_type = 'REWRITE_CHAPTER'\n), all_events AS (\n  SELECT * FROM obsolete_notifications\n  UNION ALL\n  SELECT * FROM obsolete_chapter_generations\n  UNION ALL\n  SELECT * FROM recovered\n  UNION ALL\n  SELECT * FROM failed\n)\nSELECT *\nFROM all_events\nORDER BY event_type, job_type, job_id;",
+        "options": {}
+      },
+      "id": "postgres-auto-recovery-18",
+      "name": "数据库 - 小说任务自动恢复",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -460,
+        -40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Repair missing next-chapter director/chapter jobs.\nWITH missing_director AS (\n  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, status)\n  SELECT\n    p.id,\n    'PLAN_CHAPTER_DIRECTOR',\n    p.current_chapter_no + 1,\n    'PENDING'\n  FROM novel_projects p\n  WHERE p.status = 'WRITING'\n    AND p.current_chapter_no > 0\n    AND p.current_chapter_no < p.target_total_chapters\n    AND EXISTS (\n      SELECT 1\n      FROM novel_chapter_outlines o\n      WHERE o.project_id = p.id\n        AND o.chapter_no = p.current_chapter_no + 1\n        AND o.status = 'READY'\n    )\n    AND NOT EXISTS (\n      SELECT 1\n      FROM novel_chapter_director_cards d\n      WHERE d.project_id = p.id\n        AND d.chapter_no = p.current_chapter_no + 1\n        AND d.is_current = TRUE\n        AND d.status IN ('READY', 'NEEDS_REVIEW')\n    )\n    AND NOT EXISTS (\n      SELECT 1\n      FROM novel_generation_jobs j\n      WHERE j.project_id = p.id\n        AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'\n        AND j.chapter_no = p.current_chapter_no + 1\n        AND j.status IN ('PENDING', 'RUNNING')\n    )\n  ON CONFLICT DO NOTHING\n  RETURNING *\n), missing_chapter AS (\n  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, status)\n  SELECT\n    p.id,\n    'GENERATE_CHAPTER',\n    p.current_chapter_no + 1,\n    'PENDING'\n  FROM novel_projects p\n  WHERE p.status = 'WRITING'\n    AND p.current_chapter_no > 0\n    AND p.current_chapter_no < p.target_total_chapters\n    AND EXISTS (\n      SELECT 1\n      FROM novel_chapter_director_cards d\n      WHERE d.project_id = p.id\n        AND d.chapter_no = p.current_chapter_no + 1\n        AND d.is_current = TRUE\n        AND d.status = 'READY'\n    )\n    AND NOT EXISTS (\n      SELECT 1\n      FROM novel_generation_jobs j\n      WHERE j.project_id = p.id\n        AND j.job_type = 'GENERATE_CHAPTER'\n        AND j.chapter_no = p.current_chapter_no + 1\n        AND j.status IN ('PENDING', 'RUNNING')\n    )\n    AND NOT EXISTS (\n      SELECT 1\n      FROM novel_chapters c\n      LEFT JOIN novel_chapter_outlines o ON o.id = c.outline_id\n      WHERE c.project_id = p.id\n        AND c.chapter_no = p.current_chapter_no + 1\n        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')\n        AND (o.id IS NULL OR c.created_at >= o.updated_at)\n    )\n  ON CONFLICT DO NOTHING\n  RETURNING *\n), repaired AS (\n  SELECT * FROM missing_director\n  UNION ALL\n  SELECT * FROM missing_chapter\n)\nSELECT\n  CASE\n    WHEN job_type = 'PLAN_CHAPTER_DIRECTOR' THEN 'NEXT_DIRECTOR_JOB_REPAIRED'\n    ELSE 'NEXT_CHAPTER_JOB_REPAIRED'\n  END AS event_type,\n  id AS job_id,\n  project_id,\n  chapter_id,\n  job_type,\n  chapter_no,\n  NULL::text AS old_status,\n  status AS new_status,\n  NULL::text AS error_message\nFROM repaired\nORDER BY created_at;",
+        "options": {}
+      },
+      "id": "postgres-repair-next-job-18",
+      "name": "数据库 - 补齐下一章任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -220,
+        -40
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Summarize Novel Auto Recovery\n\nconst rows = $input.all().map((item) => item.json || {});\nconst summary = {\n  recovered_count: rows.filter((row) => row.event_type === 'AUTO_RECOVERY_RETRY').length,\n  failed_count: rows.filter((row) => row.event_type === 'AUTO_RECOVERY_FAILED').length,\n  repaired_next_job_count: rows.filter((row) => ['NEXT_CHAPTER_JOB_REPAIRED', 'NEXT_DIRECTOR_JOB_REPAIRED'].includes(row.event_type)).length,\n  rows,\n};\n\nreturn [{\n  json: {\n    novel_auto_recovery_summary: summary,\n    recovered_count: summary.recovered_count,\n    failed_count: summary.failed_count,\n    repaired_next_job_count: summary.repaired_next_job_count,\n  },\n}];\n"
+      },
+      "id": "code-summarize-auto-recovery-18",
+      "name": "代码 - 汇总小说自动恢复结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        20,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "content": "每 5 分钟扫描超时 `RUNNING` 小说任务；未达上限回到 `PENDING`，达到上限标记 `FAILED`；同时兜底补齐缺失的下一章导演台或正文任务。",
+        "height": 180,
+        "width": 340,
+        "color": 4
+      },
+      "id": "note-auto-recovery-18",
+      "name": "说明 - 小说自动恢复",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        -380
+      ]
+    }
+  ],
+  "connections": {
+    "定时触发 - 每5分钟": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 小说任务自动恢复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "手动触发": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 小说任务自动恢复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 小说任务自动恢复": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 补齐下一章任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 补齐下一章任务": {
+      "main": [
+        [
+          {
+            "node": "代码 - 汇总小说自动恢复结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "novelAutoRecoveryV1Workflow18-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "description": "Novel workflow V1 generated from project SQL/code files."
+}

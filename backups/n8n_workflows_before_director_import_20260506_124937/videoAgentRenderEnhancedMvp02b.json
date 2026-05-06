@@ -1,0 +1,219 @@
+{
+  "updatedAt": "2026-04-29T08:08:22.344Z",
+  "createdAt": "2026-04-27T12:57:20.327Z",
+  "id": "videoAgentRenderEnhancedMvp02b",
+  "name": "02b_素材生成与视频合成_增强版_多分镜拼接",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-02b",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 08_claim_one_script_ready_for_enhanced.sql\n-- 原子领取 1 条 SCRIPT_READY 任务，并立刻标记为 RENDERING。\n-- 使用 FOR UPDATE SKIP LOCKED，后面并发跑多个 worker 时也不容易重复领取。\n\nWITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE status = 'SCRIPT_READY'\n  ORDER BY created_at ASC\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'RENDERING',\n  render_started_at = NOW(),\n  updated_at = NOW(),\n  error = NULL\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*;\n",
+        "options": {}
+      },
+      "id": "claim-script-ready-enhanced",
+      "name": "Postgres - Claim One SCRIPT_READY Enhanced",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code 节点：Build Render Request Enhanced\n * 输入：Postgres - Claim One SCRIPT_READY 返回的 video_topics 行\n * 输出：给 video-worker /render 的请求体\n */\n\nfunction parseJsonLoose(value, fallback) {\n  if (value === null || value === undefined || value === '') return fallback;\n  if (typeof value === 'object') return value;\n  if (typeof value !== 'string') return fallback;\n  try {\n    return JSON.parse(value);\n  } catch (err) {\n    return fallback;\n  }\n}\n\nfunction fallbackShotsFromScript(script, defaultDuration) {\n  const text = String(script || '').trim();\n  if (!text) {\n    return [\n      {\n        shot_id: 1,\n        duration: defaultDuration,\n        visual_prompt_cn: '简洁竖屏短视频背景，标题居中，适合知识口播',\n        subtitle: '这里是自动生成的测试分镜。'\n      }\n    ];\n  }\n\n  const parts = text\n    .split(/[\\n。！？!?]+/)\n    .map(s => s.trim())\n    .filter(Boolean)\n    .slice(0, 8);\n\n  return parts.map((line, index) => ({\n    shot_id: index + 1,\n    duration: defaultDuration,\n    visual_prompt_cn: `竖屏短视频第 ${index + 1} 个分镜，画面服务于这句口播：${line}`,\n    subtitle: line\n  }));\n}\n\nfunction normalizeHashtags(value) {\n  const parsed = parseJsonLoose(value, value);\n  if (Array.isArray(parsed)) {\n    return parsed.map(tag => String(tag).trim()).filter(Boolean).join(' ');\n  }\n  if (parsed && typeof parsed === 'object') {\n    return Object.values(parsed).map(tag => String(tag).trim()).filter(Boolean).join(' ');\n  }\n  return String(parsed || '');\n}\n\nconst row = $json;\nconst defaultShotDuration = Number(row.default_shot_duration || 5);\nlet shots = parseJsonLoose(row.shots_json, []);\n\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = fallbackShotsFromScript(row.script, defaultShotDuration);\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id || index + 1,\n  duration: Math.max(2, Number(shot.duration || defaultShotDuration)),\n  visual_prompt_cn: shot.visual_prompt_cn || shot.visual_prompt || shot.prompt || '',\n  visual_prompt_en: shot.visual_prompt_en || '',\n  subtitle: shot.subtitle || shot.text || ''\n}));\n\nreturn [\n  {\n    json: {\n      task_id: String(row.id),\n      topic: row.topic || '',\n      title: row.title || row.topic || '未命名视频',\n      hook: row.hook || '',\n      script: row.script || '',\n      cover_text: row.cover_text || row.title || row.topic || '短视频',\n      hashtags: normalizeHashtags(row.hashtags),\n      shots,\n      options: {\n        width: 1080,\n        height: 1920,\n        fps: 30,\n        output_root: '/data/output',\n        render_mode: 'placeholder_multishot',\n        default_shot_duration: defaultShotDuration\n      }\n    }\n  }\n];"
+      },
+      "id": "build-render-request-enhanced",
+      "name": "Code - Build Render Request Enhanced",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-render-multishot-video",
+      "name": "HTTP Request - Render Multi-shot Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code 节点：Parse Render Response Enhanced\n * 输入：HTTP Request - Render Multi-shot Video 返回的 JSON\n * 输出：给 Postgres - Update NEED_REVIEW 的字段\n */\n\nconst resp = $json;\n\nif (!resp || resp.status !== 'ok') {\n  throw new Error(`video-worker render failed: ${JSON.stringify(resp)}`);\n}\n\nconst clips = Array.isArray(resp.clips) ? resp.clips : [];\nconst manifest = resp.manifest || resp;\n\nreturn [\n  {\n    json: {\n      task_id: String(resp.task_id || manifest.task_id || ''),\n      video_path: resp.video_path || manifest.final_video || '',\n      cover_path: resp.cover_path || manifest.cover_path || '',\n      subtitle_path: resp.subtitle_path || manifest.subtitle_path || '',\n      clips_json: JSON.stringify(clips),\n      render_manifest: JSON.stringify(manifest),\n      status: 'NEED_REVIEW'\n    }\n  }\n];"
+      },
+      "id": "parse-render-response-enhanced",
+      "name": "Code - Parse Render Response Enhanced",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 09_update_need_review_enhanced.sql\n-- video-worker 成功返回后，把最终视频与中间文件 manifest 回写数据库。\n-- 在 n8n Postgres 节点里建议使用 Query Parameters：\n-- $1 = video_path\n-- $2 = cover_path\n-- $3 = subtitle_path\n-- $4 = clips_json，字符串化 JSON\n-- $5 = render_manifest，字符串化 JSON\n-- $6 = task_id\n\nUPDATE video_topics\nSET\n  status = 'NEED_REVIEW',\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  render_finished_at = NOW(),\n  updated_at = NOW(),\n  error = NULL\nWHERE id = $6\nRETURNING id, status, video_path, cover_path, subtitle_path, updated_at;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-enhanced",
+      "name": "Postgres - Update NEED_REVIEW Enhanced",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1400,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Claim One SCRIPT_READY Enhanced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Claim One SCRIPT_READY Enhanced": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Render Request Enhanced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Render Request Enhanced": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Render Multi-shot Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Render Multi-shot Video": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Render Response Enhanced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Render Response Enhanced": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update NEED_REVIEW Enhanced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "description": "增强版第二链路：原子领取 SCRIPT_READY，调用多分镜 video-worker 生成 clips/final/cover/subtitles/manifest，并回写 NEED_REVIEW。"
+  },
+  "pinData": null,
+  "versionId": "a2433ca0-71da-44ef-b8c9-ea0371f9c982",
+  "activeVersionId": null,
+  "versionCounter": 3,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-04-27T12:57:20.327Z",
+      "createdAt": "2026-04-27T12:57:20.327Z",
+      "role": "workflow:owner",
+      "workflowId": "videoAgentRenderEnhancedMvp02b",
+      "projectId": "NGUCqFuUfTK6tdLq",
+      "project": {
+        "updatedAt": "2026-04-27T07:29:09.598Z",
+        "createdAt": "2026-04-27T07:23:49.700Z",
+        "id": "NGUCqFuUfTK6tdLq",
+        "name": "旭磊 王 <814521841@qq.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "176fa689-fd98-4246-ae4b-018b12cafe3a"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

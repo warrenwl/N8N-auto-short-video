@@ -1,0 +1,220 @@
+{
+  "updatedAt": "2026-04-29T08:08:15.863Z",
+  "createdAt": "2026-04-28T09:00:17.716Z",
+  "id": "videoAgentRenderRemotionMvp05",
+  "name": "05_ComfyUI封面_Remotion动态版式_VoxCPM_TTS",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-05",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE status = 'SCRIPT_READY'\n  ORDER BY created_at ASC\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'RENDERING',\n  media_started_at = CURRENT_TIMESTAMP,\n  render_started_at = CURRENT_TIMESTAMP,\n  audio_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*;\n",
+        "options": {}
+      },
+      "id": "claim-script-ready-remotion",
+      "name": "Postgres - Claim One SCRIPT_READY Remotion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Build Render Request Remotion\n * Input: one row from PostgreSQL video_topics.\n * Output: JSON body for POST http://video-worker:8000/render\n */\n\nconst row = $json;\nconst id = String(row.id || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {\n  throw new Error(`No SCRIPT_READY video topic was claimed. Upstream Postgres row is missing a valid uuid id: ${JSON.stringify(row).slice(0, 1000)}`);\n}\n\nfunction parseJsonMaybe(value, fallback) {\n  if (!value) return fallback;\n  if (Array.isArray(value) || typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (e) {\n    return fallback;\n  }\n}\n\nlet shots = parseJsonMaybe(row.shots_json, []);\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = [\n    {\n      shot_id: 1,\n      duration: Number(row.duration || row.duration_seconds || 8),\n      subtitle: row.hook || row.cover_text || row.title || row.topic,\n      visual_prompt_cn: row.cover_text || row.title || row.topic,\n    },\n  ];\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id ?? index + 1,\n  duration: Number(shot.duration || 5),\n  subtitle: String(shot.subtitle || ''),\n  headline: String(shot.headline || ''),\n  body: String(shot.body || shot.subtitle || ''),\n  keywords: Array.isArray(shot.keywords) ? shot.keywords.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [],\n  layout_hint: String(shot.layout_hint || ''),\n  visual_prompt_cn: String(shot.visual_prompt_cn || shot.prompt || shot.subtitle || ''),\n  visual_prompt_en: String(shot.visual_prompt_en || ''),\n}));\n\nconst title = String(row.title || row.topic || 'AI 短视频');\nconst coverText = String(row.cover_text || row.title || row.topic || '');\nconst templateType = String(row.template_type || row.remotion_template_type || 'knowledge');\n\nreturn [\n  {\n    json: {\n      task_id: id,\n      title,\n      script: String(row.script || row.hook || row.topic || ''),\n      cover_text: coverText,\n      platform: String(row.platform || 'default'),\n      cover_prompt: `竖屏短视频封面背景，主题：${title}，封面文案参考：${coverText}，画面主体明确，留出上方标题空间，不要生成文字，不要logo，不要水印，商业短视频封面质感`,\n      shots,\n      width: 1080,\n      height: 1920,\n      fps: 30,\n\n      enable_tts: true,\n      tts_base_url: 'http://host.docker.internal:8010',\n\n      enable_comfyui: true,\n      comfyui_mode: 'cover_only',\n      comfyui_options: {\n        base_url: 'http://host.docker.internal:8000',\n        workflow_template_path: '/app/comfyui/zimage_text2image_api_template.json',\n        prompt_node_id: '63',\n        save_node_id: '9',\n        sampler_node_id: '57:3',\n        latent_node_id: '57:13',\n        filename_prefix: 'n8n-video',\n        image_width: 720,\n        image_height: 1280,\n        timeout_seconds: 900,\n        poll_interval_seconds: 2,\n        fallback_to_placeholder: true,\n        overlay_cover_text: true,\n        prompt_prefix: '竖屏短视频封面主视觉，真实摄影，电影感光影，构图干净，手机竖屏，高清细节',\n        negative_prompt: '多个人，过度锐化，塑料质感，畸形手指，多余的手，畸形肢体，文字乱码，logo，水印，低清晰度，模糊',\n      },\n\n      render_engine: 'remotion',\n      template_type: templateType,\n      remotion_renderer_url: 'http://host.docker.internal:3001',\n    },\n  },\n];\n"
+      },
+      "id": "build-render-request-remotion",
+      "name": "Code - Build Render Request Remotion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-video-remotion",
+      "name": "HTTP Request - Render Dynamic Video with Remotion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Parse Render Response Remotion\n * Input: JSON returned by video-worker.\n * Output: fields used by PostgreSQL update query.\n */\n\nconst data = $json;\n\nif (!data || data.status !== 'ok') {\n  throw new Error(`Render failed or invalid response: ${JSON.stringify(data).slice(0, 1000)}`);\n}\n\nreturn [\n  {\n    json: {\n      task_id: data.task_id,\n      video_path: data.video_path,\n      cover_path: data.cover_path || null,\n      subtitle_path: data.subtitle_path || null,\n      clips_json: JSON.stringify(data.clips || []),\n      render_manifest: JSON.stringify(data),\n      voice_path: data.voice_path || null,\n      audio_duration: Number(data.audio_duration || 0),\n      audio_engine: data.audio_engine || 'VoxCPM',\n      shot_images_json: JSON.stringify(data.images || []),\n      media_engine: data.media_engine || 'ComfyUI',\n      media_manifest: JSON.stringify(data.media_manifest || {}),\n      comfyui_prompt_ids: JSON.stringify(data.comfyui_prompt_ids || {}),\n    },\n  },\n];\n"
+      },
+      "id": "parse-render-response-remotion",
+      "name": "Code - Parse Render Response Remotion",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE video_topics\nSET\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  voice_path = $6,\n  audio_duration = $7,\n  audio_engine = $8,\n  shot_images_json = $9::jsonb,\n  media_engine = $10,\n  media_manifest = $11::jsonb,\n  comfyui_prompt_ids = $12::jsonb,\n  status = 'NEED_REVIEW',\n  media_finished_at = CURRENT_TIMESTAMP,\n  audio_finished_at = CURRENT_TIMESTAMP,\n  render_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $13\nRETURNING id, status, video_path, cover_path, voice_path, audio_duration, media_engine, updated_at;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.voice_path, $json.audio_duration, $json.audio_engine, $json.shot_images_json, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-remotion",
+      "name": "Postgres - Update NEED_REVIEW Remotion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1400,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Claim One SCRIPT_READY Remotion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Claim One SCRIPT_READY Remotion": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Render Request Remotion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Render Request Remotion": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Render Dynamic Video with Remotion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Render Dynamic Video with Remotion": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Render Response Remotion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Render Response Remotion": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update NEED_REVIEW Remotion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "description": "第五阶段：ComfyUI 只生成封面，VoxCPM 生成口播，Remotion 生成动态信息版式 final.mp4，回写 NEED_REVIEW。"
+  },
+  "pinData": null,
+  "versionId": "c16127fe-ffab-4af4-9b76-5cdaa8e92e0e",
+  "activeVersionId": null,
+  "versionCounter": 5,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-04-28T09:00:17.716Z",
+      "createdAt": "2026-04-28T09:00:17.716Z",
+      "role": "workflow:owner",
+      "workflowId": "videoAgentRenderRemotionMvp05",
+      "projectId": "NGUCqFuUfTK6tdLq",
+      "project": {
+        "updatedAt": "2026-04-27T07:29:09.598Z",
+        "createdAt": "2026-04-27T07:23:49.700Z",
+        "id": "NGUCqFuUfTK6tdLq",
+        "name": "旭磊 王 <814521841@qq.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "176fa689-fd98-4246-ae4b-018b12cafe3a"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

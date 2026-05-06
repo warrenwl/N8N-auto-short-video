@@ -1,0 +1,1550 @@
+{
+  "updatedAt": "2026-05-02T15:06:48.176Z",
+  "createdAt": "2026-04-29T01:46:44.987Z",
+  "id": "videoAgentRenderSplitMvp06",
+  "name": "06_分段渲染_ComfyUI封面_Remotion动态版式_VoxCPM_TTS",
+  "description": "Stage 6: split render with manual/webhook first render, rejected rerender, cover recovery rerender, and video-only rerender paths.",
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-06",
+      "name": "手动触发",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nWITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE status = 'SCRIPT_READY'\n    AND ($1::uuid IS NULL OR id = $1::uuid)\n    AND ($2::text IS NULL OR review_token = $2)\n  ORDER BY created_at ASC\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'GENERATING_AUDIO',\n  audio_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'audio',\n    'SCRIPT_READY',\n    'GENERATING_AUDIO',\n    'n8n',\n    '06_split_render_workflow',\n    '领取脚本，开始生成语音',\n    jsonb_build_object('path', 'normal')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.task_id || null, $json.token || null ] }}"
+        }
+      },
+      "id": "claim-script-ready-split",
+      "name": "数据库 - 领取SCRIPT_READY首渲染",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Build Render Request Remotion\n * Input: one row from PostgreSQL video_topics.\n * Output: JSON body shared by split worker endpoints\n */\n\nconst row = $json;\nconst id = String(row.id || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {\n  throw new Error(`No SCRIPT_READY video topic was claimed. Upstream Postgres row is missing a valid uuid id: ${JSON.stringify(row).slice(0, 1000)}`);\n}\n\nfunction parseJsonMaybe(value, fallback) {\n  if (!value) return fallback;\n  if (Array.isArray(value) || typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (e) {\n    return fallback;\n  }\n}\n\nlet shots = parseJsonMaybe(row.shots_json, []);\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = [\n    {\n      shot_id: 1,\n      duration: Number(row.duration || row.duration_seconds || 8),\n      subtitle: row.hook || row.cover_text || row.title || row.topic,\n      visual_prompt_cn: row.cover_text || row.title || row.topic,\n    },\n  ];\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id ?? index + 1,\n  duration: Number(shot.duration || 5),\n  subtitle: String(shot.subtitle || ''),\n  headline: String(shot.headline || ''),\n  body: String(shot.body || shot.subtitle || ''),\n  keywords: Array.isArray(shot.keywords) ? shot.keywords.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [],\n  layout_hint: String(shot.layout_hint || ''),\n  visual_prompt_cn: String(shot.visual_prompt_cn || shot.prompt || shot.subtitle || ''),\n  visual_prompt_en: String(shot.visual_prompt_en || ''),\n}));\n\nconst title = String(row.title || row.topic || 'AI 短视频');\nconst coverText = String(row.cover_text || row.title || row.topic || '');\nconst templateType = String(row.template_type || row.remotion_template_type || 'knowledge');\nconst existingVoicePath = row.voice_path ? String(row.voice_path) : null;\nconst existingAudioDuration = Number(row.audio_duration || 0);\nconst existingAudioEngine = row.audio_engine ? String(row.audio_engine) : null;\n\nreturn [\n  {\n    json: {\n      task_id: id,\n      title,\n      script: String(row.script || row.hook || row.topic || ''),\n      cover_text: coverText,\n      platform: String(row.platform || 'default'),\n      cover_prompt: `竖屏短视频封面背景，主题：${title}，封面文案参考：${coverText}，画面主体明确，留出上方标题空间，不要生成文字，不要logo，不要水印，商业短视频封面质感`,\n      shots,\n      width: 1080,\n      height: 1920,\n      fps: 30,\n\n      enable_tts: true,\n      tts_base_url: 'http://host.docker.internal:8010',\n\n      enable_comfyui: true,\n      comfyui_mode: 'cover_only',\n      comfyui_options: {\n        base_url: 'http://host.docker.internal:8000',\n        workflow_template_path: '/app/comfyui/zimage_text2image_api_template.json',\n        prompt_node_id: '63',\n        save_node_id: '9',\n        sampler_node_id: '57:3',\n        latent_node_id: '57:13',\n        filename_prefix: 'n8n-video',\n        image_width: 720,\n        image_height: 1280,\n        timeout_seconds: 900,\n        poll_interval_seconds: 2,\n        fallback_to_placeholder: true,\n        overlay_cover_text: true,\n        prompt_prefix: '竖屏短视频封面主视觉，真实摄影，电影感光影，构图干净，手机竖屏，高清细节',\n        negative_prompt: '多个人，过度锐化，塑料质感，畸形手指，多余的手，畸形肢体，文字乱码，logo，水印，低清晰度，模糊',\n      },\n\n      render_engine: 'remotion',\n      template_type: templateType,\n      remotion_renderer_url: 'http://host.docker.internal:3001',\n      existing_voice_path: existingVoicePath,\n      existing_audio_duration: Number.isFinite(existingAudioDuration) && existingAudioDuration > 0 ? existingAudioDuration : null,\n      existing_audio_engine: existingAudioEngine,\n    },\n  },\n];\n"
+      },
+      "id": "build-render-request-split",
+      "name": "代码 - 构建首渲染请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/audio",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-audio-split",
+      "name": "HTTP请求 - 生成语音",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Parse /render/audio response.\n */\nconst data = $json;\nif (!data || data.status !== 'ok') {\n  throw new Error('Audio stage failed or invalid response: ' + JSON.stringify(data).slice(0, 1000));\n}\nreturn [{\n  json: {\n    task_id: data.task_id,\n    voice_path: data.voice_path || null,\n    audio_duration: Number(data.audio_duration || 0),\n    audio_engine: data.audio_engine || 'VoxCPM',\n    audio_manifest: JSON.stringify(data),\n  },\n}];\n"
+      },
+      "id": "parse-audio-split",
+      "name": "代码 - 解析语音响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  voice_path = $1,\n  audio_duration = $2,\n  audio_engine = $3,\n  render_manifest = $4::jsonb,\n  status = 'AUDIO_READY',\n  audio_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $5\nRETURNING id, status, voice_path, audio_duration, audio_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'audio',\n    'GENERATING_AUDIO',\n    'AUDIO_READY',\n    'n8n',\n    '06_split_render_workflow',\n    '语音生成完成',\n    jsonb_build_object('audio_engine', audio_engine, 'audio_duration', audio_duration)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.voice_path, $json.audio_duration, $json.audio_engine, $json.audio_manifest, $json.task_id ] }}"
+        }
+      },
+      "id": "update-audio-ready-split",
+      "name": "数据库 - 更新为AUDIO_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1400,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  status = 'GENERATING_COVER',\n  media_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $1\nRETURNING id, status, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'cover',\n    'AUDIO_READY',\n    'GENERATING_COVER',\n    'n8n',\n    '06_split_render_workflow',\n    '开始生成封面',\n    jsonb_build_object('path', 'normal')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "mark-generating-cover-split",
+      "name": "数据库 - 标记生成封面中",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1680,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/cover",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('代码 - 构建首渲染请求').first().json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-cover-split",
+      "name": "HTTP请求 - 生成封面",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1960,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Parse /render/cover response.\n */\nconst data = $json;\nif (!data || data.status !== 'ok') {\n  throw new Error('Cover stage failed or invalid response: ' + JSON.stringify(data).slice(0, 1000));\n}\nreturn [{\n  json: {\n    task_id: data.task_id,\n    cover_path: data.cover_path || null,\n    cover_base_path: data.cover_base_path || null,\n    media_engine: data.engine || 'ComfyUI',\n    media_manifest: JSON.stringify(data),\n    comfyui_prompt_ids: JSON.stringify(data.prompt_ids || {}),\n  },\n}];\n"
+      },
+      "id": "parse-cover-split",
+      "name": "代码 - 解析封面响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  cover_path = $1,\n  media_engine = $2,\n  media_manifest = $3::jsonb,\n  comfyui_prompt_ids = $4::jsonb,\n  status = 'COVER_READY',\n  media_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $5\nRETURNING id, status, cover_path, media_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'cover',\n    'GENERATING_COVER',\n    'COVER_READY',\n    'n8n',\n    '06_split_render_workflow',\n    '封面生成完成',\n    jsonb_build_object('media_engine', media_engine)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.cover_path, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-cover-ready-split",
+      "name": "数据库 - 更新为COVER_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2520,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  status = 'RENDERING_VIDEO',\n  render_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $1\nRETURNING id, status, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'video',\n    'COVER_READY',\n    'RENDERING_VIDEO',\n    'n8n',\n    '06_split_render_workflow',\n    '开始合成视频',\n    jsonb_build_object('path', 'normal')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "mark-rendering-video-split",
+      "name": "数据库 - 标记合成视频中",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2800,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/remotion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('代码 - 构建首渲染请求').first().json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-video-split",
+      "name": "HTTP请求 - 合成Remotion视频",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Parse Render Response Remotion\n * Input: JSON returned by video-worker.\n * Output: fields used by PostgreSQL update query.\n */\n\nconst data = $json;\n\nif (!data || data.status !== 'ok') {\n  throw new Error(`Render failed or invalid response: ${JSON.stringify(data).slice(0, 1000)}`);\n}\n\nreturn [\n  {\n    json: {\n      task_id: data.task_id,\n      video_path: data.video_path,\n      cover_path: data.cover_path || null,\n      subtitle_path: data.subtitle_path || null,\n      clips_json: JSON.stringify(data.clips || []),\n      render_manifest: JSON.stringify(data),\n      voice_path: data.voice_path || null,\n      audio_duration: Number(data.audio_duration || 0),\n      audio_engine: data.audio_engine || 'VoxCPM',\n      shot_images_json: JSON.stringify(data.images || []),\n      media_engine: data.media_engine || 'ComfyUI',\n      media_manifest: JSON.stringify(data.media_manifest || {}),\n      comfyui_prompt_ids: JSON.stringify(data.comfyui_prompt_ids || {}),\n    },\n  },\n];\n"
+      },
+      "id": "parse-render-split",
+      "name": "代码 - 解析首渲染响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  voice_path = $6,\n  audio_duration = $7,\n  audio_engine = $8,\n  shot_images_json = $9::jsonb,\n  media_engine = $10,\n  media_manifest = $11::jsonb,\n  comfyui_prompt_ids = $12::jsonb,\n  status = 'NEED_REVIEW',\n  review_status = NULL,\n  render_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $13\nRETURNING id, status, video_path, cover_path, voice_path, audio_duration, media_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'video',\n    'RENDERING_VIDEO',\n    'NEED_REVIEW',\n    'n8n',\n    '06_split_render_workflow',\n    '视频合成完成，进入待审核',\n    jsonb_build_object('path', 'normal')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.voice_path, $json.audio_duration, $json.audio_engine, $json.shot_images_json, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-split",
+      "name": "数据库 - 更新为NEED_REVIEW首渲染",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3640,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-rerender-split",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-rerender-split",
+      "name": "Webhook - 重新渲染视频",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        760
+      ],
+      "webhookId": "video-rerender-split-06"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate internal rerender webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - 重新渲染视频').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
+      },
+      "id": "validate-rerender-split",
+      "name": "代码 - 校验重新渲染参数",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nWITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE id = $1\n    AND review_token = $2\n    AND status = 'MEDIA_READY'\n    AND review_status = 'RERENDER_REQUESTED'\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'GENERATING_AUDIO',\n  audio_started_at = CURRENT_TIMESTAMP,\n  audio_finished_at = NULL,\n  render_started_at = NULL,\n  render_finished_at = NULL,\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'audio',\n    'MEDIA_READY',\n    'GENERATING_AUDIO',\n    'n8n',\n    '06_split_render_workflow',\n    '领取拒绝重渲染任务，开始重新生成语音',\n    jsonb_build_object('path', 'rejected_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('Webhook - 重新渲染视频').first().json.query.task_id, $('Webhook - 重新渲染视频').first().json.query.token ] }}"
+        }
+      },
+      "id": "claim-media-ready-rerender",
+      "name": "数据库 - 领取MEDIA_READY重渲染",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Build Render Request Remotion\n * Input: one row from PostgreSQL video_topics.\n * Output: JSON body shared by split worker endpoints\n */\n\nconst row = $json;\nconst id = String(row.id || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {\n  throw new Error(`No MEDIA_READY rerender topic was claimed. Upstream Postgres row is missing a valid uuid id: ${JSON.stringify(row).slice(0, 1000)}`);\n}\n\nfunction parseJsonMaybe(value, fallback) {\n  if (!value) return fallback;\n  if (Array.isArray(value) || typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (e) {\n    return fallback;\n  }\n}\n\nlet shots = parseJsonMaybe(row.shots_json, []);\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = [\n    {\n      shot_id: 1,\n      duration: Number(row.duration || row.duration_seconds || 8),\n      subtitle: row.hook || row.cover_text || row.title || row.topic,\n      visual_prompt_cn: row.cover_text || row.title || row.topic,\n    },\n  ];\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id ?? index + 1,\n  duration: Number(shot.duration || 5),\n  subtitle: String(shot.subtitle || ''),\n  headline: String(shot.headline || ''),\n  body: String(shot.body || shot.subtitle || ''),\n  keywords: Array.isArray(shot.keywords) ? shot.keywords.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [],\n  layout_hint: String(shot.layout_hint || ''),\n  visual_prompt_cn: String(shot.visual_prompt_cn || shot.prompt || shot.subtitle || ''),\n  visual_prompt_en: String(shot.visual_prompt_en || ''),\n}));\n\nconst title = String(row.title || row.topic || 'AI 短视频');\nconst coverText = String(row.cover_text || row.title || row.topic || '');\nconst templateType = String(row.template_type || row.remotion_template_type || 'knowledge');\nconst existingVoicePath = row.voice_path ? String(row.voice_path) : null;\nconst existingAudioDuration = Number(row.audio_duration || 0);\nconst existingAudioEngine = row.audio_engine ? String(row.audio_engine) : null;\n\nreturn [\n  {\n    json: {\n      task_id: id,\n      title,\n      script: String(row.script || row.hook || row.topic || ''),\n      cover_text: coverText,\n      platform: String(row.platform || 'default'),\n      cover_prompt: `竖屏短视频封面背景，主题：${title}，封面文案参考：${coverText}，画面主体明确，留出上方标题空间，不要生成文字，不要logo，不要水印，商业短视频封面质感`,\n      shots,\n      width: 1080,\n      height: 1920,\n      fps: 30,\n\n      enable_tts: true,\n      tts_base_url: 'http://host.docker.internal:8010',\n\n      enable_comfyui: false,\n      comfyui_mode: 'cover_only',\n      comfyui_options: {\n        base_url: 'http://host.docker.internal:8000',\n        workflow_template_path: '/app/comfyui/zimage_text2image_api_template.json',\n        prompt_node_id: '63',\n        save_node_id: '9',\n        sampler_node_id: '57:3',\n        latent_node_id: '57:13',\n        filename_prefix: 'n8n-video',\n        image_width: 720,\n        image_height: 1280,\n        timeout_seconds: 900,\n        poll_interval_seconds: 2,\n        fallback_to_placeholder: true,\n        overlay_cover_text: true,\n        prompt_prefix: '竖屏短视频封面主视觉，真实摄影，电影感光影，构图干净，手机竖屏，高清细节',\n        negative_prompt: '多个人，过度锐化，塑料质感，畸形手指，多余的手，畸形肢体，文字乱码，logo，水印，低清晰度，模糊',\n      },\n\n      render_engine: 'remotion',\n      template_type: templateType,\n      remotion_renderer_url: 'http://host.docker.internal:3001',\n      existing_voice_path: existingVoicePath,\n      existing_audio_duration: Number.isFinite(existingAudioDuration) && existingAudioDuration > 0 ? existingAudioDuration : null,\n      existing_audio_engine: existingAudioEngine,\n    },\n  },\n];\n"
+      },
+      "id": "build-render-request-rerender",
+      "name": "代码 - 构建重渲染请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/audio",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-audio-rerender",
+      "name": "HTTP请求 - 重渲染生成语音",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        760
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Parse /render/audio response.\n */\nconst data = $json;\nif (!data || data.status !== 'ok') {\n  throw new Error('Audio stage failed or invalid response: ' + JSON.stringify(data).slice(0, 1000));\n}\nreturn [{\n  json: {\n    task_id: data.task_id,\n    voice_path: data.voice_path || null,\n    audio_duration: Number(data.audio_duration || 0),\n    audio_engine: data.audio_engine || 'VoxCPM',\n    audio_manifest: JSON.stringify(data),\n  },\n}];\n"
+      },
+      "id": "parse-audio-rerender",
+      "name": "代码 - 解析重渲染语音响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  voice_path = $1,\n  audio_duration = $2,\n  audio_engine = $3,\n  render_manifest = $4::jsonb,\n  status = 'AUDIO_READY',\n  audio_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $5\nRETURNING id, status, voice_path, audio_duration, audio_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'audio',\n    'GENERATING_AUDIO',\n    'AUDIO_READY',\n    'n8n',\n    '06_split_render_workflow',\n    '重渲染语音生成完成',\n    jsonb_build_object('path', 'rejected_rerender', 'audio_engine', audio_engine, 'audio_duration', audio_duration)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.voice_path, $json.audio_duration, $json.audio_engine, $json.audio_manifest, $json.task_id ] }}"
+        }
+      },
+      "id": "update-audio-ready-rerender",
+      "name": "数据库 - 重渲染更新为AUDIO_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1680,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  status = 'RENDERING_VIDEO',\n  render_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $1\nRETURNING id, status, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'video',\n    'AUDIO_READY',\n    'RENDERING_VIDEO',\n    'n8n',\n    '06_split_render_workflow',\n    '开始重渲染视频',\n    jsonb_build_object('path', 'rejected_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "mark-rendering-video-rerender",
+      "name": "数据库 - 重渲染标记合成视频中",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/remotion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('代码 - 构建重渲染请求').first().json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-video-rerender",
+      "name": "HTTP请求 - 重渲染合成Remotion视频",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Parse Render Response Remotion\n * Input: JSON returned by video-worker.\n * Output: fields used by PostgreSQL update query.\n */\n\nconst data = $json;\n\nif (!data || data.status !== 'ok') {\n  throw new Error(`Render failed or invalid response: ${JSON.stringify(data).slice(0, 1000)}`);\n}\n\nreturn [\n  {\n    json: {\n      task_id: data.task_id,\n      video_path: data.video_path,\n      cover_path: data.cover_path || null,\n      subtitle_path: data.subtitle_path || null,\n      clips_json: JSON.stringify(data.clips || []),\n      render_manifest: JSON.stringify(data),\n      voice_path: data.voice_path || null,\n      audio_duration: Number(data.audio_duration || 0),\n      audio_engine: data.audio_engine || 'VoxCPM',\n      shot_images_json: JSON.stringify(data.images || []),\n      media_engine: data.media_engine || 'ComfyUI',\n      media_manifest: JSON.stringify(data.media_manifest || {}),\n      comfyui_prompt_ids: JSON.stringify(data.comfyui_prompt_ids || {}),\n    },\n  },\n];\n"
+      },
+      "id": "parse-render-rerender",
+      "name": "代码 - 解析重渲染响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  voice_path = $6,\n  audio_duration = $7,\n  audio_engine = $8,\n  shot_images_json = $9::jsonb,\n  media_engine = $10,\n  media_manifest = $11::jsonb,\n  comfyui_prompt_ids = $12::jsonb,\n  status = 'NEED_REVIEW',\n  review_status = NULL,\n  render_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $13\nRETURNING id, status, video_path, cover_path, voice_path, audio_duration, media_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'video',\n    'RENDERING_VIDEO',\n    'NEED_REVIEW',\n    'n8n',\n    '06_split_render_workflow',\n    '重渲染完成，进入待审核',\n    jsonb_build_object('path', 'rejected_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.voice_path, $json.audio_duration, $json.audio_engine, $json.shot_images_json, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-rerender",
+      "name": "数据库 - 重渲染更新为NEED_REVIEW",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2800,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-rerender-video-only",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-video-only-rerender",
+      "name": "Webhook - 仅重新合成视频",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1800
+      ],
+      "webhookId": "video-rerender-video-only-06"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate internal video-only rerender webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - 仅重新合成视频').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
+      },
+      "id": "validate-video-only-rerender",
+      "name": "代码 - 校验仅重合成参数",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1940
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nWITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE id = $1\n    AND review_token = $2\n    AND status = 'AUDIO_READY'\n    AND review_status = 'VIDEO_RERENDER_REQUESTED'\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'RENDERING_VIDEO',\n  render_started_at = CURRENT_TIMESTAMP,\n  render_finished_at = NULL,\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'video',\n    'AUDIO_READY',\n    'RENDERING_VIDEO',\n    'n8n',\n    '06_split_render_workflow',\n    '复用语音和封面，仅重新合成视频',\n    jsonb_build_object('path', 'video_only_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('Webhook - 仅重新合成视频').first().json.query.task_id, $('Webhook - 仅重新合成视频').first().json.query.token ] }}"
+        }
+      },
+      "id": "claim-audio-ready-video-only",
+      "name": "数据库 - 领取AUDIO_READY仅重合成",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        560,
+        1800
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Build Render Request Remotion\n * Input: one row from PostgreSQL video_topics.\n * Output: JSON body shared by split worker endpoints\n */\n\nconst row = $json;\nconst id = String(row.id || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {\n  throw new Error(`No AUDIO_READY video-only rerender topic was claimed. Upstream Postgres row is missing a valid uuid id: ${JSON.stringify(row).slice(0, 1000)}`);\n}\n\nfunction parseJsonMaybe(value, fallback) {\n  if (!value) return fallback;\n  if (Array.isArray(value) || typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (e) {\n    return fallback;\n  }\n}\n\nlet shots = parseJsonMaybe(row.shots_json, []);\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = [\n    {\n      shot_id: 1,\n      duration: Number(row.duration || row.duration_seconds || 8),\n      subtitle: row.hook || row.cover_text || row.title || row.topic,\n      visual_prompt_cn: row.cover_text || row.title || row.topic,\n    },\n  ];\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id ?? index + 1,\n  duration: Number(shot.duration || 5),\n  subtitle: String(shot.subtitle || ''),\n  headline: String(shot.headline || ''),\n  body: String(shot.body || shot.subtitle || ''),\n  keywords: Array.isArray(shot.keywords) ? shot.keywords.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [],\n  layout_hint: String(shot.layout_hint || ''),\n  visual_prompt_cn: String(shot.visual_prompt_cn || shot.prompt || shot.subtitle || ''),\n  visual_prompt_en: String(shot.visual_prompt_en || ''),\n}));\n\nconst title = String(row.title || row.topic || 'AI 短视频');\nconst coverText = String(row.cover_text || row.title || row.topic || '');\nconst templateType = String(row.template_type || row.remotion_template_type || 'knowledge');\nconst existingVoicePath = row.voice_path ? String(row.voice_path) : null;\nconst existingAudioDuration = Number(row.audio_duration || 0);\nconst existingAudioEngine = row.audio_engine ? String(row.audio_engine) : null;\n\nreturn [\n  {\n    json: {\n      task_id: id,\n      title,\n      script: String(row.script || row.hook || row.topic || ''),\n      cover_text: coverText,\n      platform: String(row.platform || 'default'),\n      cover_prompt: `竖屏短视频封面背景，主题：${title}，封面文案参考：${coverText}，画面主体明确，留出上方标题空间，不要生成文字，不要logo，不要水印，商业短视频封面质感`,\n      shots,\n      width: 1080,\n      height: 1920,\n      fps: 30,\n\n      enable_tts: true,\n      tts_base_url: 'http://host.docker.internal:8010',\n\n      enable_comfyui: false,\n      comfyui_mode: 'cover_only',\n      comfyui_options: {\n        base_url: 'http://host.docker.internal:8000',\n        workflow_template_path: '/app/comfyui/zimage_text2image_api_template.json',\n        prompt_node_id: '63',\n        save_node_id: '9',\n        sampler_node_id: '57:3',\n        latent_node_id: '57:13',\n        filename_prefix: 'n8n-video',\n        image_width: 720,\n        image_height: 1280,\n        timeout_seconds: 900,\n        poll_interval_seconds: 2,\n        fallback_to_placeholder: true,\n        overlay_cover_text: true,\n        prompt_prefix: '竖屏短视频封面主视觉，真实摄影，电影感光影，构图干净，手机竖屏，高清细节',\n        negative_prompt: '多个人，过度锐化，塑料质感，畸形手指，多余的手，畸形肢体，文字乱码，logo，水印，低清晰度，模糊',\n      },\n\n      render_engine: 'remotion',\n      template_type: templateType,\n      remotion_renderer_url: 'http://host.docker.internal:3001',\n      existing_voice_path: existingVoicePath,\n      existing_audio_duration: Number.isFinite(existingAudioDuration) && existingAudioDuration > 0 ? existingAudioDuration : null,\n      existing_audio_engine: existingAudioEngine,\n    },\n  },\n];\n"
+      },
+      "id": "build-render-request-video-only",
+      "name": "代码 - 构建仅重合成请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        1800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/remotion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('代码 - 构建仅重合成请求').first().json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-video-only",
+      "name": "HTTP请求 - 仅合成Remotion视频",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        1800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Parse Render Response Remotion\n * Input: JSON returned by video-worker.\n * Output: fields used by PostgreSQL update query.\n */\n\nconst data = $json;\n\nif (!data || data.status !== 'ok') {\n  throw new Error(`Render failed or invalid response: ${JSON.stringify(data).slice(0, 1000)}`);\n}\n\nreturn [\n  {\n    json: {\n      task_id: data.task_id,\n      video_path: data.video_path,\n      cover_path: data.cover_path || null,\n      subtitle_path: data.subtitle_path || null,\n      clips_json: JSON.stringify(data.clips || []),\n      render_manifest: JSON.stringify(data),\n      voice_path: data.voice_path || null,\n      audio_duration: Number(data.audio_duration || 0),\n      audio_engine: data.audio_engine || 'VoxCPM',\n      shot_images_json: JSON.stringify(data.images || []),\n      media_engine: data.media_engine || 'ComfyUI',\n      media_manifest: JSON.stringify(data.media_manifest || {}),\n      comfyui_prompt_ids: JSON.stringify(data.comfyui_prompt_ids || {}),\n    },\n  },\n];\n"
+      },
+      "id": "parse-render-video-only",
+      "name": "代码 - 解析仅重合成响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        1800
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  voice_path = $6,\n  audio_duration = $7,\n  audio_engine = $8,\n  shot_images_json = $9::jsonb,\n  media_engine = $10,\n  media_manifest = $11::jsonb,\n  comfyui_prompt_ids = $12::jsonb,\n  status = 'NEED_REVIEW',\n  review_status = NULL,\n  render_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $13\nRETURNING id, status, video_path, cover_path, voice_path, audio_duration, media_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'video',\n    'RENDERING_VIDEO',\n    'NEED_REVIEW',\n    'n8n',\n    '06_split_render_workflow',\n    '仅重新合成视频完成，进入待审核',\n    jsonb_build_object('path', 'video_only_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.voice_path, $json.audio_duration, $json.audio_engine, $json.shot_images_json, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-video-only",
+      "name": "数据库 - 仅重合成更新为NEED_REVIEW",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1680,
+        1800
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-render-start",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-render-start-06",
+      "name": "Webhook - 开始首渲染",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        230
+      ],
+      "webhookId": "video-render-start-06"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate normal first-render webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - 开始首渲染').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
+      },
+      "id": "validate-render-start-06",
+      "name": "代码 - 校验首渲染参数",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        230
+      ]
+    },
+    {
+      "parameters": {
+        "path": "video-rerender-cover",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-cover-rerender-06",
+      "name": "Webhook - 重新生成封面",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1340
+      ],
+      "webhookId": "video-rerender-cover-06"
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $json || {};\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少或非法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {task_id: taskId, token}}];\n"
+      },
+      "id": "validate-cover-rerender-06",
+      "name": "代码 - 校验重生封面参数",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nWITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE id = $1\n    AND review_token = $2\n    AND status = 'AUDIO_READY'\n    AND review_status = 'COVER_RECOVERY_REQUESTED'\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'GENERATING_COVER',\n  media_started_at = CURRENT_TIMESTAMP,\n  media_finished_at = NULL,\n  render_started_at = NULL,\n  render_finished_at = NULL,\n  cover_path = NULL,\n  media_engine = NULL,\n  media_manifest = NULL,\n  comfyui_prompt_ids = NULL,\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'cover',\n    'AUDIO_READY',\n    'GENERATING_COVER',\n    'n8n',\n    '06_split_render_workflow',\n    '复用语音，重新生成封面',\n    jsonb_build_object('path', 'cover_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('代码 - 校验重生封面参数').first().json.task_id, $('代码 - 校验重生封面参数').first().json.token ] }}"
+        }
+      },
+      "id": "claim-audio-ready-cover-rerender",
+      "name": "数据库 - 领取AUDIO_READY重生封面",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        560,
+        1340
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Build Render Request Remotion\n * Input: one row from PostgreSQL video_topics.\n * Output: JSON body shared by split worker endpoints\n */\n\nconst row = $json;\nconst id = String(row.id || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {\n  throw new Error(`No AUDIO_READY cover rerender topic was claimed. Upstream Postgres row is missing a valid uuid id: ${JSON.stringify(row).slice(0, 1000)}`);\n}\n\nfunction parseJsonMaybe(value, fallback) {\n  if (!value) return fallback;\n  if (Array.isArray(value) || typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (e) {\n    return fallback;\n  }\n}\n\nlet shots = parseJsonMaybe(row.shots_json, []);\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = [\n    {\n      shot_id: 1,\n      duration: Number(row.duration || row.duration_seconds || 8),\n      subtitle: row.hook || row.cover_text || row.title || row.topic,\n      visual_prompt_cn: row.cover_text || row.title || row.topic,\n    },\n  ];\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id ?? index + 1,\n  duration: Number(shot.duration || 5),\n  subtitle: String(shot.subtitle || ''),\n  headline: String(shot.headline || ''),\n  body: String(shot.body || shot.subtitle || ''),\n  keywords: Array.isArray(shot.keywords) ? shot.keywords.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [],\n  layout_hint: String(shot.layout_hint || ''),\n  visual_prompt_cn: String(shot.visual_prompt_cn || shot.prompt || shot.subtitle || ''),\n  visual_prompt_en: String(shot.visual_prompt_en || ''),\n}));\n\nconst title = String(row.title || row.topic || 'AI 短视频');\nconst coverText = String(row.cover_text || row.title || row.topic || '');\nconst templateType = String(row.template_type || row.remotion_template_type || 'knowledge');\nconst existingVoicePath = row.voice_path ? String(row.voice_path) : null;\nconst existingAudioDuration = Number(row.audio_duration || 0);\nconst existingAudioEngine = row.audio_engine ? String(row.audio_engine) : null;\n\nreturn [\n  {\n    json: {\n      task_id: id,\n      title,\n      script: String(row.script || row.hook || row.topic || ''),\n      cover_text: coverText,\n      platform: String(row.platform || 'default'),\n      cover_prompt: `竖屏短视频封面背景，主题：${title}，封面文案参考：${coverText}，画面主体明确，留出上方标题空间，不要生成文字，不要logo，不要水印，商业短视频封面质感`,\n      shots,\n      width: 1080,\n      height: 1920,\n      fps: 30,\n\n      enable_tts: true,\n      tts_base_url: 'http://host.docker.internal:8010',\n\n      enable_comfyui: true,\n      comfyui_mode: 'cover_only',\n      comfyui_options: {\n        base_url: 'http://host.docker.internal:8000',\n        workflow_template_path: '/app/comfyui/zimage_text2image_api_template.json',\n        prompt_node_id: '63',\n        save_node_id: '9',\n        sampler_node_id: '57:3',\n        latent_node_id: '57:13',\n        filename_prefix: 'n8n-video',\n        image_width: 720,\n        image_height: 1280,\n        timeout_seconds: 900,\n        poll_interval_seconds: 2,\n        fallback_to_placeholder: true,\n        overlay_cover_text: true,\n        prompt_prefix: '竖屏短视频封面主视觉，真实摄影，电影感光影，构图干净，手机竖屏，高清细节',\n        negative_prompt: '多个人，过度锐化，塑料质感，畸形手指，多余的手，畸形肢体，文字乱码，logo，水印，低清晰度，模糊',\n      },\n\n      render_engine: 'remotion',\n      template_type: templateType,\n      remotion_renderer_url: 'http://host.docker.internal:3001',\n      existing_voice_path: existingVoicePath,\n      existing_audio_duration: Number.isFinite(existingAudioDuration) && existingAudioDuration > 0 ? existingAudioDuration : null,\n      existing_audio_engine: existingAudioEngine,\n    },\n  },\n];\n"
+      },
+      "id": "build-render-request-cover-rerender",
+      "name": "代码 - 构建重生封面请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/cover",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('代码 - 构建重生封面请求').first().json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-cover-cover-rerender",
+      "name": "HTTP请求 - 重生封面",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Parse /render/cover response.\n */\nconst data = $json;\nif (!data || data.status !== 'ok') {\n  throw new Error('Cover stage failed or invalid response: ' + JSON.stringify(data).slice(0, 1000));\n}\nreturn [{\n  json: {\n    task_id: data.task_id,\n    cover_path: data.cover_path || null,\n    cover_base_path: data.cover_base_path || null,\n    media_engine: data.engine || 'ComfyUI',\n    media_manifest: JSON.stringify(data),\n    comfyui_prompt_ids: JSON.stringify(data.prompt_ids || {}),\n  },\n}];\n"
+      },
+      "id": "parse-cover-cover-rerender",
+      "name": "代码 - 解析重生封面响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  cover_path = $1,\n  media_engine = $2,\n  media_manifest = $3::jsonb,\n  comfyui_prompt_ids = $4::jsonb,\n  status = 'COVER_READY',\n  media_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $5\nRETURNING id, status, cover_path, media_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'cover',\n    'GENERATING_COVER',\n    'COVER_READY',\n    'n8n',\n    '06_split_render_workflow',\n    '封面重新生成完成',\n    jsonb_build_object('path', 'cover_rerender', 'media_engine', media_engine)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.cover_path, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-cover-ready-cover-rerender",
+      "name": "数据库 - 重生封面更新为COVER_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1680,
+        1340
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  status = 'RENDERING_VIDEO',\n  render_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $1\nRETURNING id, status, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'video',\n    'COVER_READY',\n    'RENDERING_VIDEO',\n    'n8n',\n    '06_split_render_workflow',\n    '封面重做后开始合成视频',\n    jsonb_build_object('path', 'cover_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.id ] }}"
+        }
+      },
+      "id": "mark-rendering-video-cover-rerender",
+      "name": "数据库 - 重生封面标记合成视频中",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1960,
+        1340
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render/remotion",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $('代码 - 构建重生封面请求').first().json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-remotion-cover-rerender",
+      "name": "HTTP请求 - 重生封面后合成视频",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Parse Render Response Remotion\n * Input: JSON returned by video-worker.\n * Output: fields used by PostgreSQL update query.\n */\n\nconst data = $json;\n\nif (!data || data.status !== 'ok') {\n  throw new Error(`Render failed or invalid response: ${JSON.stringify(data).slice(0, 1000)}`);\n}\n\nreturn [\n  {\n    json: {\n      task_id: data.task_id,\n      video_path: data.video_path,\n      cover_path: data.cover_path || null,\n      subtitle_path: data.subtitle_path || null,\n      clips_json: JSON.stringify(data.clips || []),\n      render_manifest: JSON.stringify(data),\n      voice_path: data.voice_path || null,\n      audio_duration: Number(data.audio_duration || 0),\n      audio_engine: data.audio_engine || 'VoxCPM',\n      shot_images_json: JSON.stringify(data.images || []),\n      media_engine: data.media_engine || 'ComfyUI',\n      media_manifest: JSON.stringify(data.media_manifest || {}),\n      comfyui_prompt_ids: JSON.stringify(data.comfyui_prompt_ids || {}),\n    },\n  },\n];\n"
+      },
+      "id": "parse-render-response-cover-rerender",
+      "name": "代码 - 解析重生封面渲染响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2520,
+        1340
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  voice_path = $6,\n  audio_duration = $7,\n  audio_engine = $8,\n  shot_images_json = $9::jsonb,\n  media_engine = $10,\n  media_manifest = $11::jsonb,\n  comfyui_prompt_ids = $12::jsonb,\n  status = 'NEED_REVIEW',\n  review_status = NULL,\n  render_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $13\nRETURNING id, status, video_path, cover_path, voice_path, audio_duration, media_engine, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_COMPLETED',\n    'video',\n    'RENDERING_VIDEO',\n    'NEED_REVIEW',\n    'n8n',\n    '06_split_render_workflow',\n    '封面重做链路合成完成，进入待审核',\n    jsonb_build_object('path', 'cover_rerender')\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.voice_path, $json.audio_duration, $json.audio_engine, $json.shot_images_json, $json.media_engine, $json.media_manifest, $json.comfyui_prompt_ids, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-cover-rerender",
+      "name": "数据库 - 重生封面更新为NEED_REVIEW",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2800,
+        1340
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 正常首渲染路径：SCRIPT_READY → NEED_REVIEW\n\n手动执行工作流会领取最早 `SCRIPT_READY`；自动入口 `/webhook/video-render-start` 领取指定记录。\n\n流程：生成语音/字幕 → 生成封面 → Remotion 合成视频 → 写回 `NEED_REVIEW`。",
+        "height": 150,
+        "width": 3960,
+        "color": 4
+      },
+      "id": "说明-正常首渲染路径",
+      "name": "说明 - 正常首渲染路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 01 自动触发入口\n\n01 写回 `SCRIPT_READY` 后调用 `/webhook/video-render-start?task_id=<id>&token=<review_token>`。\n\n本入口只负责校验并把指定记录送入上方首渲染主链路。",
+        "height": 150,
+        "width": 1180,
+        "color": 5
+      },
+      "id": "说明-01自动触发入口",
+      "name": "说明 - 01自动触发入口",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        520,
+        250
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 已拒绝重渲染路径\n\n审核中心“重新渲染视频”会调用 `/webhook/video-rerender-split`。\n\n只领取 `MEDIA_READY + RERENDER_REQUESTED`，重新生成语音/字幕并合成视频，跳过封面生成。\n\n语音生成失败时会写入 `error/review_note` 和 `STAGE_FAILED` 事件，便于 10 自动巡检按重渲染路径恢复。",
+        "height": 150,
+        "width": 3120,
+        "color": 3
+      },
+      "id": "说明-已拒绝重渲染路径",
+      "name": "说明 - 已拒绝重渲染路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 复用语音重新封面路径\n\n审核中心“重新生成封面”或封面阶段补救会调用 `/webhook/video-rerender-cover`。\n\n只领取 `AUDIO_READY + COVER_RECOVERY_REQUESTED`，复用语音，重出封面后继续合成视频。",
+        "height": 150,
+        "width": 3120,
+        "color": 5
+      },
+      "id": "说明-复用语音重新封面路径",
+      "name": "说明 - 复用语音重新封面路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        1100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 仅重新合成视频路径\n\n审核中心“仅重新合成视频”会调用 `/webhook/video-rerender-video-only`。\n\n只领取 `AUDIO_READY + VIDEO_RERENDER_REQUESTED`，复用已有语音、字幕和封面，只重跑 Remotion 合成。",
+        "height": 150,
+        "width": 2140,
+        "color": 6
+      },
+      "id": "说明-仅重新合成视频路径",
+      "name": "说明 - 仅重新合成视频路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        1560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  error = $2,\n  review_note = concat('重渲染语音生成失败：', left($2, 500)),\n  updated_at = CURRENT_TIMESTAMP\nWHERE id = $1\n  AND status = 'GENERATING_AUDIO'\n  AND review_status = 'RERENDER_REQUESTED'\nRETURNING id, status, review_status, error, updated_at\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_FAILED',\n    'audio',\n    'GENERATING_AUDIO',\n    'GENERATING_AUDIO',\n    'n8n',\n    '06_split_render_workflow',\n    '重渲染语音生成失败，等待自动巡检或人工重试',\n    jsonb_build_object('path', 'rejected_rerender', 'error', error)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $('代码 - 构建重渲染请求').first().json.task_id, String($json.error?.message || $json.message || $json.description || $json.detail || JSON.stringify($json).slice(0, 1000)) ] }}"
+        }
+      },
+      "id": "record-audio-failed-rerender",
+      "name": "数据库 - 记录重渲染语音失败",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1400,
+        940
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "bEYUYslSPX6m7kFq",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "手动触发": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取SCRIPT_READY首渲染",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取SCRIPT_READY首渲染": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建首渲染请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建首渲染请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 生成语音",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 生成语音": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析语音响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析语音响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 更新为AUDIO_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 更新为AUDIO_READY": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记生成封面中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 标记生成封面中": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 生成封面",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 生成封面": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析封面响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析封面响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 更新为COVER_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 更新为COVER_READY": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记合成视频中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 标记合成视频中": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 合成Remotion视频",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 合成Remotion视频": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析首渲染响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析首渲染响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 更新为NEED_REVIEW首渲染",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 重新渲染视频": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取MEDIA_READY重渲染",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验重新渲染参数": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取MEDIA_READY重渲染",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取MEDIA_READY重渲染": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建重渲染请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建重渲染请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 重渲染生成语音",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 重渲染生成语音": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析重渲染语音响应",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "数据库 - 记录重渲染语音失败",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析重渲染语音响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 重渲染更新为AUDIO_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 重渲染更新为AUDIO_READY": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 重渲染标记合成视频中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 重渲染标记合成视频中": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 重渲染合成Remotion视频",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 重渲染合成Remotion视频": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析重渲染响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析重渲染响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 重渲染更新为NEED_REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 仅重新合成视频": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取AUDIO_READY仅重合成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验仅重合成参数": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取AUDIO_READY仅重合成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取AUDIO_READY仅重合成": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建仅重合成请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建仅重合成请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 仅合成Remotion视频",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 仅合成Remotion视频": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析仅重合成响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析仅重合成响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 仅重合成更新为NEED_REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 开始首渲染": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验首渲染参数",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验首渲染参数": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取SCRIPT_READY首渲染",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 重新生成封面": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验重生封面参数",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验重生封面参数": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取AUDIO_READY重生封面",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取AUDIO_READY重生封面": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建重生封面请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建重生封面请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 重生封面",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 重生封面": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析重生封面响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析重生封面响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 重生封面更新为COVER_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 重生封面更新为COVER_READY": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 重生封面标记合成视频中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 重生封面标记合成视频中": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 重生封面后合成视频",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 重生封面后合成视频": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析重生封面渲染响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析重生封面渲染响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 重生封面更新为NEED_REVIEW",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 记录重渲染语音失败": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "description": "第五阶段：ComfyUI 只生成封面，VoxCPM 生成口播，Remotion 生成动态信息版式 final.mp4，回写 NEED_REVIEW。"
+  },
+  "pinData": {},
+  "versionId": "b4d5410f-612d-496f-95f7-89a8f80263e3",
+  "activeVersionId": "b4d5410f-612d-496f-95f7-89a8f80263e3",
+  "versionCounter": 304,
+  "triggerCount": 4,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-04-29T01:53:42.796Z",
+      "createdAt": "2026-04-29T01:53:42.796Z",
+      "role": "workflow:owner",
+      "workflowId": "videoAgentRenderSplitMvp06",
+      "projectId": "NGUCqFuUfTK6tdLq",
+      "project": {
+        "updatedAt": "2026-04-27T07:29:09.598Z",
+        "createdAt": "2026-04-27T07:23:49.700Z",
+        "id": "NGUCqFuUfTK6tdLq",
+        "name": "旭磊 王 <814521841@qq.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "176fa689-fd98-4246-ae4b-018b12cafe3a"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

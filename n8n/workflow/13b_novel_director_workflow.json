@@ -1,0 +1,1040 @@
+{
+  "id": "novelDirectorV1Workflow13B",
+  "name": "13B_小说导演台规划",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-novel-director-13b",
+      "name": "手动触发",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "execute-trigger-director-worker-13b",
+      "name": "触发器 - 后台执行导演台规划",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -920,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Claim one pending PLAN_CHAPTER_DIRECTOR job.\nWITH claimed AS (\n  SELECT j.id\n  FROM novel_generation_jobs j\n  JOIN novel_projects p ON p.id = j.project_id\n  WHERE j.job_type = 'PLAN_CHAPTER_DIRECTOR'\n    AND j.status = 'PENDING'\n    AND j.attempt_count < j.max_attempts\n    AND p.status NOT IN ('PAUSED', 'ARCHIVED')\n  ORDER BY j.chapter_no ASC NULLS LAST, j.created_at ASC\n  FOR UPDATE SKIP LOCKED\n  LIMIT 1\n)\nUPDATE novel_generation_jobs j\nSET\n  status = 'RUNNING',\n  started_at = NOW(),\n  attempt_count = attempt_count + 1,\n  error_message = NULL,\n  updated_at = NOW()\nFROM claimed\nWHERE j.id = claimed.id\nRETURNING j.*;",
+        "options": {}
+      },
+      "id": "postgres-claim-director-13b",
+      "name": "数据库 - 领取PLAN_CHAPTER_DIRECTOR任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -700,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Read context for chapter director planning.\nSELECT\n  p.id AS project_id,\n  p.title AS novel_title,\n  p.genre,\n  p.audience,\n  p.style,\n  p.target_total_chapters,\n  p.target_words_per_chapter,\n  $1::uuid AS job_id,\n  COALESCE((SELECT j.payload->>'trigger_source' FROM novel_generation_jobs j WHERE j.id = $1::uuid), 'queue') AS trigger_source,\n  (SELECT j.payload->>'requested_by' FROM novel_generation_jobs j WHERE j.id = $1::uuid) AS requested_by,\n  'PLAN_CHAPTER_DIRECTOR'::text AS run_type,\n  o.id AS outline_id,\n  o.chapter_no,\n  o.title AS outline_title,\n  o.summary AS outline_summary,\n  o.chapter_goal,\n  o.conflict_point,\n  o.emotional_point,\n  o.hook,\n  CASE\n    WHEN p.target_words_per_chapter <= 1500 THEN 1\n    WHEN p.target_words_per_chapter <= 2500 THEN 2\n    WHEN p.target_words_per_chapter <= 3500 THEN 3\n    WHEN p.target_words_per_chapter <= 4500 THEN 4\n    WHEN p.target_words_per_chapter <= 6500 THEN 5\n    ELSE 7\n  END AS chapter_segment_total,\n  jsonb_build_object(\n    'world_setting', b.world_setting,\n    'story_core', b.story_core,\n    'main_character', b.main_character,\n    'supporting_characters', b.supporting_characters,\n    'villain_setting', b.villain_setting,\n    'power_system', b.power_system,\n    'relationship_map', b.relationship_map,\n    'tone_rules', b.tone_rules,\n    'forbidden_rules', b.forbidden_rules,\n    'selling_points', b.selling_points\n  ) AS novel_bible,\n  COALESCE(previous.previous_chapters, '[]'::jsonb) AS previous_chapters,\n  COALESCE(prev_latest.ending_excerpt, '') AS previous_chapter_ending,\n  COALESCE(prev_transitions.previous_transition_modes, '[]'::jsonb) AS previous_transition_modes,\n  COALESCE(future.future_outlines, '[]'::jsonb) AS future_outlines,\n  COALESCE(facts.continuity_facts, '[]'::jsonb) AS continuity_facts,\n  COALESCE(threads.plot_threads, '[]'::jsonb) AS plot_threads,\n  COALESCE(review_issues.recent_review_issues, '[]'::jsonb) AS recent_review_issues\nFROM novel_generation_jobs j\nJOIN novel_projects p ON p.id = j.project_id\nJOIN novel_bibles b ON b.project_id = p.id\nJOIN novel_chapter_outlines o ON o.project_id = p.id AND o.chapter_no = j.chapter_no\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'chapter_no', picked.chapter_no,\n    'title', picked.title,\n    'summary', picked.summary\n  ) ORDER BY picked.chapter_no) AS previous_chapters\n  FROM (\n    SELECT chapter_no, title, summary, right(body, 900) AS ending_excerpt\n    FROM novel_chapters\n    WHERE project_id = p.id\n      AND chapter_no < o.chapter_no\n      AND is_current = TRUE\n      AND status IN ('APPROVED', 'PUBLISHED')\n    ORDER BY chapter_no DESC\n    LIMIT 3\n  ) picked\n) previous ON true\nLEFT JOIN LATERAL (\n  SELECT right(body, 900) AS ending_excerpt\n  FROM novel_chapters\n  WHERE project_id = p.id\n    AND chapter_no < o.chapter_no\n    AND is_current = TRUE\n    AND status IN ('APPROVED', 'PUBLISHED')\n  ORDER BY chapter_no DESC\n  LIMIT 1\n) prev_latest ON true\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'chapter_no', picked.chapter_no,\n    'mode', picked.card_payload->'cross_chapter_transition'->>'mode',\n    'allowed', picked.card_payload->'cross_chapter_transition'->>'allowed',\n    'reason', picked.card_payload->'cross_chapter_transition'->>'reason'\n  ) ORDER BY picked.chapter_no DESC) AS previous_transition_modes\n  FROM (\n    SELECT chapter_no, card_payload\n    FROM novel_chapter_director_cards\n    WHERE project_id = p.id\n      AND chapter_no < o.chapter_no\n      AND is_current = TRUE\n      AND status IN ('READY', 'SUPERSEDED')\n      AND card_payload ? 'cross_chapter_transition'\n    ORDER BY chapter_no DESC\n    LIMIT 3\n  ) picked\n) prev_transitions ON true\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'chapter_no', picked.chapter_no,\n    'title', picked.title,\n    'summary', picked.summary,\n    'chapter_goal', picked.chapter_goal,\n    'conflict_point', picked.conflict_point,\n    'hook', picked.hook\n  ) ORDER BY picked.chapter_no) AS future_outlines\n  FROM (\n    SELECT chapter_no, title, summary, chapter_goal, conflict_point, hook\n    FROM novel_chapter_outlines\n    WHERE project_id = p.id\n      AND chapter_no > o.chapter_no\n      AND status = 'READY'\n    ORDER BY chapter_no ASC\n    LIMIT 3\n  ) picked\n) future ON true\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'fact_type', fact_type,\n    'fact_key', fact_key,\n    'fact_value', fact_value\n  ) ORDER BY created_at DESC) AS continuity_facts\n  FROM (\n    SELECT fact_type, fact_key, fact_value, created_at\n    FROM novel_continuity_facts\n    WHERE project_id = p.id\n      AND status = 'ACTIVE'\n      AND (\n        chapter_no IS NULL\n        OR chapter_no < o.chapter_no\n        OR source = 'human'\n      )\n    ORDER BY created_at DESC\n    LIMIT 80\n  ) picked\n) facts ON true\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'thread_key', thread_key,\n    'thread_type', thread_type,\n    'status', status,\n    'introduced_chapter', introduced_chapter,\n    'last_touched_chapter', last_touched_chapter,\n    'next_touch_chapter', next_touch_chapter,\n    'payoff_target_chapter', payoff_target_chapter,\n    'do_not_reveal_before', do_not_reveal_before,\n    'visibility', visibility,\n    'notes', notes\n  ) ORDER BY updated_at DESC) AS plot_threads\n  FROM (\n    SELECT *\n    FROM novel_plot_threads\n    WHERE project_id = p.id\n      AND status IN ('SEEDING', 'ACTIVE', 'TOUCHING', 'PAYOFF_READY')\n    ORDER BY updated_at DESC\n    LIMIT 80\n  ) picked\n) threads ON true\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'chapter_no', picked.chapter_no,\n    'issues', picked.issues,\n    'suggestions', picked.suggestions,\n    'verdict', picked.verdict,\n    'created_at', picked.created_at\n  ) ORDER BY picked.created_at DESC) AS recent_review_issues\n  FROM (\n    SELECT c.chapter_no, r.issues, r.suggestions, r.verdict, r.created_at\n    FROM novel_review_reports r\n    JOIN novel_chapters c ON c.id = r.chapter_id\n    WHERE r.project_id = p.id\n      AND jsonb_array_length(COALESCE(r.issues, '[]'::jsonb)) > 0\n    ORDER BY r.created_at DESC\n    LIMIT 5\n  ) picked\n) review_issues ON true\nWHERE j.id = $1::uuid\n  AND j.project_id = $2::uuid\n  AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'\n  AND o.status = 'READY';",
+        "options": {
+          "queryReplacement": "={{ [ $json.id, $json.project_id ] }}"
+        }
+      },
+      "id": "postgres-read-director-context-13b",
+      "name": "数据库 - 读取导演台上下文",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -480,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Novel GLM Request\n// Reads /config/novel_generation_config.jsonc and builds an OpenAI-compatible request body.\n\nconst fs = require('fs');\n\nconst source = $json || {};\nconst configPath = $env.NOVEL_GENERATION_CONFIG_PATH || '/config/novel_generation_config.jsonc';\n\nconst fallbackConfig = {\n  model: 'glm-5.1',\n  temperature: 0.75,\n  max_tokens: 12000,\n  max_tokens_by_prompt: {\n    director: 2200,\n    chapter: 6000,\n  },\n  thinking: {\n    type: 'disabled',\n  },\n  prompt_version: 'novel-v1-20260504',\n  defaults: {\n    genre: '都市逆袭',\n    audience: '男频爽文读者',\n    style: '节奏快、冲突强、章末留钩子',\n    target_total_chapters: 20,\n    target_words_per_chapter: 2000,\n  },\n  blocked_topics: ['未成年人不当内容', '高风险违法行为教学', '现实个人隐私'],\n  system_prompts: {\n    bible: '你是一名成熟的商业网文策划编辑。必须只输出严格 JSON。',\n    outline: '你是一名商业网文大纲策划。必须只输出严格 JSON。',\n    director: '你是一名商业网文导演和连续性编辑。必须只输出严格 JSON，不写正文。',\n    chapter: '你是一名成熟的商业网文作者。必须只输出严格 JSON。',\n    review: '你是一名严格的商业网文编辑。必须只输出严格 JSON。',\n    rewrite: '你是一名商业网文改稿编辑。必须只输出严格 JSON。',\n  },\n  user_prompt_templates: {\n    bible: '请根据小说项目资料生成小说 Bible。输出严格 JSON。',\n    outline: '请根据小说 Bible 生成章节大纲。输出严格 JSON。',\n    director: '请为当前章节生成导演台规划。只输出严格 JSON，不写正文。',\n    chapter: '请根据上下文生成当前章节正文。输出严格 JSON。',\n    review: '请审查章节正文。输出严格 JSON。',\n    rewrite: '请根据审稿意见重写章节。输出严格 JSON。',\n  },\n};\n\nfunction stripJsonComments(text) {\n  return String(text || '')\n    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, '')\n    .replace(/(^|[^:])\\/\\/.*$/gm, '$1');\n}\n\nfunction readConfig() {\n  try {\n    if (!fs.existsSync(configPath)) return fallbackConfig;\n    const data = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));\n    return {\n      ...fallbackConfig,\n      ...data,\n      defaults: {\n        ...fallbackConfig.defaults,\n        ...(data.defaults || {}),\n      },\n      max_tokens_by_prompt: {\n        ...fallbackConfig.max_tokens_by_prompt,\n        ...(data.max_tokens_by_prompt || {}),\n      },\n      system_prompts: {\n        ...fallbackConfig.system_prompts,\n        ...(data.system_prompts || {}),\n      },\n      user_prompt_templates: {\n        ...fallbackConfig.user_prompt_templates,\n        ...(data.user_prompt_templates || {}),\n      },\n    };\n  } catch (error) {\n    throw new Error(`读取小说生成配置失败：${configPath}；${error.message}`);\n  }\n}\n\nfunction normalizeRunType(value) {\n  const raw = String(value || '').trim().toUpperCase();\n  if (['GENERATE_BIBLE', 'BIBLE'].includes(raw)) return 'GENERATE_BIBLE';\n  if (['GENERATE_OUTLINE', 'OUTLINE'].includes(raw)) return 'GENERATE_OUTLINE';\n  if (['PLAN_CHAPTER_DIRECTOR', 'DIRECTOR', 'DIRECTOR_CARD'].includes(raw)) return 'PLAN_CHAPTER_DIRECTOR';\n  if (['GENERATE_CHAPTER', 'CHAPTER'].includes(raw)) return 'GENERATE_CHAPTER';\n  if (['REVIEW_CHAPTER', 'REVIEW'].includes(raw)) return 'REVIEW_CHAPTER';\n  if (['REWRITE_CHAPTER', 'REWRITE'].includes(raw)) return 'REWRITE_CHAPTER';\n  return raw || 'GENERATE_CHAPTER';\n}\n\nfunction promptKey(runType) {\n  return {\n    GENERATE_BIBLE: 'bible',\n    GENERATE_OUTLINE: 'outline',\n    PLAN_CHAPTER_DIRECTOR: 'director',\n    GENERATE_CHAPTER: 'chapter',\n    REVIEW_CHAPTER: 'review',\n    REWRITE_CHAPTER: 'rewrite',\n  }[runType] || 'chapter';\n}\n\nfunction stringifyForPrompt(value) {\n  if (value === undefined || value === null) return '';\n  if (typeof value === 'string') return value;\n  return JSON.stringify(value, null, 2);\n}\n\nfunction renderTemplate(template, values) {\n  return String(template || '').replace(/{{\\s*([a-zA-Z0-9_]+)\\s*}}/g, (_, key) => {\n    const value = values[key];\n    return value === undefined || value === null || value === '' ? '' : stringifyForPrompt(value);\n  });\n}\n\nfunction buildCreativeBrief(values) {\n  const genre = values.genre || '未设置类型';\n  const audience = values.audience || '未设置读者';\n  const style = values.style || '未设置文风';\n  const totalChapters = values.target_total_chapters || '未设置';\n  const words = values.target_words_per_chapter || '未设置';\n  return [\n    '【创作约束】',\n    `类型：${genre}。类型决定核心爽点、冲突形态、升级路径和章节钩子，禁止写成全类型通用故事。`,\n    `目标读者：${audience}。情绪兑现、信息密度和追更理由都要贴合这类读者。`,\n    `文风：${style}。这是硬约束，正文、标题、钩子、审稿和重写都要按它执行。`,\n    `篇幅：目标共 ${totalChapters} 章，每章 ${words} 字左右；正文允许上下浮动 15%，但不得明显短章或灌水。`,\n  ].join('\\n');\n}\n\nfunction buildParagraphInstruction(runType) {\n  if (!['GENERATE_CHAPTER', 'REWRITE_CHAPTER'].includes(runType)) return '';\n  return [\n    '【正文换行硬规则】',\n    'chapter_body 必须使用 \\\\n 做常规网文节奏换行，不要输出整块大段。',\n    '对话必须单独成段；对话前后的动作、反应、心理活动要分段。',\n    '每段只承载一个动作、一次对话、一段心理或一个转折；普通段建议 40-120 个中文字符，单段超过 160 字视为失败。',\n    '不要用空行凑段，不要把多轮对话写在同一段。',\n  ].join('\\n');\n}\n\nfunction buildNamingInstruction(runType) {\n  if (runType === 'GENERATE_BIBLE') {\n    return [\n      '【角色命名一致性】',\n      '每个角色必须建立唯一主名：name 是后续大纲和正文的唯一主名。',\n      '如需要真实身份、公开身份、伪名、昵称或亲昵称呼，必须写入 aliases、public_name 或 identity_note，不得留给大纲或正文阶段临时创造。',\n      '【设定集语言规则】',\n      'JSON 字段名可以保持示例里的机器字段，但所有字段值、描述、角色设定内容必须使用中文。',\n      '不要在字段值中输出 name、goal、identity、relationship_with_mc 等英文 schema 说明；这些只是机器字段，不是用户可读文案。',\n    ].join('\\n');\n  }\n  if (runType === 'GENERATE_OUTLINE') {\n    return [\n      '【角色称呼一致性】',\n      '章节大纲只能使用 Bible 中已登记的 name、aliases 或 public_name。',\n      '如果 Bible 没有登记别名，不得写“X（实为Y）”这类临时双名；如果公开称呼和真实身份并存，首次出现必须明确“主名（公开称呼：别名）”，后续保持一致。',\n    ].join('\\n');\n  }\n  if (['GENERATE_CHAPTER', 'REWRITE_CHAPTER'].includes(runType)) {\n    return [\n      '【角色称呼一致性】',\n      '正文必须以 Bible 中的 name 为唯一主名；只有 Bible 明确登记 aliases 或 public_name 时才可使用别名。',\n      '大纲中若出现未登记的括号身份说明，以 Bible 为准，不得把角色改名；同一角色在正文中称呼必须前后一致。',\n    ].join('\\n');\n  }\n  return '';\n}\n\nfunction buildChapterTitleInstruction(runType) {\n  if (runType === 'GENERATE_OUTLINE') {\n    return [\n      '【章节标题规则】',\n      'chapters[].title 只写标题本身，不要带“第1章”“第一章”“第X章”等章节序号前缀。',\n      '章节序号只能写在 chapter_no 字段里；标题字段示例：“雨夜重逢”，不要写成“第2章 雨夜重逢”。',\n    ].join('\\n');\n  }\n  if (['GENERATE_CHAPTER', 'REWRITE_CHAPTER'].includes(runType)) {\n    return [\n      '【章节标题规则】',\n      'chapter_title 只写标题本身，不要带“第1章”“第一章”“第X章”等章节序号前缀。',\n      '章节序号由系统根据 chapter_no 统一展示；标题字段示例：“雨夜重逢”，不要写成“第2章 雨夜重逢”。',\n    ].join('\\n');\n  }\n  return '';\n}\n\nfunction buildRewriteReviewInstruction(runType) {\n  if (runType !== 'REWRITE_CHAPTER') return '';\n  return [\n    '【重写依据优先级】',\n    '必须逐条阅读并落实【审稿问题】和【修改建议】；这些是本次重写的主要修改清单，不得只做轻微润色。',\n    '如果【人工意见】与智能审稿一致或为空，按智能审稿的问题与建议逐条修改。',\n    '如果【人工意见】提出额外要求，优先满足人工意见，同时保留智能审稿中不冲突的问题修复。',\n    '高/中风险问题必须在新正文中明显修正；低风险建议至少吸收为节奏、细节或钩子优化。',\n  ].join('\\n');\n}\n\nfunction buildOutlineContinuityInstruction(runType) {\n  if (runType !== 'GENERATE_OUTLINE') return '';\n  return [\n    '【章节连续性与镜头转换】',\n    '生成整本大纲时必须把每一章当成连续剧集，而不是互不相干的剧情节点。',\n    'chapters[].summary 每章第一句必须说明它如何承接上一章的结尾压力、人物位置、未解决动作或情绪余波；第 1 章除外。',\n    '允许镜头转换、视角转换、人物切换、时间跳过或剧情概述，但只能在有明确叙事目的时使用，并且不能连续多章高频使用。',\n    '如果某章需要跳切，必须在 summary 中写清“转场原因 + 时间/地点变化 + 人物为何到达新场景”；不要让读者感觉上一章刚离开 A 地，下一章突然已在 B 地执行新任务。',\n    '相邻章节之间必须有因果钩子：上一章 hook 要自然推到下一章 trigger；不要只靠“几天后”“与此同时”硬切。',\n    '每个章节对象可额外包含 transition_from_previous、opening_state、scene_transition_mode 字段，用短中文说明跨章承接；即使系统只展示核心大纲，也要把这些信息融入 summary。',\n  ].join('\\n');\n}\n\nfunction isBlankPromptValue(value) {\n  if (value === undefined || value === null) return true;\n  if (typeof value === 'string') {\n    const trimmed = value.trim();\n    return !trimmed || trimmed === '{}' || trimmed === '[]' || trimmed === 'null';\n  }\n  if (Array.isArray(value)) return value.length === 0;\n  if (typeof value === 'object') return Object.keys(value).length === 0;\n  return false;\n}\n\nfunction buildRewriteDirectorInstruction(runType, values) {\n  if (runType !== 'REWRITE_CHAPTER' || isBlankPromptValue(values.director_card)) return '';\n  return [\n    '【导演台重写约束】',\n    '本次重写必须继续遵守下方当前章导演台；审稿意见和人工意见用于修正正文表达、节奏和漏洞，但不能推翻导演台确认的本章功能、因果链、连续性约束和伏笔边界。',\n    '若审稿/人工意见与导演台冲突，优先保留导演台的 chapter_intent、causal_chain、continuity_constraints、foreshadowing_ops 和 segment_plan，再用正文处理方式解决问题。',\n    '不得提前揭露 do_not_reveal=true 的伏笔；不得删除导演台要求的不可逆结果、章末承接和关键铺垫。',\n    `【当前章导演台】${values.director_card}`,\n  ].join('\\n');\n}\n\nfunction buildFactGroundingInstruction(runType) {\n  if (runType === 'PLAN_CHAPTER_DIRECTOR') {\n    return [\n      '【事实来源闸门】',\n      '导演台只能整合 Bible、当前章大纲、已通过章节摘要/尾巴、连续性事实和伏笔账本中已经存在的事实；不得把“道具线索、人物怀疑、私下推测”擅自升级成正式案名、罪名、权力机构命令、强制措施、通缉、公开身份或制度性理由。',\n      '凡出现“案名、证人身份、奉命、受命、通缉、罪名、官方调查、公开追捕、集中看护”等制度性理由，必须能在当前章大纲、已激活连续性事实或上一章已通过正文中找到同等事实依据；找不到时必须改用中性措辞，例如“保护相关人物”“暂时看护”“安全转移”，并在 abruptness_risks 写明需要铺垫。',\n      '不要把“某个道具/线索属于某人”自动写成“某某案/某某案相关身份”；除非上下文明确已经存在这个案名、身份或官方调查。',\n      '输出 JSON 顶层必须包含 fact_source_audit，最多 6 条，逐条审计本章用到的制度性理由、新案名、新身份、新命令、新强制措施或关键转场依据；每条包含 claim、source_type、source_evidence、verdict。',\n      'fact_source_audit.verdict 只能是 supported、neutralized、unsupported；unsupported 的 claim 不得进入 causal_chain、cross_chapter_transition 或 segment_plan。',\n      '制度性理由的 source_type 不能写“推断”“本章新增”“创作处理”后仍判 supported；推断只允许 neutralized 或 unsupported。',\n      '从“某个物品/线索属于某人”升级为“某个案名、相关人等、口头命令、集中看护、强制转移”等，属于制度性升级，必须有同级来源证据，不能靠推断成立。',\n      '只要 fact_source_audit 存在 unsupported，或缺少必须审计的制度性理由，quality_gate.pass 必须为 false，blocking_issues 必须写明缺少哪条来源。',\n      '如果本章需要用官方理由完成转场，但依据不足，quality_gate.pass 必须为 false，blocking_issues 写明缺少哪条前置事实。',\n    ].join('\\n');\n  }\n  if (runType === 'REVIEW_CHAPTER') {\n    return [\n      '【审稿事实边界】',\n      '审稿可以指出断链并给出桥段修法，但不得在 suggestions 中创造新的案名、罪名、权力机构命令、强制措施、公开身份、亲属关系或制度性理由。',\n      '补桥段时只能沿用正文、导演台、大纲或连续性事实中已经出现的称谓；不得把“某个线索/道具”扩写成未铺垫的“某某案相关身份”。',\n      '如果正文出现了未铺垫的新官方案名或新法律理由，issues 必须加入 type=\"新造设定\" 或 type=\"连续性事实污染\" 的问题，说明它没有来源。',\n      '合理转场只写入 cross_chapter_transition_review；allowed=true 且 should_block=false 时，不要把“跨章断链”写入 issues。',\n    ].join('\\n');\n  }\n  if (runType === 'REWRITE_CHAPTER') {\n    return [\n      '【重写事实边界】',\n      '审稿建议和人工意见是修法清单，不是新增设定来源；不得把建议里的临时举例改写成正文事实。',\n      '任何新的案名、罪名、权力机构命令、强制措施、通缉、公开身份、亲属关系或制度性理由，必须已存在于 Bible、当前章大纲、导演台、已激活连续性事实或原正文中。',\n      '如果审稿建议为了修断链而提出了上下文没有的制度性理由，必须改写为已有事实的中性过桥，例如“保护相关人物”“安全看护”“在前往既定地点途中被已有势力拦下”，不得新造案名或身份。',\n    ].join('\\n');\n  }\n  return '';\n}\n\nfunction buildDirectorTransitionInstruction(runType, values) {\n  if (runType !== 'PLAN_CHAPTER_DIRECTOR') return '';\n  return [\n    '【跨章镜头调度】',\n    `上一章结尾片段：${values.previous_chapter_ending || '无'}`,\n    `近期跨章转场记录：${stringifyForPrompt(values.previous_transition_modes || []) || '[]'}`,\n    '允许合理镜头转换，但必须声明原因；不要让每一章都默认跳切。',\n    'cross_chapter_transition.mode 只能是 direct_continuation、natural_scene_cut、pov_shift、time_skip、summary_bridge 之一。',\n    '如果使用 natural_scene_cut、pov_shift、time_skip 或 summary_bridge，必须说明转换人物、地点、时间或剧情交代的必要性，并在 opening_bridge 写清第一段如何自然过渡。',\n    '如果上一章结尾与本章开场之间缺少人物去向、地点变化或动机承接，quality_gate.pass 必须为 false，或在 abruptness_risks 中给出明确修法。',\n    '输出 JSON 必须额外包含 cross_chapter_transition：{\"mode\":\"\",\"allowed\":true,\"reason\":\"\",\"opening_bridge\":\"\",\"risk\":\"\",\"needs_explicit_bridge\":true}。',\n  ].join('\\n');\n}\n\nfunction buildReviewTransitionInstruction(runType, values) {\n  if (runType !== 'REVIEW_CHAPTER') return '';\n  return [\n    '【跨章承接审稿】',\n    `上一章摘要：${values.previous_chapter_summary || '无'}`,\n    `上一章结尾片段：${values.previous_chapter_ending || '无'}`,\n    `当前章导演台：${values.director_card || '无'}`,\n    '请单独判断当前章开头与上一章结尾的关系。镜头转换是允许的，但必须属于转换视角、转换人物、交代剧情、时间/地点自然过渡等合理情况。',\n    'direct_continuation 只允许用于同一时间、同一地点、同一行动链的无缝续写；只要人物已经换地点、换时间、换视角，或上一章目标地点与本章开场地点不同，就不能标 direct_continuation。',\n    '如果上一章明确写了“离开当前地点、前往某处、受伤、昏迷、被带走/被押走”等未收束动作，而当前章开头已经在另一个地点或另一个任务中，前 300 字必须交代“谁安排/带走/转送、时间过去多久、为何到达新场景”。缺少这些桥段时 allowed 必须为 false，should_block 必须为 true。',\n    '如果当前章频繁跳过“人物为何到新地点、上一章动作如何收束、谁把谁带到哪里、时间过去多久”等必要桥段，应判为跨章断链风险。',\n    '如果是合理镜头转换，也要在分析中说明 mode、依据和过渡手法，但不要把“跨章断链”写进 issues；只有不合理断链才在 issues 加入 type=\"跨章断链\" 的问题，并给出可操作修法。',\n    'mode 只能是 direct_continuation、natural_scene_cut、pov_shift、time_skip、summary_bridge 之一；“直接转场”“时间流逝”“空间转换”不能写成 direct_continuation。',\n    '输出 JSON 必须额外包含 cross_chapter_transition_review：{\"mode\":\"\",\"allowed\":true,\"evidence\":\"\",\"risk\":\"\",\"fix\":\"\",\"should_block\":false}。',\n  ].join('\\n');\n}\n\nfunction buildJsonSafetyInstruction(runType) {\n  if (!['GENERATE_CHAPTER', 'REWRITE_CHAPTER'].includes(runType)) return '';\n  return [\n    '【JSON字段白名单】',\n    '输出顶层只能包含 chapter_title、chapter_body、chapter_summary、word_count_estimate、new_facts、foreshadowing。',\n    '正文只能写在 chapter_body 字符串里，正文不得散落到其他 JSON 字段名；不要把任何小说句子、对白、动作或心理描写作为 JSON key。',\n    '正文内不要使用半角英文双引号 \" 表示对白、拟声或强调，统一使用中文引号“”；半角双引号容易截断 JSON 字符串。',\n  ].join('\\n');\n}\n\nfunction includesAny(value, markers) {\n  return markers.some((marker) => String(value || '').includes(marker));\n}\n\nfunction appendInstructionOnce(prompt, markers, instruction) {\n  if (!instruction) return prompt;\n  const markerList = Array.isArray(markers) ? markers : [markers];\n  return includesAny(prompt, markerList) ? prompt : `${prompt}\\n\\n${instruction}`;\n}\n\nconst config = readConfig();\nconst defaults = config.defaults || {};\nconst runType = normalizeRunType(source.run_type || source.job_type || source.type);\nconst key = promptKey(runType);\nconst startedAt = new Date().toISOString();\nconst chapterBody = String(source.chapter_body || source.body || '');\nconst chapterWordCount = Number(source.chapter_word_count ?? source.word_count ?? source.word_count_estimate);\nconst targetWords = Number(source.target_words_per_chapter || defaults.target_words_per_chapter || 0);\nconst directorCardText = stringifyForPrompt(source.director_card || source.director_card_payload || source.card_payload);\nconst baseValues = {\n  ...defaults,\n  ...source,\n  blocked_topics: Array.isArray(config.blocked_topics) ? config.blocked_topics.join('、') : String(config.blocked_topics || ''),\n  main_character: stringifyForPrompt(source.main_character),\n  supporting_characters: stringifyForPrompt(source.supporting_characters),\n  villain_setting: stringifyForPrompt(source.villain_setting),\n  relationship_map: stringifyForPrompt(source.relationship_map),\n  selling_points: stringifyForPrompt(source.selling_points),\n  continuity_facts: stringifyForPrompt(source.continuity_facts || source.facts),\n  director_card: directorCardText,\n  director_card_payload: directorCardText,\n  novel_bible: stringifyForPrompt(source.novel_bible || source.bible),\n  issues: stringifyForPrompt(source.issues),\n  suggestions: stringifyForPrompt(source.suggestions),\n  chapter_word_count: Number.isFinite(chapterWordCount) && chapterWordCount > 0\n    ? Math.round(chapterWordCount)\n    : Array.from(chapterBody).filter((char) => !/\\s/.test(char)).length,\n  chapter_body_chars: Array.from(chapterBody).length,\n  target_word_lower_bound: targetWords > 0 ? Math.round(targetWords * 0.85) : '',\n  target_word_upper_bound: targetWords > 0 ? Math.round(targetWords * 1.15) : '',\n};\nconst values = {\n  ...baseValues,\n  creative_brief: buildCreativeBrief(baseValues),\n};\n\nconst systemPrompt = renderTemplate(config.system_prompts[key], values);\nconst renderedUserPrompt = renderTemplate(config.user_prompt_templates[key], values);\nconst maxTokens = source.max_tokens ?? (config.max_tokens_by_prompt || {})[key] ?? config.max_tokens ?? 12000;\nconst userPromptWithBrief = renderedUserPrompt.includes('【创作约束】')\n  ? renderedUserPrompt\n  : `${renderedUserPrompt}\\n\\n${values.creative_brief}`;\nconst userPromptWithNaming = appendInstructionOnce(\n  userPromptWithBrief,\n  ['角色命名必须建立唯一主名', '【角色命名一致性】', '角色称呼一致性'],\n  buildNamingInstruction(runType)\n);\nconst userPromptWithTitle = appendInstructionOnce(\n  userPromptWithNaming,\n  '【章节标题规则】',\n  buildChapterTitleInstruction(runType)\n);\nconst userPromptWithOutlineContinuity = appendInstructionOnce(\n  userPromptWithTitle,\n  '【章节连续性与镜头转换】',\n  buildOutlineContinuityInstruction(runType)\n);\nconst userPromptWithRewriteReview = appendInstructionOnce(\n  userPromptWithOutlineContinuity,\n  ['【重写依据优先级】', '重写依据优先级'],\n  buildRewriteReviewInstruction(runType)\n);\nconst userPromptWithRewriteDirector = appendInstructionOnce(\n  userPromptWithRewriteReview,\n  '【导演台重写约束】',\n  buildRewriteDirectorInstruction(runType, values)\n);\nconst userPromptWithFactGrounding = appendInstructionOnce(\n  userPromptWithRewriteDirector,\n  ['【事实来源闸门】', '【审稿事实边界】', '【重写事实边界】'],\n  buildFactGroundingInstruction(runType, values)\n);\nconst userPromptWithDirectorTransition = appendInstructionOnce(\n  userPromptWithFactGrounding,\n  '【跨章镜头调度】',\n  buildDirectorTransitionInstruction(runType, values)\n);\nconst userPromptWithReviewTransition = appendInstructionOnce(\n  userPromptWithDirectorTransition,\n  '【跨章承接审稿】',\n  buildReviewTransitionInstruction(runType, values)\n);\nconst paragraphInstruction = buildParagraphInstruction(runType);\nconst userPromptWithParagraph = appendInstructionOnce(\n  userPromptWithReviewTransition,\n  '【正文换行硬规则】',\n  paragraphInstruction\n);\nconst userPrompt = appendInstructionOnce(\n  userPromptWithParagraph,\n  '【JSON字段白名单】',\n  buildJsonSafetyInstruction(runType)\n);\nconst messages = [\n  {role: 'system', content: systemPrompt},\n  {role: 'user', content: userPrompt},\n];\n\nreturn [{\n  json: {\n    ...source,\n    run_type: runType,\n    prompt_key: key,\n    prompt_version: config.prompt_version || 'novel-v1',\n    prompt_config_path: configPath,\n    prompt_messages_json: JSON.stringify(messages),\n    ai_run_started_at: startedAt,\n    llm_request_body: {\n      model: source.model || config.model || 'glm-5.1',\n      temperature: source.temperature ?? config.temperature ?? 0.75,\n      max_tokens: maxTokens,\n      thinking: config.thinking || {type: 'disabled'},\n      response_format: {type: 'json_object'},\n      messages,\n    },\n  },\n}];\n"
+      },
+      "id": "code-build-director-request-13b",
+      "name": "代码 - 构建导演台 GLM请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GLM_API_BASE_URL || \"https://open.bigmodel.cn/api/coding/paas/v4/chat/completions\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $env.GLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { ...$json.llm_request_body, model: $env.GLM_MODEL || $json.llm_request_body.model } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        },
+        "specifyBody": "json"
+      },
+      "id": "http-glm-director-13b",
+      "name": "HTTP请求 - 调用GLM生成导演台",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Merge Director GLM Response Context\nconst context = $('代码 - 构建导演台 GLM请求').first().json;\nconst response = $json;\nreturn [{json: {...context, llm_response: response}}];"
+      },
+      "id": "code-merge-director-response-13b",
+      "name": "代码 - 合并导演台 GLM响应上下文",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Parse and validate Novel Director Card JSON.\n// Director cards are planning artifacts only: no prose body is allowed here.\n\nfunction extractText(json) {\n  if (!json || typeof json !== 'object') return '';\n  if (json.llm_response?.choices?.[0]?.message?.content) return json.llm_response.choices[0].message.content;\n  if (json.choices?.[0]?.message?.content) return json.choices[0].message.content;\n  if (typeof json.output === 'string') return json.output;\n  if (typeof json.text === 'string') return json.text;\n  if (typeof json.response === 'string') return json.response;\n  if (typeof json.message?.content === 'string') return json.message.content;\n  return JSON.stringify(json);\n}\n\nfunction cleanJsonText(value) {\n  let text = String(value || '').trim();\n  text = text.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n  const start = text.indexOf('{');\n  const end = text.lastIndexOf('}');\n  if (start >= 0 && end > start) text = text.slice(start, end + 1);\n  return text;\n}\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nfunction number(value, fallback = null) {\n  const parsed = Number(value);\n  return Number.isFinite(parsed) ? Math.round(parsed) : fallback;\n}\n\nfunction positiveInteger(value, fallback = null) {\n  const parsed = number(value, fallback);\n  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;\n}\n\nfunction asArray(value) {\n  if (Array.isArray(value)) return value;\n  if (value === undefined || value === null || value === '') return [];\n  return [value];\n}\n\nfunction parseBool(value, fallback = false) {\n  if (value === true || value === false) return value;\n  const raw = text(value).toLowerCase();\n  if (['true', 'yes', '1', 'pass', '通过'].includes(raw)) return true;\n  if (['false', 'no', '0', 'fail', '不通过'].includes(raw)) return false;\n  return fallback;\n}\n\nfunction shortText(value, maxLength = 220) {\n  return Array.from(text(value)).slice(0, maxLength).join('');\n}\n\nfunction compactStrings(value, maxLength = 220) {\n  return asArray(value)\n    .map((item) => {\n      if (typeof item === 'string') return shortText(item, maxLength);\n      if (item && typeof item === 'object') return shortText(item.description || item.value || item.content || JSON.stringify(item), maxLength);\n      return shortText(item, maxLength);\n    })\n    .filter(Boolean);\n}\n\nfunction assertNoBodyFields(payload) {\n  const forbidden = ['chapter_body', 'segment_body', 'body', '正文'];\n  const stack = [{path: '$', value: payload}];\n  while (stack.length) {\n    const current = stack.pop();\n    const value = current.value;\n    if (!value || typeof value !== 'object') continue;\n    if (Array.isArray(value)) {\n      value.forEach((item, index) => stack.push({path: `${current.path}[${index}]`, value: item}));\n      continue;\n    }\n    for (const [key, child] of Object.entries(value)) {\n      if (forbidden.includes(key)) {\n        throw new Error(`导演台规划禁止包含正文字段：${current.path}.${key}`);\n      }\n      stack.push({path: `${current.path}.${key}`, value: child});\n    }\n  }\n}\n\nfunction normalizeSegmentPlan(plan) {\n  return asArray(plan).map((segment, index) => {\n    const raw = segment && typeof segment === 'object' ? segment : {};\n    return {\n      segment_no: number(raw.segment_no || raw.no || raw.index, index + 1),\n      goal: shortText(raw.goal || raw.chapter_goal || raw.task, 160),\n      conflict: shortText(raw.conflict || raw.conflict_point, 160),\n      information_release: shortText(raw.information_release || raw.info || raw.reveal, 160),\n      emotion_turn: shortText(raw.emotion_turn || raw.emotional_point || raw.emotion, 160),\n      ending_hook: shortText(raw.ending_hook || raw.hook || raw.bridge_to_next, 160),\n    };\n  });\n}\n\nfunction segmentPlanIssues(segments, expectedCount) {\n  if (expectedCount > 0 && segments.length !== expectedCount) {\n    return [`导演台 segment_plan 数量必须等于正文分段数：期望 ${expectedCount}，实际 ${segments.length}`];\n  }\n  if (!segments.length) {\n    return ['导演台 segment_plan 不能为空'];\n  }\n  return [];\n}\n\nfunction normalizeForeshadowingOps(value) {\n  const allowedActions = new Set(['seed', 'touch', 'payoff', 'avoid_reveal']);\n  return asArray(value).map((item) => {\n    const raw = item && typeof item === 'object' ? item : {};\n    const action = text(raw.action || 'touch').toLowerCase();\n    return {\n      thread_key: shortText(raw.thread_key || raw.key || raw.name, 80),\n      action: allowedActions.has(action) ? action : 'touch',\n      instruction: shortText(raw.instruction || raw.description || raw.note, 220),\n      do_not_reveal: parseBool(raw.do_not_reveal, false),\n      next_touch_chapter: positiveInteger(raw.next_touch_chapter, null),\n      payoff_target_chapter: positiveInteger(raw.payoff_target_chapter, null),\n      do_not_reveal_before: positiveInteger(raw.do_not_reveal_before, null),\n      visibility: shortText(raw.visibility, 140),\n    };\n  }).filter((item) => item.thread_key || item.instruction);\n}\n\nfunction normalizeRisks(value) {\n  return asArray(value).map((item) => {\n    const raw = item && typeof item === 'object' ? item : {};\n    return {\n      risk: shortText(raw.risk || raw.title || item, 160),\n      reason: shortText(raw.reason || raw.why, 220),\n      fix: shortText(raw.fix || raw.solution || raw.suggestion, 220),\n    };\n  }).filter((item) => item.risk || item.reason || item.fix);\n}\n\nfunction normalizeFactSourceAudit(value) {\n  const allowedVerdicts = new Set(['supported', 'neutralized', 'unsupported']);\n  return asArray(value).map((item) => {\n    const raw = item && typeof item === 'object' ? item : {};\n    const verdict = text(raw.verdict || raw.status || raw.result || 'unsupported').toLowerCase();\n    return {\n      claim: shortText(raw.claim || raw.fact || raw.statement || item, 180),\n      source_type: shortText(raw.source_type || raw.source || raw.basis_type, 80),\n      source_evidence: shortText(raw.source_evidence || raw.evidence || raw.basis || raw.quote, 220),\n      verdict: allowedVerdicts.has(verdict) ? verdict : 'unsupported',\n    };\n  }).filter((item) => item.claim || item.source_evidence);\n}\n\nfunction hasInstitutionalClaim(value) {\n  return /案名?|证人|相关人等|奉命|受命|口谕|命令|通缉|罪名|官方|调查|追捕|看护|强制|转移|押送|羁押|逮捕|禁军|官府|衙门|警局|警方|法庭|审判|公文|诏书|圣旨/.test(text(value));\n}\n\nfunction hasWeakSourceType(value) {\n  return /推断|本章新增|创作处理|临场|猜测|无|未知|none|unknown|inferred|inference|assumption/i.test(text(value));\n}\n\nfunction factSourceAuditIssues(parsed, auditItems) {\n  const issues = [];\n  if (!Object.prototype.hasOwnProperty.call(parsed, 'fact_source_audit')) {\n    issues.push('导演台缺少 fact_source_audit，无法确认本章制度性理由和转场依据是否来自已知事实。');\n  }\n  for (const item of auditItems) {\n    if (item.verdict === 'unsupported') {\n      issues.push(`事实来源不足：${item.claim || '未命名设定'}`);\n      continue;\n    }\n    if (\n      item.verdict === 'supported' &&\n      hasInstitutionalClaim(`${item.claim} ${item.source_evidence}`) &&\n      (hasWeakSourceType(item.source_type) || !item.source_evidence)\n    ) {\n      issues.push(`制度性理由不能用推断来源判定为 supported：${item.claim || '未命名设定'}`);\n    }\n  }\n  return issues;\n}\n\nfunction normalizeTransition(value) {\n  const raw = value && typeof value === 'object' ? value : {};\n  const allowedModes = new Set([\n    'direct_continuation',\n    'natural_scene_cut',\n    'pov_shift',\n    'time_skip',\n    'summary_bridge',\n  ]);\n  const mode = text(raw.mode || raw.transition_mode || raw.type || 'direct_continuation').toLowerCase();\n  return {\n    mode: allowedModes.has(mode) ? mode : 'direct_continuation',\n    allowed: parseBool(raw.allowed, true),\n    reason: shortText(raw.reason || raw.why, 220),\n    opening_bridge: shortText(raw.opening_bridge || raw.bridge || raw.handoff, 260),\n    risk: shortText(raw.risk || raw.abruptness_risk, 220),\n    needs_explicit_bridge: parseBool(raw.needs_explicit_bridge, mode !== 'direct_continuation'),\n  };\n}\n\nfunction normalizePlotThreads(ops, source) {\n  const chapterNo = positiveInteger(source.chapter_no, null);\n  return ops\n    .filter((op) => op.thread_key)\n    .map((op) => {\n      const status = {\n        seed: 'SEEDING',\n        touch: 'TOUCHING',\n        payoff: 'PAYOFF_READY',\n        avoid_reveal: 'ACTIVE',\n      }[op.action] || 'ACTIVE';\n      return {\n        thread_key: op.thread_key,\n        thread_type: 'foreshadowing',\n        status,\n        introduced_chapter: op.action === 'seed' ? chapterNo : null,\n        last_touched_chapter: chapterNo,\n        next_touch_chapter: op.next_touch_chapter,\n        payoff_target_chapter: op.payoff_target_chapter,\n        do_not_reveal_before: op.do_not_reveal_before,\n        visibility: op.visibility,\n        notes: op.instruction,\n      };\n    });\n}\n\nconst source = $input.first().json || {};\nconst rawText = extractText(source);\nconst cleaned = cleanJsonText(rawText);\nconst finishedAt = new Date().toISOString();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(cleaned);\n} catch (error) {\n  throw new Error(`导演台 GLM 输出不是合法 JSON：${error.message}\\n原始输出：${rawText.slice(0, 1200)}`);\n}\n\nassertNoBodyFields(parsed);\n\nconst expectedSegments = number(source.chapter_segment_total || source.segment_count, 0);\nconst segmentPlan = normalizeSegmentPlan(parsed.segment_plan);\nconst segmentIssues = segmentPlanIssues(segmentPlan, expectedSegments);\nconst foreshadowingOps = normalizeForeshadowingOps(parsed.foreshadowing_ops);\nconst factSourceAudit = normalizeFactSourceAudit(parsed.fact_source_audit);\nconst auditIssues = factSourceAuditIssues(parsed, factSourceAudit);\nconst qualityGate = parsed.quality_gate && typeof parsed.quality_gate === 'object' ? parsed.quality_gate : {};\nconst blockingIssues = [...compactStrings(qualityGate.blocking_issues, 220), ...auditIssues, ...segmentIssues];\nconst gatePass = parseBool(qualityGate.pass, blockingIssues.length === 0);\nconst normalized = {\n  chapter_intent: shortText(parsed.chapter_intent, 260),\n  causal_chain: {\n    from_previous: shortText(parsed.causal_chain?.from_previous, 260),\n    trigger: shortText(parsed.causal_chain?.trigger, 260),\n    character_motives: compactStrings(parsed.causal_chain?.character_motives, 220),\n    obstacles: compactStrings(parsed.causal_chain?.obstacles, 220),\n    irreversible_result: shortText(parsed.causal_chain?.irreversible_result, 260),\n    to_next: shortText(parsed.causal_chain?.to_next, 260),\n  },\n  continuity_constraints: {\n    must_remember: compactStrings(parsed.continuity_constraints?.must_remember, 220),\n    must_not_break: compactStrings(parsed.continuity_constraints?.must_not_break, 220),\n    future_outline_guardrails: compactStrings(parsed.continuity_constraints?.future_outline_guardrails, 220),\n  },\n  foreshadowing_ops: foreshadowingOps,\n  abruptness_risks: normalizeRisks(parsed.abruptness_risks),\n  fact_source_audit: factSourceAudit,\n  cross_chapter_transition: normalizeTransition(parsed.cross_chapter_transition),\n  quality_gate: {\n    pass: gatePass && blockingIssues.length === 0,\n    blocking_issues: blockingIssues,\n  },\n  segment_plan: segmentPlan,\n};\n\nconst directorStatus = normalized.quality_gate.pass ? 'READY' : 'NEEDS_REVIEW';\nconst plotThreads = normalizePlotThreads(foreshadowingOps, source);\n\nreturn [{\n  json: {\n    ...source,\n    run_type: 'PLAN_CHAPTER_DIRECTOR',\n    ai_run_finished_at: finishedAt,\n    raw_text: rawText,\n    parsed_payload: normalized,\n    parsed_payload_json: JSON.stringify(normalized),\n    llm_response_json: JSON.stringify(source.llm_response || source),\n    card_payload: normalized,\n    card_payload_json: JSON.stringify(normalized),\n    director_status: directorStatus,\n    quality_gate_pass: normalized.quality_gate.pass,\n    blocking_issues: blockingIssues,\n    blocking_issues_json: JSON.stringify(blockingIssues),\n    plot_threads: plotThreads,\n    plot_threads_json: JSON.stringify(plotThreads),\n    chapter_segment_total: expectedSegments || normalized.segment_plan.length,\n  },\n}];\n"
+      },
+      "id": "code-parse-director-response-13b",
+      "name": "代码 - 解析导演台 GLM响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Record one AI run.\nWITH input AS (\n  SELECT\n    NULLIF($12, '')::timestamptz AS started_at,\n    NULLIF($13, '')::timestamptz AS finished_at\n)\nINSERT INTO novel_ai_runs (\n  project_id,\n  chapter_id,\n  job_id,\n  run_type,\n  model,\n  prompt_version,\n  request_payload,\n  response_payload,\n  parsed_payload,\n  success,\n  error_message,\n  started_at,\n  finished_at,\n  duration_ms\n)\nSELECT\n  NULLIF($1, '')::uuid,\n  NULLIF($2, '')::uuid,\n  NULLIF($3, '')::uuid,\n  $4,\n  NULLIF($5, ''),\n  NULLIF($6, ''),\n  COALESCE(NULLIF($7, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($8, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($9, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($10::text, '')::boolean, TRUE),\n  NULLIF($11, ''),\n  input.started_at,\n  input.finished_at,\n  CASE\n    WHEN input.started_at IS NOT NULL AND input.finished_at IS NOT NULL\n      THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (input.finished_at - input.started_at)) * 1000)::integer)\n    ELSE NULL\n  END\nFROM input\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id, \"\", $json.job_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify({ ...$json.llm_request_body, trigger_source: $json.trigger_source, requested_by: $json.requested_by, chapter_no: $json.chapter_no, chapter_segment_total: $json.chapter_segment_total }), $json.llm_response_json, $json.parsed_payload_json, true, \"\", $json.ai_run_started_at, $json.ai_run_finished_at ] }}"
+        }
+      },
+      "id": "postgres-record-director-ai-run-13b",
+      "name": "数据库 - 记录导演台 AI调用",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        620,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Save generated director card, update plot threads, and enqueue chapter generation if ready.\nWITH input AS (\n  SELECT\n    $1::uuid AS project_id,\n    NULLIF($2, '')::uuid AS outline_id,\n    $3::uuid AS job_id,\n    $4::integer AS chapter_no,\n    COALESCE(NULLIF($5, '')::jsonb, '{}'::jsonb) AS card_payload,\n    COALESCE(NULLIF($6, ''), 'NEEDS_REVIEW') AS card_status,\n    COALESCE(NULLIF($7, '')::jsonb, '[]'::jsonb) AS plot_threads\n), version_seed AS (\n  SELECT COALESCE(MAX(version), 0) + 1 AS next_version\n  FROM novel_chapter_director_cards d, input\n  WHERE d.project_id = input.project_id\n    AND d.chapter_no = input.chapter_no\n), card AS (\n  INSERT INTO novel_chapter_director_cards (\n    project_id,\n    outline_id,\n    job_id,\n    chapter_no,\n    version,\n    is_current,\n    status,\n    source,\n    manual_override,\n    card_payload\n  )\n  SELECT\n    input.project_id,\n    input.outline_id,\n    input.job_id,\n    input.chapter_no,\n    version_seed.next_version,\n    TRUE,\n    input.card_status,\n    'AI',\n    FALSE,\n    input.card_payload\n  FROM input, version_seed\n  RETURNING *\n), thread_values AS (\n  SELECT value\n  FROM input, jsonb_array_elements(input.plot_threads) AS value\n  WHERE input.card_status = 'READY'\n), upsert_threads AS (\n  INSERT INTO novel_plot_threads (\n    project_id,\n    director_card_id,\n    thread_key,\n    thread_type,\n    status,\n    introduced_chapter,\n    last_touched_chapter,\n    next_touch_chapter,\n    payoff_target_chapter,\n    do_not_reveal_before,\n    visibility,\n    notes\n  )\n  SELECT\n    (SELECT project_id FROM input),\n    (SELECT id FROM card),\n    NULLIF(value->>'thread_key', ''),\n    COALESCE(NULLIF(value->>'thread_type', ''), 'foreshadowing'),\n    COALESCE(NULLIF(value->>'status', ''), 'ACTIVE'),\n    NULLIF(value->>'introduced_chapter', '')::integer,\n    NULLIF(value->>'last_touched_chapter', '')::integer,\n    NULLIF(value->>'next_touch_chapter', '')::integer,\n    NULLIF(value->>'payoff_target_chapter', '')::integer,\n    NULLIF(value->>'do_not_reveal_before', '')::integer,\n    NULLIF(value->>'visibility', ''),\n    NULLIF(value->>'notes', '')\n  FROM thread_values\n  WHERE NULLIF(value->>'thread_key', '') IS NOT NULL\n  ON CONFLICT (project_id, thread_key) DO UPDATE\n  SET\n    director_card_id = EXCLUDED.director_card_id,\n    thread_type = EXCLUDED.thread_type,\n    status = EXCLUDED.status,\n    introduced_chapter = COALESCE(novel_plot_threads.introduced_chapter, EXCLUDED.introduced_chapter),\n    last_touched_chapter = EXCLUDED.last_touched_chapter,\n    next_touch_chapter = EXCLUDED.next_touch_chapter,\n    payoff_target_chapter = EXCLUDED.payoff_target_chapter,\n    do_not_reveal_before = EXCLUDED.do_not_reveal_before,\n    visibility = EXCLUDED.visibility,\n    notes = EXCLUDED.notes,\n    updated_at = NOW()\n  RETURNING *\n), chapter_job AS (\n  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status)\n  SELECT\n    card.project_id,\n    'GENERATE_CHAPTER',\n    card.chapter_no,\n    jsonb_build_object('director_card_id', card.id),\n    'PENDING'\n  FROM card\n  WHERE card.status = 'READY'\n    AND NOT EXISTS (\n      SELECT 1\n      FROM novel_chapters c\n      WHERE c.project_id = card.project_id\n        AND c.chapter_no = card.chapter_no\n        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')\n    )\n  ON CONFLICT DO NOTHING\n  RETURNING *\n)\nSELECT\n  TRUE AS success,\n  CASE WHEN card.status = 'READY' THEN 'DIRECTOR_CARD_CHAPTER_JOB_CREATED' ELSE 'DIRECTOR_CARD_UPDATED' END AS result_code,\n  'PLAN_CHAPTER_DIRECTOR'::text AS action,\n  card.project_id,\n  card.id AS director_card_id,\n  card.outline_id,\n  card.chapter_no,\n  card.status AS director_status,\n  card.version AS director_version,\n  (SELECT id FROM chapter_job LIMIT 1) AS job_id,\n  CASE WHEN card.status = 'READY' THEN 'GENERATE_CHAPTER' ELSE 'PLAN_CHAPTER_DIRECTOR' END AS job_type,\n  (SELECT COUNT(*) FROM upsert_threads)::integer AS plot_thread_count,\n  CASE\n    WHEN card.status = 'READY' THEN '导演台已通过质量闸门，并已创建正文生成任务。'\n    ELSE '导演台存在阻断问题，已保存为需调整状态，正文生成不会自动开始。'\n  END AS message\nFROM card;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析导演台 GLM响应\").first().json.project_id, $(\"代码 - 解析导演台 GLM响应\").first().json.outline_id, $(\"代码 - 解析导演台 GLM响应\").first().json.job_id, $(\"代码 - 解析导演台 GLM响应\").first().json.chapter_no, $(\"代码 - 解析导演台 GLM响应\").first().json.card_payload_json, $(\"代码 - 解析导演台 GLM响应\").first().json.director_status, $(\"代码 - 解析导演台 GLM响应\").first().json.plot_threads_json ] }}"
+        }
+      },
+      "id": "postgres-save-director-card-13b",
+      "name": "数据库 - 保存导演台并按闸门排正文",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1060,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Supersede the current director card before inserting a new current version.\nWITH input AS (\n  SELECT\n    $1::uuid AS project_id,\n    $2::integer AS chapter_no\n), updated AS (\n  UPDATE novel_chapter_director_cards d\n  SET is_current = FALSE,\n      status = CASE WHEN d.status IN ('READY', 'NEEDS_REVIEW', 'FAILED') THEN 'SUPERSEDED' ELSE d.status END,\n      updated_at = NOW()\n  FROM input\n  WHERE d.project_id = input.project_id\n    AND d.chapter_no = input.chapter_no\n    AND d.is_current = TRUE\n  RETURNING d.*\n)\nSELECT\n  input.project_id,\n  input.chapter_no,\n  (SELECT COUNT(*) FROM updated)::integer AS superseded_count\nFROM input;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析导演台 GLM响应\").first().json.project_id, $(\"代码 - 解析导演台 GLM响应\").first().json.chapter_no ] }}"
+        }
+      },
+      "id": "postgres-supersede-current-director-13b",
+      "name": "数据库 - 取消旧当前导演台版本",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        840,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark a novel generation job succeeded.\nUPDATE novel_generation_jobs\nSET\n  status = 'SUCCEEDED',\n  error_message = NULL,\n  finished_at = NOW(),\n  updated_at = NOW()\nWHERE id = $1::uuid\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析导演台 GLM响应\").first().json.job_id ] }}"
+        }
+      },
+      "id": "postgres-mark-director-success-13b",
+      "name": "数据库 - 标记导演台任务成功",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1280,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "novel-generate-director-now",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-front-generate-director-13b",
+      "name": "Webhook - 前端立即生成导演台",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -920,
+        260
+      ],
+      "webhookId": "novel-generate-director-now-13b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate front-end generation step action.\n// Only accepts POST body fields from one-click project generation forms.\n\nconst source = $json || {};\nif (source.query && !source.body) {\n  throw new Error('前端生成必须通过 POST body 提交，拒绝 GET/query 参数。');\n}\n\nif (!source.body || typeof source.body !== 'object') {\n  throw new Error('前端生成必须通过 POST body 提交。');\n}\n\nconst body = source.body;\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nfunction normalizeStep(value) {\n  const raw = text(value).toUpperCase();\n  if (['BIBLE', 'GENERATE_BIBLE', '设定集'].includes(raw)) return 'GENERATE_BIBLE';\n  if (['OUTLINE', 'GENERATE_OUTLINE', '大纲'].includes(raw)) return 'GENERATE_OUTLINE';\n  if (['DIRECTOR', 'DIRECTOR_CARD', 'PLAN_CHAPTER_DIRECTOR', '导演台', '导演卡'].includes(raw)) return 'PLAN_CHAPTER_DIRECTOR';\n  if (['CHAPTER', 'GENERATE_CHAPTER', '章节', '正文'].includes(raw)) return 'GENERATE_CHAPTER';\n  throw new Error(`不支持的生成步骤：${raw || '(empty)'}`);\n}\n\nconst projectId = text(body.project_id || body.id);\nconst requestedStep = normalizeStep(body.step || body.requested_step || body.job_type);\n\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId)) {\n  throw new Error(`无效 project_id：${projectId || '(empty)'}`);\n}\n\nreturn [{\n  json: {\n    project_id: projectId,\n    requested_step: requestedStep,\n  },\n}];\n"
+      },
+      "id": "code-validate-front-director-13b",
+      "name": "代码 - 校验前端生成导演台",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Claim one pending PLAN_CHAPTER_DIRECTOR job for a specific project.\nWITH requested AS (\n  SELECT $1::uuid AS project_id\n), project AS (\n  SELECT id, status\n  FROM novel_projects\n  WHERE id = (SELECT project_id FROM requested)\n), claimed AS (\n  SELECT j.id\n  FROM novel_generation_jobs j\n  JOIN novel_projects p ON p.id = j.project_id\n  WHERE j.project_id = (SELECT project_id FROM requested)\n    AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'\n    AND j.status = 'PENDING'\n    AND j.attempt_count < j.max_attempts\n    AND p.status NOT IN ('PAUSED', 'ARCHIVED')\n  ORDER BY j.chapter_no ASC NULLS LAST, j.created_at ASC\n  FOR UPDATE SKIP LOCKED\n  LIMIT 1\n), updated AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'RUNNING',\n    started_at = NOW(),\n    attempt_count = attempt_count + 1,\n    error_message = NULL,\n    payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('trigger_source', 'front_immediate'),\n    updated_at = NOW()\n  FROM claimed\n  WHERE j.id = claimed.id\n  RETURNING j.*\n)\nSELECT TRUE AS claim_success, NULL::text AS claim_reason, updated.*\nFROM updated\nUNION ALL\nSELECT\n  FALSE AS claim_success,\n  CASE\n    WHEN (SELECT status FROM project) = 'PAUSED' THEN 'PROJECT_PAUSED'\n    WHEN (SELECT status FROM project) = 'ARCHIVED' THEN 'PROJECT_ARCHIVED'\n    ELSE 'JOB_NOT_FOUND_OR_ALREADY_CLAIMED'\n  END AS claim_reason,\n  NULL::uuid AS id,\n  (SELECT project_id FROM requested) AS project_id,\n  NULL::uuid AS chapter_id,\n  'PLAN_CHAPTER_DIRECTOR'::text AS job_type,\n  NULL::integer AS chapter_no,\n  '{}'::jsonb AS payload,\n  NULL::text AS status,\n  NULL::integer AS attempt_count,\n  NULL::integer AS max_attempts,\n  NULL::text AS error_message,\n  NULL::timestamptz AS created_at,\n  NULL::timestamptz AS started_at,\n  NULL::timestamptz AS finished_at,\n  NULL::timestamptz AS updated_at\nWHERE NOT EXISTS (SELECT 1 FROM updated);",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id ] }}"
+        }
+      },
+      "id": "postgres-claim-front-director-13b",
+      "name": "数据库 - 前端领取PLAN_CHAPTER_DIRECTOR任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -480,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "front-director-claimed",
+              "leftValue": "={{ $json.claim_success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-front-director-claimed-13b",
+      "name": "条件判断 - 前端导演台任务已领取",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -260,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "novelDirectorV1Workflow13B",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "id": "execute-director-worker-13b",
+      "name": "执行子流程 - 异步生成导演台",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Render front-end generation step start HTML.\n// Used by browser POST actions that claim a project-level generation job.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst stepLabel = {\n  GENERATE_BIBLE: '设定集',\n  GENERATE_OUTLINE: '大纲',\n  PLAN_CHAPTER_DIRECTOR: '导演台规划',\n  GENERATE_CHAPTER: '章节正文',\n};\n\nfunction label(map, value, fallback) {\n  if (!value) return fallback;\n  return map[value] || fallback;\n}\n\nconst row = $json || {};\nconst projectId = row.project_id || row.id || '';\nconst jobType = row.job_type || row.requested_step || '';\nconst claimSuccess = row.claim_success !== false && row.claim_success !== 'false';\nconst isBible = jobType === 'GENERATE_BIBLE';\nconst isOutline = jobType === 'GENERATE_OUTLINE';\nconst isDirector = jobType === 'PLAN_CHAPTER_DIRECTOR';\nconst isChapter = jobType === 'GENERATE_CHAPTER';\nconst stepName = label(stepLabel, jobType, '当前步骤');\nconst chapterNo = row.chapter_no ? `第 ${row.chapter_no} 章` : '当前章节';\nconst claimReasonLabel = {\n  JOB_NOT_FOUND_OR_ALREADY_CLAIMED: '没有可立即执行的待处理任务。它可能已经被后台队列领取、已经完成，或当前项目状态不允许执行。',\n  PROJECT_PAUSED: '项目已暂停，当前不会领取生成任务。',\n  PROJECT_ARCHIVED: '项目已归档，当前不会领取生成任务。',\n};\nconst title = claimSuccess\n  ? (isBible ? '设定集生成已启动' : (isOutline ? '大纲生成已启动' : (isDirector ? `${chapterNo}导演台已启动` : (isChapter ? `${chapterNo}生成已启动` : '生成任务已启动'))))\n  : '未开始模型调用';\nconst summary = claimSuccess\n  ? (isBible\n    ? '设定集任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；完成后可回项目控制台查看设定内容。'\n    : (isOutline\n      ? '大纲任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；完成后可回项目控制台查看目录。'\n      : (isDirector\n        ? `${chapterNo}导演台规划任务已领取，模型调用会继续在 n8n 后台执行。通过质量闸门后会自动排队正文生成；如需调整，项目页会显示导演台卡片。`\n        : (isChapter\n        ? `${chapterNo}生成任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；生成候选稿后会进入智能审稿队列，审稿完成后再到审核中心处理。`\n        : '当前生成步骤已交给后台执行。'))))\n  : (claimReasonLabel[row.claim_reason] || claimReasonLabel.JOB_NOT_FOUND_OR_ALREADY_CLAIMED);\nconst detailHref = projectId\n  ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}`\n  : '/webhook/novel-project-list';\nconst queueHref = projectId\n  ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`\n  : '/webhook/novel-queue-status';\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <meta name=\"theme-color\" content=\"#f6f7f9\" />\n  <title>${escapeHtml(title)}</title>\n  <style>\n    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d8dee8; --accent:#1f7a5c; --accent-soft:#edf8f3; }\n    * { box-sizing: border-box; }\n    body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; -webkit-tap-highlight-color: rgba(31, 122, 92, .14); }\n    main { width: min(900px, calc(100vw - 32px)); margin: 24px auto 48px; }\n    header { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 18px; }\n    .page-context { position: sticky; top: 0; z-index: 70; margin-bottom: 18px; padding: 14px 0 12px; background: rgba(246, 247, 249, .97); border-bottom: 1px solid rgba(216, 222, 232, .92); backdrop-filter: blur(10px); }\n    .page-context header { margin-bottom: 0; }\n    h1 { margin: 0; font-size: 28px; text-wrap: balance; }\n    h2 { margin: 0 0 12px; font-size: 18px; }\n    p { line-height: 1.7; }\n    .muted { color: var(--muted); margin: 6px 0 0; }\n    a { color: var(--accent); text-decoration: none; font-weight: 650; }\n    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }\n    .result { padding: 18px; border-color: ${claimSuccess ? '#b9e3d4' : '#f1ce96'}; background: ${claimSuccess ? 'var(--accent-soft)' : '#fff7e8'}; }\n    .detail { padding: 16px; }\n    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px 12px; margin: 0; }\n    dt { color: var(--muted); }\n    dd { margin: 0; min-width: 0; word-break: break-word; }\n    .actions { display: flex; gap: 10px; flex-wrap: wrap; padding: 16px; border-top: 1px solid var(--line); }\n    .button { min-height: 42px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 14px; background: #fff; color: var(--accent); text-decoration: none; font: inherit; font-weight: 750; touch-action: manipulation; cursor: pointer; }\n    .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }\n    .button:hover { border-color: var(--accent); background: var(--accent-soft); }\n    .button.primary:hover { background: #19664e; }\n    .run-note { padding: 14px 16px; border-top: 1px solid var(--line); color: var(--muted); line-height: 1.7; }\n    button:disabled { opacity: .65; cursor: progress; }\n    a:focus-visible, button:focus-visible { outline: 3px solid #8fd4bd; outline-offset: 2px; }\n    @media (max-width: 720px) {\n      main { width: min(100% - 24px, 720px); margin-top: 16px; }\n      header { display: block; }\n      nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }\n      dl { grid-template-columns: 1fr; }\n      .actions { display: grid; }\n      .inline-form { display: grid; }\n    }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"page-context\">\n    <header>\n      <div>\n        <h1>${escapeHtml(title)}</h1>\n        <p class=\"muted\">${escapeHtml(stepName)}</p>\n      </div>\n    </header>\n    </div>\n\n    <section class=\"result\" aria-live=\"polite\">\n      <h2>结果 + 下一步 + 返回上下文</h2>\n      <p>${escapeHtml(summary)}</p>\n    </section>\n\n    <section>\n      <div class=\"detail\">\n        <dl>\n          <dt>生成内容</dt><dd>${escapeHtml(stepName)}</dd>\n          <dt>执行方式</dt><dd>${escapeHtml(claimSuccess ? '后台执行中' : '未调用模型')}</dd>\n          <dt>项目编号</dt><dd translate=\"no\">${escapeHtml(projectId || '未记录')}</dd>\n        </dl>\n      </div>\n      <div class=\"actions\">\n        <a class=\"button primary\" href=\"${escapeHtml(claimSuccess ? queueHref : detailHref)}\">${escapeHtml(claimSuccess ? '查看队列' : '返回项目控制台')}</a>\n        <a class=\"button\" href=\"${escapeHtml(claimSuccess ? detailHref : queueHref)}\">${escapeHtml(claimSuccess ? '返回项目控制台' : '查看队列')}</a>\n        <a class=\"button\" href=\"/webhook/novel-project-list\">项目列表</a>\n      </div>\n      <div class=\"run-note\">${escapeHtml(claimSuccess ? '响应已先返回；后台模型调用仍在工作流继续执行。队列页会展示运行中、成功或失败。' : '这次提交没有触发模型调用。请回到项目控制台或队列页确认任务是否已经被领取、完成、暂停或归档。')}</div>\n    </section>\n  </main>\n  <script>\n    (() => {\n      ${claimSuccess ? `window.setTimeout(() => { window.location.href = '${escapeHtml(queueHref)}'; }, 1800);` : ''}\n    })();\n  </script>\n</body>\n</html>`;\n\nreturn [{json: {...row, response_html: html, response_status_code: 200}}];\n"
+      },
+      "id": "code-render-front-director-result-13b",
+      "name": "代码 - 生成前端导演台生成结果页",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code || 200 }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-front-director-result-13b",
+      "name": "响应Webhook - 返回导演台生成结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        180,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "novel-director-card-update",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-update-director-13b",
+      "name": "Webhook - 保存导演台",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -920,
+        560
+      ],
+      "webhookId": "novel-director-card-update-13b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Novel Director Card Actions.\n// Accepts POST body fields for manual save, regeneration, and chapter start.\n\nconst source = $json || {};\nif (source.query && !source.body) {\n  throw new Error('导演台操作必须通过 POST body 提交，拒绝 GET/query 参数。');\n}\n\nif (!source.body || typeof source.body !== 'object') {\n  throw new Error('导演台操作必须通过 POST body 提交。');\n}\n\nconst body = source.body;\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nfunction normalizeAction(value) {\n  const raw = text(value).toUpperCase();\n  if (['UPDATE', 'SAVE', 'SAVE_CURRENT', 'DIRECTOR_CARD_UPDATE'].includes(raw)) return 'UPDATE_DIRECTOR_CARD';\n  if (['REGENERATE', 'REGEN', 'DIRECTOR_CARD_REGENERATE', 'REGENERATE_DIRECTOR_CARD'].includes(raw)) return 'REGENERATE_DIRECTOR_CARD';\n  if (['START_CHAPTER', 'GENERATE_CHAPTER', 'DIRECTOR_CARD_START_CHAPTER'].includes(raw)) return 'START_CHAPTER_FROM_DIRECTOR';\n  throw new Error(`不支持的导演台操作：${raw || '(empty)'}`);\n}\n\nfunction uuid(value, fieldName, required = true) {\n  const raw = text(value);\n  if (!raw && !required) return '';\n  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {\n    throw new Error(`无效 ${fieldName}：${raw || '(empty)'}`);\n  }\n  return raw;\n}\n\nfunction positiveInt(value, fieldName, required = true) {\n  const raw = text(value);\n  if (!raw && !required) return null;\n  const parsed = Number(raw);\n  if (!Number.isInteger(parsed) || parsed <= 0) {\n    throw new Error(`无效 ${fieldName}：${raw || '(empty)'}`);\n  }\n  return parsed;\n}\n\nfunction parseJson(value, fieldName, required = false) {\n  const raw = text(value);\n  if (!raw && !required) return {};\n  try {\n    const parsed = JSON.parse(raw);\n    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {\n      throw new Error('必须是 JSON 对象');\n    }\n    return parsed;\n  } catch (error) {\n    throw new Error(`${fieldName} 不是合法 JSON：${error.message}`);\n  }\n}\n\nconst action = normalizeAction(body.action || body.director_action || body.card_action);\nconst projectId = uuid(body.project_id || body.id, 'project_id');\nconst directorCardId = uuid(body.director_card_id || body.card_id, 'director_card_id', action !== 'REGENERATE_DIRECTOR_CARD');\nconst chapterNo = positiveInt(body.chapter_no, 'chapter_no', action === 'REGENERATE_DIRECTOR_CARD');\nconst reviewer = text(body.reviewer || 'local_user') || 'local_user';\nconst comment = text(body.comment || body.note);\nconst cardPayload = action === 'UPDATE_DIRECTOR_CARD'\n  ? parseJson(body.card_payload_json || body.card_payload || body.payload, '导演台 JSON', true)\n  : {};\n\nreturn [{\n  json: {\n    action,\n    project_id: projectId,\n    director_card_id: directorCardId,\n    chapter_no: chapterNo,\n    reviewer,\n    comment,\n    card_payload: cardPayload,\n    card_payload_json: JSON.stringify(cardPayload),\n  },\n}];\n"
+      },
+      "id": "code-validate-update-director-13b",
+      "name": "代码 - 校验保存导演台",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -700,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Supersede the current card before saving a manual director version.\nWITH input AS (\n  SELECT\n    $1::uuid AS project_id,\n    $2::uuid AS director_card_id\n), old AS (\n  SELECT d.*\n  FROM novel_chapter_director_cards d, input\n  WHERE d.id = input.director_card_id\n    AND d.project_id = input.project_id\n), updated AS (\n  UPDATE novel_chapter_director_cards d\n  SET is_current = FALSE,\n      status = CASE WHEN d.status IN ('READY', 'NEEDS_REVIEW', 'FAILED') THEN 'SUPERSEDED' ELSE d.status END,\n      updated_at = NOW()\n  FROM old\n  WHERE d.project_id = old.project_id\n    AND d.chapter_no = old.chapter_no\n    AND d.is_current = TRUE\n  RETURNING d.*\n)\nSELECT\n  COALESCE((SELECT project_id FROM old LIMIT 1), (SELECT project_id FROM input)) AS project_id,\n  (SELECT chapter_no FROM old LIMIT 1) AS chapter_no,\n  (SELECT COUNT(*) FROM updated)::integer AS superseded_count;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 校验保存导演台\").first().json.project_id, $(\"代码 - 校验保存导演台\").first().json.director_card_id ] }}"
+        }
+      },
+      "id": "postgres-supersede-manual-director-13b",
+      "name": "数据库 - 取消旧当前手动导演台版本",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -480,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Save a manually edited director card as the current version.\nWITH input AS (\n  SELECT\n    $1::uuid AS project_id,\n    $2::uuid AS director_card_id,\n    COALESCE(NULLIF($3, '')::jsonb, '{}'::jsonb) AS card_payload,\n    NULLIF($4, '') AS reviewer,\n    NULLIF($5, '') AS comment\n), old AS (\n  SELECT d.*\n  FROM novel_chapter_director_cards d, input\n  WHERE d.id = input.director_card_id\n    AND d.project_id = input.project_id\n), project_rules AS (\n  SELECT\n    old.project_id,\n    old.chapter_no,\n    CASE\n      WHEN p.target_words_per_chapter <= 1500 THEN 1\n      WHEN p.target_words_per_chapter <= 2500 THEN 2\n      WHEN p.target_words_per_chapter <= 3500 THEN 3\n      WHEN p.target_words_per_chapter <= 4500 THEN 4\n      WHEN p.target_words_per_chapter <= 6500 THEN 5\n      ELSE 6\n    END AS expected_segments\n  FROM old\n  JOIN novel_projects p ON p.id = old.project_id\n), manual_checks AS (\n  SELECT\n    input.card_payload,\n    COALESCE((input.card_payload->'quality_gate'->>'pass')::boolean, TRUE) AS requested_pass,\n    CASE\n      WHEN jsonb_typeof(input.card_payload->'quality_gate'->'blocking_issues') = 'array'\n        THEN input.card_payload->'quality_gate'->'blocking_issues'\n      ELSE '[]'::jsonb\n    END AS provided_issues,\n    CASE\n      WHEN jsonb_typeof(input.card_payload->'segment_plan') = 'array'\n        THEN jsonb_array_length(input.card_payload->'segment_plan')\n      ELSE 0\n    END AS segment_count,\n    project_rules.expected_segments\n  FROM input\n  JOIN project_rules ON true\n), issue_values AS (\n  SELECT value AS issue\n  FROM manual_checks, jsonb_array_elements_text(manual_checks.provided_issues) AS value\n  UNION ALL\n  SELECT '事实来源不足：' || NULLIF(value->>'claim', '')\n  FROM manual_checks, jsonb_array_elements(\n    CASE\n      WHEN jsonb_typeof(manual_checks.card_payload->'fact_source_audit') = 'array'\n        THEN manual_checks.card_payload->'fact_source_audit'\n      ELSE '[]'::jsonb\n    END\n  ) AS value\n  WHERE lower(COALESCE(value->>'verdict', '')) = 'unsupported'\n    AND NULLIF(value->>'claim', '') IS NOT NULL\n  UNION ALL\n  SELECT format(\n    '导演台 segment_plan 数量必须等于正文分段数：期望 %s，实际 %s',\n    manual_checks.expected_segments,\n    manual_checks.segment_count\n  )\n  FROM manual_checks\n  WHERE manual_checks.expected_segments > 0\n    AND manual_checks.segment_count <> manual_checks.expected_segments\n), issue_agg AS (\n  SELECT COALESCE(jsonb_agg(DISTINCT issue), '[]'::jsonb) AS blocking_issues\n  FROM issue_values\n), normalized_payload AS (\n  SELECT\n    input.card_payload || jsonb_build_object(\n      'quality_gate',\n      COALESCE(input.card_payload->'quality_gate', '{}'::jsonb) || jsonb_build_object(\n        'pass',\n        manual_checks.requested_pass AND jsonb_array_length(issue_agg.blocking_issues) = 0,\n        'blocking_issues',\n        issue_agg.blocking_issues\n      )\n    ) AS card_payload\n  FROM input\n  JOIN manual_checks ON true\n  JOIN issue_agg ON true\n), status_calc AS (\n  SELECT\n    CASE\n      WHEN COALESCE((normalized_payload.card_payload->'quality_gate'->>'pass')::boolean, FALSE)\n        THEN 'READY'\n      ELSE 'NEEDS_REVIEW'\n    END AS card_status\n  FROM normalized_payload\n), version_seed AS (\n  SELECT COALESCE(MAX(d.version), 0) + 1 AS next_version\n  FROM novel_chapter_director_cards d\n  JOIN old ON old.project_id = d.project_id AND old.chapter_no = d.chapter_no\n), inserted AS (\n  INSERT INTO novel_chapter_director_cards (\n    project_id,\n    outline_id,\n    job_id,\n    chapter_no,\n    version,\n    is_current,\n    status,\n    source,\n    manual_override,\n    card_payload\n  )\n  SELECT\n    old.project_id,\n    old.outline_id,\n    old.job_id,\n    old.chapter_no,\n    version_seed.next_version,\n    TRUE,\n    status_calc.card_status,\n    'MANUAL',\n    TRUE,\n    normalized_payload.card_payload\n  FROM old, version_seed, status_calc, normalized_payload\n  RETURNING *\n), event AS (\n  INSERT INTO novel_project_events (\n    project_id,\n    outline_id,\n    event_type,\n    actor,\n    comment,\n    before_payload,\n    after_payload\n  )\n  SELECT\n    inserted.project_id,\n    inserted.outline_id,\n    'DIRECTOR_CARD_UPDATED',\n    COALESCE((SELECT reviewer FROM input), 'local_user'),\n    COALESCE((SELECT comment FROM input), '手动保存导演台'),\n    COALESCE((SELECT card_payload FROM old LIMIT 1), '{}'::jsonb),\n    inserted.card_payload\n  FROM inserted\n  RETURNING *\n), thread_values AS (\n  SELECT value\n  FROM inserted, jsonb_array_elements(COALESCE(inserted.card_payload->'foreshadowing_ops', '[]'::jsonb)) AS value\n  WHERE inserted.status = 'READY'\n), upsert_threads AS (\n  INSERT INTO novel_plot_threads (\n    project_id,\n    director_card_id,\n    thread_key,\n    thread_type,\n    status,\n    introduced_chapter,\n    last_touched_chapter,\n    next_touch_chapter,\n    payoff_target_chapter,\n    do_not_reveal_before,\n    visibility,\n    notes\n  )\n  SELECT\n    inserted.project_id,\n    inserted.id,\n    NULLIF(value->>'thread_key', ''),\n    'foreshadowing',\n    CASE COALESCE(NULLIF(value->>'action', ''), 'touch')\n      WHEN 'seed' THEN 'SEEDING'\n      WHEN 'payoff' THEN 'PAYOFF_READY'\n      WHEN 'avoid_reveal' THEN 'ACTIVE'\n      ELSE 'TOUCHING'\n    END,\n    CASE WHEN value->>'action' = 'seed' THEN inserted.chapter_no ELSE NULL END,\n    inserted.chapter_no,\n    NULLIF(value->>'next_touch_chapter', '')::integer,\n    NULLIF(value->>'payoff_target_chapter', '')::integer,\n    NULLIF(value->>'do_not_reveal_before', '')::integer,\n    NULLIF(value->>'visibility', ''),\n    NULLIF(value->>'instruction', '')\n  FROM inserted\n  JOIN thread_values ON true\n  WHERE NULLIF(value->>'thread_key', '') IS NOT NULL\n  ON CONFLICT (project_id, thread_key) DO UPDATE\n  SET\n    director_card_id = EXCLUDED.director_card_id,\n    thread_type = EXCLUDED.thread_type,\n    status = EXCLUDED.status,\n    introduced_chapter = COALESCE(novel_plot_threads.introduced_chapter, EXCLUDED.introduced_chapter),\n    last_touched_chapter = EXCLUDED.last_touched_chapter,\n    next_touch_chapter = EXCLUDED.next_touch_chapter,\n    payoff_target_chapter = EXCLUDED.payoff_target_chapter,\n    do_not_reveal_before = EXCLUDED.do_not_reveal_before,\n    visibility = EXCLUDED.visibility,\n    notes = EXCLUDED.notes,\n    updated_at = NOW()\n  RETURNING *\n)\nSELECT\n  (SELECT COUNT(*) FROM inserted) > 0 AS success,\n  CASE WHEN EXISTS (SELECT 1 FROM inserted) THEN 'DIRECTOR_CARD_UPDATED' ELSE 'DIRECTOR_CARD_NOT_FOUND' END AS result_code,\n  'UPDATE_DIRECTOR_CARD'::text AS action,\n  COALESCE((SELECT project_id FROM inserted), (SELECT project_id FROM input)) AS project_id,\n  (SELECT id FROM inserted) AS director_card_id,\n  (SELECT outline_id FROM inserted) AS outline_id,\n  (SELECT chapter_no FROM inserted) AS chapter_no,\n  (SELECT status FROM inserted) AS director_status,\n  (SELECT version FROM inserted) AS director_version,\n  NULL::uuid AS job_id,\n  'PLAN_CHAPTER_DIRECTOR'::text AS job_type,\n  CASE\n    WHEN NOT EXISTS (SELECT 1 FROM inserted) THEN '没有找到可保存的导演台。'\n    WHEN (SELECT status FROM inserted) = 'READY' THEN '导演台已保存为当前版本，质量闸门已通过。'\n    ELSE '导演台已保存为当前版本，但仍需调整；请检查质量闸门、阻断列表、事实来源审计和分段计划数量。'\n  END AS message;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 校验保存导演台\").first().json.project_id, $(\"代码 - 校验保存导演台\").first().json.director_card_id, $(\"代码 - 校验保存导演台\").first().json.card_payload_json, $(\"代码 - 校验保存导演台\").first().json.reviewer, $(\"代码 - 校验保存导演台\").first().json.comment ] }}"
+        }
+      },
+      "id": "postgres-save-manual-director-13b",
+      "name": "数据库 - 保存手动导演台版本",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -260,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Render Novel Project Action Result HTML\n// Used by continue writing, approved chapter rewrite, and review reminder resend.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst resultLabel = {\n  BIBLE_JOB_CREATED: '已创建生成设定集任务',\n  OUTLINE_JOB_CREATED: '已创建生成大纲任务',\n  DIRECTOR_JOB_CREATED: '已创建导演台任务',\n  DIRECTOR_CARD_UPDATED: '导演台已保存',\n  DIRECTOR_CARD_REGENERATE_JOB_CREATED: '已创建导演台重生成任务',\n  DIRECTOR_CARD_CHAPTER_JOB_CREATED: '已按导演台创建正文任务',\n  DIRECTOR_CARD_NOT_FOUND: '导演台不存在',\n  DIRECTOR_CARD_NOT_READY: '导演台仍需调整',\n  CHAPTER_JOB_CREATED: '已创建章节生成任务',\n  BIBLE_REGENERATE_JOB_CREATED: '已创建重跑设定集任务',\n  OUTLINE_REGENERATE_JOB_CREATED: '已创建重跑大纲任务',\n  REGENERATE_JOB_ALREADY_EXISTS: '已有重跑任务',\n  PROJECT_COMPLETED: '项目已完结',\n  NEED_REVIEW_BLOCKED: '有章节待审核',\n  ACTIVE_JOB_BLOCKED: '队列仍在推进',\n  FAILED_JOB_BLOCKED: '存在失败任务',\n  PROJECT_PAUSED: '项目已暂停',\n  PROJECT_NOT_FOUND: '项目未找到',\n  REWRITE_JOB_CREATED: '已创建重写任务',\n  REWRITE_JOB_ALREADY_EXISTS: '已有重写任务',\n  REWRITE_WORKER_START_REQUESTED: '已启动重写任务',\n  REWRITE_WORKER_RECOVERED: '已恢复重写任务',\n  REWRITE_JOB_STILL_RUNNING: '重写任务仍在运行',\n  REWRITE_JOB_NOT_STARTABLE: '重写任务不可启动',\n  NOTIFY_JOB_CREATED: '已创建审核提醒任务',\n  NOTIFY_JOB_ALREADY_EXISTS: '已有审核提醒任务',\n  NO_MATCH_OR_INVALID_STATE: '状态不允许执行',\n  BIBLE_UPDATED: '设定集已保存',\n  OUTLINE_UPDATED: '大纲已保存',\n  PROJECT_TARGET_UPDATED: '项目目标已保存',\n  PROJECT_PAUSED: '项目已暂停',\n  PROJECT_RESUMED: '项目已恢复',\n  PROJECT_ALREADY_PAUSED: '项目已经暂停',\n  PROJECT_NOT_PAUSED: '项目未暂停',\n  PROJECT_FAILED_BLOCKED: '项目失败待处理',\n  PROJECT_ARCHIVED: '项目已归档',\n  PROJECT_ALREADY_ARCHIVED: '项目已经归档',\n  PROJECT_NOT_ARCHIVED: '项目未归档',\n  PROJECT_RESTORED: '项目已恢复',\n  CONFIRM_TITLE_MISMATCH: '确认项目名不匹配',\n  RUNNING_JOB_BLOCKED: '仍有任务运行中',\n  CHAPTER_MANUAL_EDIT_SAVED: '正文已保存',\n  MANUAL_CHAPTER_CANDIDATE_CREATED: '已创建人工编辑候选稿',\n  SUPERSEDED_CHAPTER_VERSION: '章节版本已过期',\n  MANUAL_REVIEW_CANDIDATE_CREATED: '已保存人工改稿并送审',\n  MANUAL_REVIEW_APPROVED: '人工改稿已直接通过',\n  INVALID_MANUAL_REVIEW_DECISION: '人工改稿决策无效',\n  ACTIVE_CHAPTER_JOB_BLOCKED: '同章任务仍在处理',\n  INVALID_CHAPTER_BODY: '正文无效',\n  INVALID_PROJECT_TARGET: '项目目标无效',\n  TARGET_BELOW_PROGRESS: '目标小于当前进度',\n  BIBLE_REQUIRED: '需要先生成设定集',\n  INVALID_REGENERATE_STEP: '重跑类型无效',\n  INVALID_OUTLINE_INPUT: '大纲输入无效',\n  OUTLINE_NOT_FOUND: '大纲不存在',\n  INVALID_PROJECT_ACTION: '项目操作无效',\n  FACT_CREATED: '事实已新增',\n  FACT_UPDATED: '事实已保存',\n  FACT_ACTIVATED: '事实已激活',\n  FACT_DEACTIVATED: '事实已失效',\n  FACTS_CLEARED: '失效事实已清理',\n  STALE_CHAPTERS_CLEARED: '过期历史章节已清理',\n  STALE_CHAPTERS_NONE: '没有过期历史章节',\n  RUNNING_STALE_CHAPTER_JOB_BLOCKED: '过期章节仍有关联任务运行',\n  FACT_NOT_FOUND: '事实不存在',\n  INVALID_FACT_ACTION: '事实操作无效',\n  INVALID_FACT_INPUT: '事实内容无效',\n};\n\nconst actionLabel = {\n  CONTINUE_PROJECT: '继续写作',\n  REQUEST_APPROVED_REWRITE: '申请重写此章',\n  START_REWRITE_WORKER: '启动待执行重写',\n  REGENERATE_BIBLE: '重新生成设定集',\n  REGENERATE_OUTLINE: '重新生成大纲',\n  UPDATE_DIRECTOR_CARD: '编辑导演台',\n  REGENERATE_DIRECTOR_CARD: '重新生成导演台',\n  START_CHAPTER_FROM_DIRECTOR: '按导演台生成正文',\n  RESEND_REVIEW_NOTIFICATION: '重新发送审核提醒',\n  UPDATE_BIBLE: '编辑设定集',\n  UPDATE_OUTLINE: '编辑大纲',\n  UPDATE_PROJECT_TARGET: '修改项目目标',\n  PAUSE_PROJECT: '暂停项目',\n  RESUME_PROJECT: '恢复项目',\n  TOGGLE_PROJECT_PAUSE: '暂停或恢复项目',\n  MANUAL_EDIT_CHAPTER: '手动编辑正文',\n  MANUAL_EDIT_REVIEW_CHAPTER: '审核中人工改稿',\n  ARCHIVE_PROJECT: '归档项目',\n  RESTORE_PROJECT: '恢复归档项目',\n  CREATE_FACT: '新增人工事实',\n  UPDATE_FACT: '编辑事实',\n  ACTIVATE_FACT: '激活事实',\n  DEACTIVATE_FACT: '设为失效事实',\n  CLEAR_INACTIVE_FACTS: '清理失效事实',\n  CLEAR_STALE_CHAPTERS: '清理过期历史章节',\n  MANAGE_FACT: '事实库操作',\n};\n\nconst projectStatusLabel = {\n  CREATED: '待生成设定集',\n  BIBLE_READY: '设定集已完成',\n  OUTLINE_READY: '大纲已完成',\n  WRITING: '写作中',\n  REVIEWING: '待人工审核',\n  PAUSED: '已暂停',\n  ARCHIVED: '已归档',\n  COMPLETED: '已完结',\n  FAILED: '已失败',\n};\n\nconst jobTypeLabel = {\n  GENERATE_BIBLE: '生成设定集',\n  GENERATE_OUTLINE: '生成大纲',\n  PLAN_CHAPTER_DIRECTOR: '导演台规划',\n  GENERATE_CHAPTER: '生成章节',\n  REVIEW_CHAPTER: '智能审稿',\n  REWRITE_CHAPTER: '重写章节',\n  NOTIFY_REVIEW: '发送审核提醒',\n};\n\nconst chapterStatusLabel = {\n  NEED_REVIEW: '待人工审核',\n  APPROVED: '已批准',\n  PUBLISHED: '已发布',\n  REWRITE_REQUESTED: '已要求重写',\n  SUPERSEDED: '已被新版本替代',\n  REJECTED: '已拒绝',\n  FAILED: '已失败',\n};\n\nfunction label(map, value, fallback) {\n  if (!value) return fallback;\n  return map[value] || fallback;\n}\n\nconst row = $json || {};\nconst success = row.success === true || row.success === 'true';\nconst projectId = row.project_id || '';\nconst chapterId = row.chapter_id || '';\nconst resultCode = row.result_code || 'UNKNOWN';\nconst action = row.action || '';\nconst headline = success ? '操作已提交' : '操作未执行';\nconst detailHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-project-list';\nconst queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';\n\nconst rows = [\n  ['操作', label(actionLabel, action, '项目操作')],\n  ['结果', label(resultLabel, resultCode, '未记录')],\n  ['说明', row.message || '操作结果已记录。'],\n  ['项目状态', label(projectStatusLabel, row.project_status, row.project_status || '未记录')],\n  ['目标章节', row.target_total_chapters || '-'],\n  ['每章字数', row.target_words_per_chapter || '-'],\n  ['章节序号', row.chapter_no || '-'],\n  ['章节状态', label(chapterStatusLabel, row.chapter_status, row.chapter_status || '未记录')],\n  ['任务类型', label(jobTypeLabel, row.job_type, row.job_type || '未创建任务')],\n  ['任务编号', row.job_id || '-'],\n  ['设定集编号', row.bible_id || '-'],\n  ['大纲编号', row.outline_id || '-'],\n  ['章节编号', chapterId || '-'],\n  ['取消任务数', row.cancelled_job_count || '-'],\n  ['清理章节数', row.deleted_chapter_count || '-'],\n  ['失效事实数', row.inactivated_fact_count || '-'],\n].map(([key, value]) => `\n  <dt>${escapeHtml(key)}</dt>\n  <dd translate=\"${key.endsWith('编号') ? 'no' : 'yes'}\">${escapeHtml(value || '-')}</dd>\n`).join('');\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <meta name=\"theme-color\" content=\"#f6f7f9\" />\n  <title>${escapeHtml(headline)}</title>\n  <style>\n    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d8dee8; --accent:#1f7a5c; --accent-soft:#edf8f3; --danger:#b42318; --danger-soft:#fff0ee; }\n    * { box-sizing: border-box; }\n    body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; -webkit-tap-highlight-color: rgba(31, 122, 92, .14); }\n    main { width: min(880px, calc(100vw - 32px)); margin: 24px auto 48px; }\n    header { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 18px; }\n    .page-context { position: sticky; top: 0; z-index: 70; margin-bottom: 18px; padding: 14px 0 12px; background: rgba(246, 247, 249, .97); border-bottom: 1px solid rgba(216, 222, 232, .92); backdrop-filter: blur(10px); }\n    .page-context header { margin-bottom: 0; }\n    h1 { margin: 0; font-size: 28px; text-wrap: balance; }\n    .muted { color: var(--muted); margin: 6px 0 0; line-height: 1.6; }\n    a { color: var(--accent); text-decoration: none; font-weight: 650; }\n    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }\n    .result { padding: 18px; border-color: ${success ? '#b9e3d4' : '#f2b8b5'}; background: ${success ? 'var(--accent-soft)' : 'var(--danger-soft)'}; }\n    .detail { padding: 16px; }\n    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px 12px; margin: 0; }\n    dt { color: var(--muted); }\n    dd { margin: 0; min-width: 0; word-break: break-word; }\n    .actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 16px; border-top: 1px solid var(--line); }\n    .button { min-height: 42px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 14px; background: #fff; color: var(--accent); text-decoration: none; font-weight: 750; touch-action: manipulation; }\n    .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }\n    .button:hover { border-color: var(--accent); background: var(--accent-soft); }\n    .button.primary:hover { background: #19664e; }\n    a:focus-visible { outline: 3px solid #8fd4bd; outline-offset: 2px; }\n    @media (max-width: 720px) {\n      main { width: min(100% - 24px, 720px); margin-top: 16px; }\n      header { display: block; }\n      nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }\n      dl { grid-template-columns: 1fr; }\n      .actions { display: grid; }\n    }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"page-context\">\n    <header>\n      <div>\n        <h1>${escapeHtml(headline)}</h1>\n        <p class=\"muted\">${escapeHtml(label(actionLabel, action, '项目操作'))}</p>\n      </div>\n    </header>\n    </div>\n    <section class=\"result\" aria-live=\"polite\">\n      <h2>结果 + 下一步 + 返回上下文</h2>\n      <strong>${escapeHtml(label(resultLabel, resultCode, '未记录'))}</strong>\n      <p>${escapeHtml(row.message || '操作结果已记录。')}</p>\n    </section>\n    <section>\n      <div class=\"detail\">\n        <dl>${rows}</dl>\n      </div>\n      <div class=\"actions\">\n        <a class=\"button primary\" href=\"${escapeHtml(detailHref)}\">返回项目控制台</a>\n        <a class=\"button\" href=\"${escapeHtml(queueHref)}\">查看队列</a>\n        <a class=\"button\" href=\"/webhook/novel-review-list\">审核中心</a>\n        <a class=\"button\" href=\"/webhook/novel-project-list\">项目列表</a>\n      </div>\n    </section>\n  </main>\n</body>\n</html>`;\n\nreturn [{json: {...row, response_html: html, response_status_code: success ? 200 : 409}}];\n"
+      },
+      "id": "code-render-update-director-result-13b",
+      "name": "代码 - 生成保存导演台结果页",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -40,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code || 200 }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-update-director-result-13b",
+      "name": "响应Webhook - 返回保存导演台结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        180,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "novel-director-card-regenerate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-regenerate-director-13b",
+      "name": "Webhook - 重新生成导演台",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        560
+      ],
+      "webhookId": "novel-director-card-regenerate-13b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Novel Director Card Actions.\n// Accepts POST body fields for manual save, regeneration, and chapter start.\n\nconst source = $json || {};\nif (source.query && !source.body) {\n  throw new Error('导演台操作必须通过 POST body 提交，拒绝 GET/query 参数。');\n}\n\nif (!source.body || typeof source.body !== 'object') {\n  throw new Error('导演台操作必须通过 POST body 提交。');\n}\n\nconst body = source.body;\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nfunction normalizeAction(value) {\n  const raw = text(value).toUpperCase();\n  if (['UPDATE', 'SAVE', 'SAVE_CURRENT', 'DIRECTOR_CARD_UPDATE'].includes(raw)) return 'UPDATE_DIRECTOR_CARD';\n  if (['REGENERATE', 'REGEN', 'DIRECTOR_CARD_REGENERATE', 'REGENERATE_DIRECTOR_CARD'].includes(raw)) return 'REGENERATE_DIRECTOR_CARD';\n  if (['START_CHAPTER', 'GENERATE_CHAPTER', 'DIRECTOR_CARD_START_CHAPTER'].includes(raw)) return 'START_CHAPTER_FROM_DIRECTOR';\n  throw new Error(`不支持的导演台操作：${raw || '(empty)'}`);\n}\n\nfunction uuid(value, fieldName, required = true) {\n  const raw = text(value);\n  if (!raw && !required) return '';\n  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {\n    throw new Error(`无效 ${fieldName}：${raw || '(empty)'}`);\n  }\n  return raw;\n}\n\nfunction positiveInt(value, fieldName, required = true) {\n  const raw = text(value);\n  if (!raw && !required) return null;\n  const parsed = Number(raw);\n  if (!Number.isInteger(parsed) || parsed <= 0) {\n    throw new Error(`无效 ${fieldName}：${raw || '(empty)'}`);\n  }\n  return parsed;\n}\n\nfunction parseJson(value, fieldName, required = false) {\n  const raw = text(value);\n  if (!raw && !required) return {};\n  try {\n    const parsed = JSON.parse(raw);\n    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {\n      throw new Error('必须是 JSON 对象');\n    }\n    return parsed;\n  } catch (error) {\n    throw new Error(`${fieldName} 不是合法 JSON：${error.message}`);\n  }\n}\n\nconst action = normalizeAction(body.action || body.director_action || body.card_action);\nconst projectId = uuid(body.project_id || body.id, 'project_id');\nconst directorCardId = uuid(body.director_card_id || body.card_id, 'director_card_id', action !== 'REGENERATE_DIRECTOR_CARD');\nconst chapterNo = positiveInt(body.chapter_no, 'chapter_no', action === 'REGENERATE_DIRECTOR_CARD');\nconst reviewer = text(body.reviewer || 'local_user') || 'local_user';\nconst comment = text(body.comment || body.note);\nconst cardPayload = action === 'UPDATE_DIRECTOR_CARD'\n  ? parseJson(body.card_payload_json || body.card_payload || body.payload, '导演台 JSON', true)\n  : {};\n\nreturn [{\n  json: {\n    action,\n    project_id: projectId,\n    director_card_id: directorCardId,\n    chapter_no: chapterNo,\n    reviewer,\n    comment,\n    card_payload: cardPayload,\n    card_payload_json: JSON.stringify(cardPayload),\n  },\n}];\n"
+      },
+      "id": "code-validate-regenerate-director-13b",
+      "name": "代码 - 校验重新生成导演台",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Enqueue a fresh director planning job for one chapter.\nWITH input AS (\n  SELECT\n    $1::uuid AS project_id,\n    $2::integer AS chapter_no,\n    NULLIF($3, '') AS reviewer,\n    NULLIF($4, '') AS comment\n), outline AS (\n  SELECT o.*\n  FROM novel_chapter_outlines o, input\n  WHERE o.project_id = input.project_id\n    AND o.chapter_no = input.chapter_no\n    AND o.status = 'READY'\n), job AS (\n  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status)\n  SELECT\n    input.project_id,\n    'PLAN_CHAPTER_DIRECTOR',\n    input.chapter_no,\n    jsonb_build_object('requested_by', COALESCE(input.reviewer, 'local_user'), 'trigger_source', 'manual_regenerate', 'comment', input.comment),\n    'PENDING'\n  FROM input\n  WHERE EXISTS (SELECT 1 FROM outline)\n  ON CONFLICT DO NOTHING\n  RETURNING *\n), event AS (\n  INSERT INTO novel_project_events (project_id, outline_id, event_type, actor, comment)\n  SELECT\n    input.project_id,\n    outline.id,\n    'DIRECTOR_CARD_REGENERATE_REQUESTED',\n    COALESCE(input.reviewer, 'local_user'),\n    COALESCE(input.comment, '重新生成导演台')\n  FROM input\n  JOIN outline ON true\n  WHERE EXISTS (SELECT 1 FROM job)\n  RETURNING *\n)\nSELECT\n  EXISTS (SELECT 1 FROM job) AS success,\n  CASE\n    WHEN NOT EXISTS (SELECT 1 FROM outline) THEN 'OUTLINE_NOT_FOUND'\n    WHEN EXISTS (SELECT 1 FROM job) THEN 'DIRECTOR_CARD_REGENERATE_JOB_CREATED'\n    ELSE 'REGENERATE_JOB_ALREADY_EXISTS'\n  END AS result_code,\n  'REGENERATE_DIRECTOR_CARD'::text AS action,\n  input.project_id,\n  (SELECT id FROM outline) AS outline_id,\n  input.chapter_no,\n  (SELECT id FROM job) AS job_id,\n  'PLAN_CHAPTER_DIRECTOR'::text AS job_type,\n  CASE\n    WHEN NOT EXISTS (SELECT 1 FROM outline) THEN '未找到可用于生成导演台的章节大纲。'\n    WHEN EXISTS (SELECT 1 FROM job) THEN '已创建导演台重生成任务。'\n    ELSE '该章节已有待处理或运行中的导演台任务。'\n  END AS message\nFROM input;",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id, $json.chapter_no, $json.reviewer, $json.comment ] }}"
+        }
+      },
+      "id": "postgres-regenerate-director-13b",
+      "name": "数据库 - 创建导演台重生成任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        620,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Render Novel Project Action Result HTML\n// Used by continue writing, approved chapter rewrite, and review reminder resend.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst resultLabel = {\n  BIBLE_JOB_CREATED: '已创建生成设定集任务',\n  OUTLINE_JOB_CREATED: '已创建生成大纲任务',\n  DIRECTOR_JOB_CREATED: '已创建导演台任务',\n  DIRECTOR_CARD_UPDATED: '导演台已保存',\n  DIRECTOR_CARD_REGENERATE_JOB_CREATED: '已创建导演台重生成任务',\n  DIRECTOR_CARD_CHAPTER_JOB_CREATED: '已按导演台创建正文任务',\n  DIRECTOR_CARD_NOT_FOUND: '导演台不存在',\n  DIRECTOR_CARD_NOT_READY: '导演台仍需调整',\n  CHAPTER_JOB_CREATED: '已创建章节生成任务',\n  BIBLE_REGENERATE_JOB_CREATED: '已创建重跑设定集任务',\n  OUTLINE_REGENERATE_JOB_CREATED: '已创建重跑大纲任务',\n  REGENERATE_JOB_ALREADY_EXISTS: '已有重跑任务',\n  PROJECT_COMPLETED: '项目已完结',\n  NEED_REVIEW_BLOCKED: '有章节待审核',\n  ACTIVE_JOB_BLOCKED: '队列仍在推进',\n  FAILED_JOB_BLOCKED: '存在失败任务',\n  PROJECT_PAUSED: '项目已暂停',\n  PROJECT_NOT_FOUND: '项目未找到',\n  REWRITE_JOB_CREATED: '已创建重写任务',\n  REWRITE_JOB_ALREADY_EXISTS: '已有重写任务',\n  REWRITE_WORKER_START_REQUESTED: '已启动重写任务',\n  REWRITE_WORKER_RECOVERED: '已恢复重写任务',\n  REWRITE_JOB_STILL_RUNNING: '重写任务仍在运行',\n  REWRITE_JOB_NOT_STARTABLE: '重写任务不可启动',\n  NOTIFY_JOB_CREATED: '已创建审核提醒任务',\n  NOTIFY_JOB_ALREADY_EXISTS: '已有审核提醒任务',\n  NO_MATCH_OR_INVALID_STATE: '状态不允许执行',\n  BIBLE_UPDATED: '设定集已保存',\n  OUTLINE_UPDATED: '大纲已保存',\n  PROJECT_TARGET_UPDATED: '项目目标已保存',\n  PROJECT_PAUSED: '项目已暂停',\n  PROJECT_RESUMED: '项目已恢复',\n  PROJECT_ALREADY_PAUSED: '项目已经暂停',\n  PROJECT_NOT_PAUSED: '项目未暂停',\n  PROJECT_FAILED_BLOCKED: '项目失败待处理',\n  PROJECT_ARCHIVED: '项目已归档',\n  PROJECT_ALREADY_ARCHIVED: '项目已经归档',\n  PROJECT_NOT_ARCHIVED: '项目未归档',\n  PROJECT_RESTORED: '项目已恢复',\n  CONFIRM_TITLE_MISMATCH: '确认项目名不匹配',\n  RUNNING_JOB_BLOCKED: '仍有任务运行中',\n  CHAPTER_MANUAL_EDIT_SAVED: '正文已保存',\n  MANUAL_CHAPTER_CANDIDATE_CREATED: '已创建人工编辑候选稿',\n  SUPERSEDED_CHAPTER_VERSION: '章节版本已过期',\n  MANUAL_REVIEW_CANDIDATE_CREATED: '已保存人工改稿并送审',\n  MANUAL_REVIEW_APPROVED: '人工改稿已直接通过',\n  INVALID_MANUAL_REVIEW_DECISION: '人工改稿决策无效',\n  ACTIVE_CHAPTER_JOB_BLOCKED: '同章任务仍在处理',\n  INVALID_CHAPTER_BODY: '正文无效',\n  INVALID_PROJECT_TARGET: '项目目标无效',\n  TARGET_BELOW_PROGRESS: '目标小于当前进度',\n  BIBLE_REQUIRED: '需要先生成设定集',\n  INVALID_REGENERATE_STEP: '重跑类型无效',\n  INVALID_OUTLINE_INPUT: '大纲输入无效',\n  OUTLINE_NOT_FOUND: '大纲不存在',\n  INVALID_PROJECT_ACTION: '项目操作无效',\n  FACT_CREATED: '事实已新增',\n  FACT_UPDATED: '事实已保存',\n  FACT_ACTIVATED: '事实已激活',\n  FACT_DEACTIVATED: '事实已失效',\n  FACTS_CLEARED: '失效事实已清理',\n  STALE_CHAPTERS_CLEARED: '过期历史章节已清理',\n  STALE_CHAPTERS_NONE: '没有过期历史章节',\n  RUNNING_STALE_CHAPTER_JOB_BLOCKED: '过期章节仍有关联任务运行',\n  FACT_NOT_FOUND: '事实不存在',\n  INVALID_FACT_ACTION: '事实操作无效',\n  INVALID_FACT_INPUT: '事实内容无效',\n};\n\nconst actionLabel = {\n  CONTINUE_PROJECT: '继续写作',\n  REQUEST_APPROVED_REWRITE: '申请重写此章',\n  START_REWRITE_WORKER: '启动待执行重写',\n  REGENERATE_BIBLE: '重新生成设定集',\n  REGENERATE_OUTLINE: '重新生成大纲',\n  UPDATE_DIRECTOR_CARD: '编辑导演台',\n  REGENERATE_DIRECTOR_CARD: '重新生成导演台',\n  START_CHAPTER_FROM_DIRECTOR: '按导演台生成正文',\n  RESEND_REVIEW_NOTIFICATION: '重新发送审核提醒',\n  UPDATE_BIBLE: '编辑设定集',\n  UPDATE_OUTLINE: '编辑大纲',\n  UPDATE_PROJECT_TARGET: '修改项目目标',\n  PAUSE_PROJECT: '暂停项目',\n  RESUME_PROJECT: '恢复项目',\n  TOGGLE_PROJECT_PAUSE: '暂停或恢复项目',\n  MANUAL_EDIT_CHAPTER: '手动编辑正文',\n  MANUAL_EDIT_REVIEW_CHAPTER: '审核中人工改稿',\n  ARCHIVE_PROJECT: '归档项目',\n  RESTORE_PROJECT: '恢复归档项目',\n  CREATE_FACT: '新增人工事实',\n  UPDATE_FACT: '编辑事实',\n  ACTIVATE_FACT: '激活事实',\n  DEACTIVATE_FACT: '设为失效事实',\n  CLEAR_INACTIVE_FACTS: '清理失效事实',\n  CLEAR_STALE_CHAPTERS: '清理过期历史章节',\n  MANAGE_FACT: '事实库操作',\n};\n\nconst projectStatusLabel = {\n  CREATED: '待生成设定集',\n  BIBLE_READY: '设定集已完成',\n  OUTLINE_READY: '大纲已完成',\n  WRITING: '写作中',\n  REVIEWING: '待人工审核',\n  PAUSED: '已暂停',\n  ARCHIVED: '已归档',\n  COMPLETED: '已完结',\n  FAILED: '已失败',\n};\n\nconst jobTypeLabel = {\n  GENERATE_BIBLE: '生成设定集',\n  GENERATE_OUTLINE: '生成大纲',\n  PLAN_CHAPTER_DIRECTOR: '导演台规划',\n  GENERATE_CHAPTER: '生成章节',\n  REVIEW_CHAPTER: '智能审稿',\n  REWRITE_CHAPTER: '重写章节',\n  NOTIFY_REVIEW: '发送审核提醒',\n};\n\nconst chapterStatusLabel = {\n  NEED_REVIEW: '待人工审核',\n  APPROVED: '已批准',\n  PUBLISHED: '已发布',\n  REWRITE_REQUESTED: '已要求重写',\n  SUPERSEDED: '已被新版本替代',\n  REJECTED: '已拒绝',\n  FAILED: '已失败',\n};\n\nfunction label(map, value, fallback) {\n  if (!value) return fallback;\n  return map[value] || fallback;\n}\n\nconst row = $json || {};\nconst success = row.success === true || row.success === 'true';\nconst projectId = row.project_id || '';\nconst chapterId = row.chapter_id || '';\nconst resultCode = row.result_code || 'UNKNOWN';\nconst action = row.action || '';\nconst headline = success ? '操作已提交' : '操作未执行';\nconst detailHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-project-list';\nconst queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';\n\nconst rows = [\n  ['操作', label(actionLabel, action, '项目操作')],\n  ['结果', label(resultLabel, resultCode, '未记录')],\n  ['说明', row.message || '操作结果已记录。'],\n  ['项目状态', label(projectStatusLabel, row.project_status, row.project_status || '未记录')],\n  ['目标章节', row.target_total_chapters || '-'],\n  ['每章字数', row.target_words_per_chapter || '-'],\n  ['章节序号', row.chapter_no || '-'],\n  ['章节状态', label(chapterStatusLabel, row.chapter_status, row.chapter_status || '未记录')],\n  ['任务类型', label(jobTypeLabel, row.job_type, row.job_type || '未创建任务')],\n  ['任务编号', row.job_id || '-'],\n  ['设定集编号', row.bible_id || '-'],\n  ['大纲编号', row.outline_id || '-'],\n  ['章节编号', chapterId || '-'],\n  ['取消任务数', row.cancelled_job_count || '-'],\n  ['清理章节数', row.deleted_chapter_count || '-'],\n  ['失效事实数', row.inactivated_fact_count || '-'],\n].map(([key, value]) => `\n  <dt>${escapeHtml(key)}</dt>\n  <dd translate=\"${key.endsWith('编号') ? 'no' : 'yes'}\">${escapeHtml(value || '-')}</dd>\n`).join('');\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <meta name=\"theme-color\" content=\"#f6f7f9\" />\n  <title>${escapeHtml(headline)}</title>\n  <style>\n    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d8dee8; --accent:#1f7a5c; --accent-soft:#edf8f3; --danger:#b42318; --danger-soft:#fff0ee; }\n    * { box-sizing: border-box; }\n    body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; -webkit-tap-highlight-color: rgba(31, 122, 92, .14); }\n    main { width: min(880px, calc(100vw - 32px)); margin: 24px auto 48px; }\n    header { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 18px; }\n    .page-context { position: sticky; top: 0; z-index: 70; margin-bottom: 18px; padding: 14px 0 12px; background: rgba(246, 247, 249, .97); border-bottom: 1px solid rgba(216, 222, 232, .92); backdrop-filter: blur(10px); }\n    .page-context header { margin-bottom: 0; }\n    h1 { margin: 0; font-size: 28px; text-wrap: balance; }\n    .muted { color: var(--muted); margin: 6px 0 0; line-height: 1.6; }\n    a { color: var(--accent); text-decoration: none; font-weight: 650; }\n    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }\n    .result { padding: 18px; border-color: ${success ? '#b9e3d4' : '#f2b8b5'}; background: ${success ? 'var(--accent-soft)' : 'var(--danger-soft)'}; }\n    .detail { padding: 16px; }\n    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px 12px; margin: 0; }\n    dt { color: var(--muted); }\n    dd { margin: 0; min-width: 0; word-break: break-word; }\n    .actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 16px; border-top: 1px solid var(--line); }\n    .button { min-height: 42px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 14px; background: #fff; color: var(--accent); text-decoration: none; font-weight: 750; touch-action: manipulation; }\n    .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }\n    .button:hover { border-color: var(--accent); background: var(--accent-soft); }\n    .button.primary:hover { background: #19664e; }\n    a:focus-visible { outline: 3px solid #8fd4bd; outline-offset: 2px; }\n    @media (max-width: 720px) {\n      main { width: min(100% - 24px, 720px); margin-top: 16px; }\n      header { display: block; }\n      nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }\n      dl { grid-template-columns: 1fr; }\n      .actions { display: grid; }\n    }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"page-context\">\n    <header>\n      <div>\n        <h1>${escapeHtml(headline)}</h1>\n        <p class=\"muted\">${escapeHtml(label(actionLabel, action, '项目操作'))}</p>\n      </div>\n    </header>\n    </div>\n    <section class=\"result\" aria-live=\"polite\">\n      <h2>结果 + 下一步 + 返回上下文</h2>\n      <strong>${escapeHtml(label(resultLabel, resultCode, '未记录'))}</strong>\n      <p>${escapeHtml(row.message || '操作结果已记录。')}</p>\n    </section>\n    <section>\n      <div class=\"detail\">\n        <dl>${rows}</dl>\n      </div>\n      <div class=\"actions\">\n        <a class=\"button primary\" href=\"${escapeHtml(detailHref)}\">返回项目控制台</a>\n        <a class=\"button\" href=\"${escapeHtml(queueHref)}\">查看队列</a>\n        <a class=\"button\" href=\"/webhook/novel-review-list\">审核中心</a>\n        <a class=\"button\" href=\"/webhook/novel-project-list\">项目列表</a>\n      </div>\n    </section>\n  </main>\n</body>\n</html>`;\n\nreturn [{json: {...row, response_html: html, response_status_code: success ? 200 : 409}}];\n"
+      },
+      "id": "code-render-regenerate-director-result-13b",
+      "name": "代码 - 生成重新生成导演台结果页",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code || 200 }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-regenerate-director-result-13b",
+      "name": "响应Webhook - 返回重新生成导演台结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1060,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "novel-director-card-start-chapter",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-start-chapter-director-13b",
+      "name": "Webhook - 按导演台生成正文",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        760
+      ],
+      "webhookId": "novel-director-card-start-chapter-13b"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Validate Novel Director Card Actions.\n// Accepts POST body fields for manual save, regeneration, and chapter start.\n\nconst source = $json || {};\nif (source.query && !source.body) {\n  throw new Error('导演台操作必须通过 POST body 提交，拒绝 GET/query 参数。');\n}\n\nif (!source.body || typeof source.body !== 'object') {\n  throw new Error('导演台操作必须通过 POST body 提交。');\n}\n\nconst body = source.body;\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nfunction normalizeAction(value) {\n  const raw = text(value).toUpperCase();\n  if (['UPDATE', 'SAVE', 'SAVE_CURRENT', 'DIRECTOR_CARD_UPDATE'].includes(raw)) return 'UPDATE_DIRECTOR_CARD';\n  if (['REGENERATE', 'REGEN', 'DIRECTOR_CARD_REGENERATE', 'REGENERATE_DIRECTOR_CARD'].includes(raw)) return 'REGENERATE_DIRECTOR_CARD';\n  if (['START_CHAPTER', 'GENERATE_CHAPTER', 'DIRECTOR_CARD_START_CHAPTER'].includes(raw)) return 'START_CHAPTER_FROM_DIRECTOR';\n  throw new Error(`不支持的导演台操作：${raw || '(empty)'}`);\n}\n\nfunction uuid(value, fieldName, required = true) {\n  const raw = text(value);\n  if (!raw && !required) return '';\n  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {\n    throw new Error(`无效 ${fieldName}：${raw || '(empty)'}`);\n  }\n  return raw;\n}\n\nfunction positiveInt(value, fieldName, required = true) {\n  const raw = text(value);\n  if (!raw && !required) return null;\n  const parsed = Number(raw);\n  if (!Number.isInteger(parsed) || parsed <= 0) {\n    throw new Error(`无效 ${fieldName}：${raw || '(empty)'}`);\n  }\n  return parsed;\n}\n\nfunction parseJson(value, fieldName, required = false) {\n  const raw = text(value);\n  if (!raw && !required) return {};\n  try {\n    const parsed = JSON.parse(raw);\n    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {\n      throw new Error('必须是 JSON 对象');\n    }\n    return parsed;\n  } catch (error) {\n    throw new Error(`${fieldName} 不是合法 JSON：${error.message}`);\n  }\n}\n\nconst action = normalizeAction(body.action || body.director_action || body.card_action);\nconst projectId = uuid(body.project_id || body.id, 'project_id');\nconst directorCardId = uuid(body.director_card_id || body.card_id, 'director_card_id', action !== 'REGENERATE_DIRECTOR_CARD');\nconst chapterNo = positiveInt(body.chapter_no, 'chapter_no', action === 'REGENERATE_DIRECTOR_CARD');\nconst reviewer = text(body.reviewer || 'local_user') || 'local_user';\nconst comment = text(body.comment || body.note);\nconst cardPayload = action === 'UPDATE_DIRECTOR_CARD'\n  ? parseJson(body.card_payload_json || body.card_payload || body.payload, '导演台 JSON', true)\n  : {};\n\nreturn [{\n  json: {\n    action,\n    project_id: projectId,\n    director_card_id: directorCardId,\n    chapter_no: chapterNo,\n    reviewer,\n    comment,\n    card_payload: cardPayload,\n    card_payload_json: JSON.stringify(cardPayload),\n  },\n}];\n"
+      },
+      "id": "code-validate-start-chapter-director-13b",
+      "name": "代码 - 校验按导演台生成正文",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Enqueue chapter generation from a ready director card.\nWITH input AS (\n  SELECT\n    $1::uuid AS project_id,\n    $2::uuid AS director_card_id,\n    NULLIF($3, '') AS reviewer,\n    NULLIF($4, '') AS comment\n), card AS (\n  SELECT d.*\n  FROM novel_chapter_director_cards d, input\n  WHERE d.project_id = input.project_id\n    AND d.id = input.director_card_id\n    AND d.is_current = TRUE\n), job AS (\n  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status)\n  SELECT\n    card.project_id,\n    'GENERATE_CHAPTER',\n    card.chapter_no,\n    jsonb_build_object('director_card_id', card.id, 'requested_by', COALESCE((SELECT reviewer FROM input), 'local_user'), 'trigger_source', 'director_manual_start', 'comment', (SELECT comment FROM input)),\n    'PENDING'\n  FROM card\n  WHERE card.status = 'READY'\n    AND NOT EXISTS (\n      SELECT 1\n      FROM novel_chapters c\n      WHERE c.project_id = card.project_id\n        AND c.chapter_no = card.chapter_no\n        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')\n    )\n  ON CONFLICT DO NOTHING\n  RETURNING *\n), event AS (\n  INSERT INTO novel_project_events (project_id, outline_id, event_type, actor, comment, after_payload)\n  SELECT\n    card.project_id,\n    card.outline_id,\n    'DIRECTOR_CARD_CHAPTER_JOB_CREATED',\n    COALESCE((SELECT reviewer FROM input), 'local_user'),\n    COALESCE((SELECT comment FROM input), '按导演台生成正文'),\n    jsonb_build_object('director_card_id', card.id, 'chapter_job_id', (SELECT id FROM job LIMIT 1))\n  FROM card\n  WHERE EXISTS (SELECT 1 FROM job)\n  RETURNING *\n)\nSELECT\n  EXISTS (SELECT 1 FROM job) AS success,\n  CASE\n    WHEN NOT EXISTS (SELECT 1 FROM card) THEN 'DIRECTOR_CARD_NOT_FOUND'\n    WHEN (SELECT status FROM card LIMIT 1) <> 'READY' THEN 'DIRECTOR_CARD_NOT_READY'\n    WHEN EXISTS (\n      SELECT 1\n      FROM novel_chapters c\n      JOIN card ON card.project_id = c.project_id AND card.chapter_no = c.chapter_no\n      WHERE c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')\n    ) THEN 'ACTIVE_CHAPTER_JOB_BLOCKED'\n    WHEN EXISTS (SELECT 1 FROM job) THEN 'DIRECTOR_CARD_CHAPTER_JOB_CREATED'\n    ELSE 'ACTIVE_CHAPTER_JOB_BLOCKED'\n  END AS result_code,\n  'START_CHAPTER_FROM_DIRECTOR'::text AS action,\n  COALESCE((SELECT project_id FROM card), (SELECT project_id FROM input)) AS project_id,\n  (SELECT id FROM card) AS director_card_id,\n  (SELECT outline_id FROM card) AS outline_id,\n  (SELECT chapter_no FROM card) AS chapter_no,\n  (SELECT status FROM card) AS director_status,\n  (SELECT version FROM card) AS director_version,\n  (SELECT id FROM job) AS job_id,\n  'GENERATE_CHAPTER'::text AS job_type,\n  CASE\n    WHEN NOT EXISTS (SELECT 1 FROM card) THEN '没有找到当前导演台。'\n    WHEN (SELECT status FROM card LIMIT 1) <> 'READY' THEN '导演台仍需调整，不能启动正文生成。'\n    WHEN EXISTS (\n      SELECT 1\n      FROM novel_chapters c\n      JOIN card ON card.project_id = c.project_id AND card.chapter_no = c.chapter_no\n      WHERE c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')\n    ) THEN '同章已有正文版本或候选稿，不能重复启动正文生成。'\n    WHEN EXISTS (SELECT 1 FROM job) THEN '已按当前导演台创建正文生成任务。'\n    ELSE '同章已有正文生成任务正在等待或运行。'\n  END AS message;",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id, $json.director_card_id, $json.reviewer, $json.comment ] }}"
+        }
+      },
+      "id": "postgres-start-chapter-director-13b",
+      "name": "数据库 - 按导演台创建正文任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        620,
+        760
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Render Novel Project Action Result HTML\n// Used by continue writing, approved chapter rewrite, and review reminder resend.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nconst resultLabel = {\n  BIBLE_JOB_CREATED: '已创建生成设定集任务',\n  OUTLINE_JOB_CREATED: '已创建生成大纲任务',\n  DIRECTOR_JOB_CREATED: '已创建导演台任务',\n  DIRECTOR_CARD_UPDATED: '导演台已保存',\n  DIRECTOR_CARD_REGENERATE_JOB_CREATED: '已创建导演台重生成任务',\n  DIRECTOR_CARD_CHAPTER_JOB_CREATED: '已按导演台创建正文任务',\n  DIRECTOR_CARD_NOT_FOUND: '导演台不存在',\n  DIRECTOR_CARD_NOT_READY: '导演台仍需调整',\n  CHAPTER_JOB_CREATED: '已创建章节生成任务',\n  BIBLE_REGENERATE_JOB_CREATED: '已创建重跑设定集任务',\n  OUTLINE_REGENERATE_JOB_CREATED: '已创建重跑大纲任务',\n  REGENERATE_JOB_ALREADY_EXISTS: '已有重跑任务',\n  PROJECT_COMPLETED: '项目已完结',\n  NEED_REVIEW_BLOCKED: '有章节待审核',\n  ACTIVE_JOB_BLOCKED: '队列仍在推进',\n  FAILED_JOB_BLOCKED: '存在失败任务',\n  PROJECT_PAUSED: '项目已暂停',\n  PROJECT_NOT_FOUND: '项目未找到',\n  REWRITE_JOB_CREATED: '已创建重写任务',\n  REWRITE_JOB_ALREADY_EXISTS: '已有重写任务',\n  REWRITE_WORKER_START_REQUESTED: '已启动重写任务',\n  REWRITE_WORKER_RECOVERED: '已恢复重写任务',\n  REWRITE_JOB_STILL_RUNNING: '重写任务仍在运行',\n  REWRITE_JOB_NOT_STARTABLE: '重写任务不可启动',\n  NOTIFY_JOB_CREATED: '已创建审核提醒任务',\n  NOTIFY_JOB_ALREADY_EXISTS: '已有审核提醒任务',\n  NO_MATCH_OR_INVALID_STATE: '状态不允许执行',\n  BIBLE_UPDATED: '设定集已保存',\n  OUTLINE_UPDATED: '大纲已保存',\n  PROJECT_TARGET_UPDATED: '项目目标已保存',\n  PROJECT_PAUSED: '项目已暂停',\n  PROJECT_RESUMED: '项目已恢复',\n  PROJECT_ALREADY_PAUSED: '项目已经暂停',\n  PROJECT_NOT_PAUSED: '项目未暂停',\n  PROJECT_FAILED_BLOCKED: '项目失败待处理',\n  PROJECT_ARCHIVED: '项目已归档',\n  PROJECT_ALREADY_ARCHIVED: '项目已经归档',\n  PROJECT_NOT_ARCHIVED: '项目未归档',\n  PROJECT_RESTORED: '项目已恢复',\n  CONFIRM_TITLE_MISMATCH: '确认项目名不匹配',\n  RUNNING_JOB_BLOCKED: '仍有任务运行中',\n  CHAPTER_MANUAL_EDIT_SAVED: '正文已保存',\n  MANUAL_CHAPTER_CANDIDATE_CREATED: '已创建人工编辑候选稿',\n  SUPERSEDED_CHAPTER_VERSION: '章节版本已过期',\n  MANUAL_REVIEW_CANDIDATE_CREATED: '已保存人工改稿并送审',\n  MANUAL_REVIEW_APPROVED: '人工改稿已直接通过',\n  INVALID_MANUAL_REVIEW_DECISION: '人工改稿决策无效',\n  ACTIVE_CHAPTER_JOB_BLOCKED: '同章任务仍在处理',\n  INVALID_CHAPTER_BODY: '正文无效',\n  INVALID_PROJECT_TARGET: '项目目标无效',\n  TARGET_BELOW_PROGRESS: '目标小于当前进度',\n  BIBLE_REQUIRED: '需要先生成设定集',\n  INVALID_REGENERATE_STEP: '重跑类型无效',\n  INVALID_OUTLINE_INPUT: '大纲输入无效',\n  OUTLINE_NOT_FOUND: '大纲不存在',\n  INVALID_PROJECT_ACTION: '项目操作无效',\n  FACT_CREATED: '事实已新增',\n  FACT_UPDATED: '事实已保存',\n  FACT_ACTIVATED: '事实已激活',\n  FACT_DEACTIVATED: '事实已失效',\n  FACTS_CLEARED: '失效事实已清理',\n  STALE_CHAPTERS_CLEARED: '过期历史章节已清理',\n  STALE_CHAPTERS_NONE: '没有过期历史章节',\n  RUNNING_STALE_CHAPTER_JOB_BLOCKED: '过期章节仍有关联任务运行',\n  FACT_NOT_FOUND: '事实不存在',\n  INVALID_FACT_ACTION: '事实操作无效',\n  INVALID_FACT_INPUT: '事实内容无效',\n};\n\nconst actionLabel = {\n  CONTINUE_PROJECT: '继续写作',\n  REQUEST_APPROVED_REWRITE: '申请重写此章',\n  START_REWRITE_WORKER: '启动待执行重写',\n  REGENERATE_BIBLE: '重新生成设定集',\n  REGENERATE_OUTLINE: '重新生成大纲',\n  UPDATE_DIRECTOR_CARD: '编辑导演台',\n  REGENERATE_DIRECTOR_CARD: '重新生成导演台',\n  START_CHAPTER_FROM_DIRECTOR: '按导演台生成正文',\n  RESEND_REVIEW_NOTIFICATION: '重新发送审核提醒',\n  UPDATE_BIBLE: '编辑设定集',\n  UPDATE_OUTLINE: '编辑大纲',\n  UPDATE_PROJECT_TARGET: '修改项目目标',\n  PAUSE_PROJECT: '暂停项目',\n  RESUME_PROJECT: '恢复项目',\n  TOGGLE_PROJECT_PAUSE: '暂停或恢复项目',\n  MANUAL_EDIT_CHAPTER: '手动编辑正文',\n  MANUAL_EDIT_REVIEW_CHAPTER: '审核中人工改稿',\n  ARCHIVE_PROJECT: '归档项目',\n  RESTORE_PROJECT: '恢复归档项目',\n  CREATE_FACT: '新增人工事实',\n  UPDATE_FACT: '编辑事实',\n  ACTIVATE_FACT: '激活事实',\n  DEACTIVATE_FACT: '设为失效事实',\n  CLEAR_INACTIVE_FACTS: '清理失效事实',\n  CLEAR_STALE_CHAPTERS: '清理过期历史章节',\n  MANAGE_FACT: '事实库操作',\n};\n\nconst projectStatusLabel = {\n  CREATED: '待生成设定集',\n  BIBLE_READY: '设定集已完成',\n  OUTLINE_READY: '大纲已完成',\n  WRITING: '写作中',\n  REVIEWING: '待人工审核',\n  PAUSED: '已暂停',\n  ARCHIVED: '已归档',\n  COMPLETED: '已完结',\n  FAILED: '已失败',\n};\n\nconst jobTypeLabel = {\n  GENERATE_BIBLE: '生成设定集',\n  GENERATE_OUTLINE: '生成大纲',\n  PLAN_CHAPTER_DIRECTOR: '导演台规划',\n  GENERATE_CHAPTER: '生成章节',\n  REVIEW_CHAPTER: '智能审稿',\n  REWRITE_CHAPTER: '重写章节',\n  NOTIFY_REVIEW: '发送审核提醒',\n};\n\nconst chapterStatusLabel = {\n  NEED_REVIEW: '待人工审核',\n  APPROVED: '已批准',\n  PUBLISHED: '已发布',\n  REWRITE_REQUESTED: '已要求重写',\n  SUPERSEDED: '已被新版本替代',\n  REJECTED: '已拒绝',\n  FAILED: '已失败',\n};\n\nfunction label(map, value, fallback) {\n  if (!value) return fallback;\n  return map[value] || fallback;\n}\n\nconst row = $json || {};\nconst success = row.success === true || row.success === 'true';\nconst projectId = row.project_id || '';\nconst chapterId = row.chapter_id || '';\nconst resultCode = row.result_code || 'UNKNOWN';\nconst action = row.action || '';\nconst headline = success ? '操作已提交' : '操作未执行';\nconst detailHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-project-list';\nconst queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';\n\nconst rows = [\n  ['操作', label(actionLabel, action, '项目操作')],\n  ['结果', label(resultLabel, resultCode, '未记录')],\n  ['说明', row.message || '操作结果已记录。'],\n  ['项目状态', label(projectStatusLabel, row.project_status, row.project_status || '未记录')],\n  ['目标章节', row.target_total_chapters || '-'],\n  ['每章字数', row.target_words_per_chapter || '-'],\n  ['章节序号', row.chapter_no || '-'],\n  ['章节状态', label(chapterStatusLabel, row.chapter_status, row.chapter_status || '未记录')],\n  ['任务类型', label(jobTypeLabel, row.job_type, row.job_type || '未创建任务')],\n  ['任务编号', row.job_id || '-'],\n  ['设定集编号', row.bible_id || '-'],\n  ['大纲编号', row.outline_id || '-'],\n  ['章节编号', chapterId || '-'],\n  ['取消任务数', row.cancelled_job_count || '-'],\n  ['清理章节数', row.deleted_chapter_count || '-'],\n  ['失效事实数', row.inactivated_fact_count || '-'],\n].map(([key, value]) => `\n  <dt>${escapeHtml(key)}</dt>\n  <dd translate=\"${key.endsWith('编号') ? 'no' : 'yes'}\">${escapeHtml(value || '-')}</dd>\n`).join('');\n\nconst html = `<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <meta name=\"theme-color\" content=\"#f6f7f9\" />\n  <title>${escapeHtml(headline)}</title>\n  <style>\n    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d8dee8; --accent:#1f7a5c; --accent-soft:#edf8f3; --danger:#b42318; --danger-soft:#fff0ee; }\n    * { box-sizing: border-box; }\n    body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; -webkit-tap-highlight-color: rgba(31, 122, 92, .14); }\n    main { width: min(880px, calc(100vw - 32px)); margin: 24px auto 48px; }\n    header { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 18px; }\n    .page-context { position: sticky; top: 0; z-index: 70; margin-bottom: 18px; padding: 14px 0 12px; background: rgba(246, 247, 249, .97); border-bottom: 1px solid rgba(216, 222, 232, .92); backdrop-filter: blur(10px); }\n    .page-context header { margin-bottom: 0; }\n    h1 { margin: 0; font-size: 28px; text-wrap: balance; }\n    .muted { color: var(--muted); margin: 6px 0 0; line-height: 1.6; }\n    a { color: var(--accent); text-decoration: none; font-weight: 650; }\n    section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }\n    .result { padding: 18px; border-color: ${success ? '#b9e3d4' : '#f2b8b5'}; background: ${success ? 'var(--accent-soft)' : 'var(--danger-soft)'}; }\n    .detail { padding: 16px; }\n    dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px 12px; margin: 0; }\n    dt { color: var(--muted); }\n    dd { margin: 0; min-width: 0; word-break: break-word; }\n    .actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 16px; border-top: 1px solid var(--line); }\n    .button { min-height: 42px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 14px; background: #fff; color: var(--accent); text-decoration: none; font-weight: 750; touch-action: manipulation; }\n    .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }\n    .button:hover { border-color: var(--accent); background: var(--accent-soft); }\n    .button.primary:hover { background: #19664e; }\n    a:focus-visible { outline: 3px solid #8fd4bd; outline-offset: 2px; }\n    @media (max-width: 720px) {\n      main { width: min(100% - 24px, 720px); margin-top: 16px; }\n      header { display: block; }\n      nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }\n      dl { grid-template-columns: 1fr; }\n      .actions { display: grid; }\n    }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"page-context\">\n    <header>\n      <div>\n        <h1>${escapeHtml(headline)}</h1>\n        <p class=\"muted\">${escapeHtml(label(actionLabel, action, '项目操作'))}</p>\n      </div>\n    </header>\n    </div>\n    <section class=\"result\" aria-live=\"polite\">\n      <h2>结果 + 下一步 + 返回上下文</h2>\n      <strong>${escapeHtml(label(resultLabel, resultCode, '未记录'))}</strong>\n      <p>${escapeHtml(row.message || '操作结果已记录。')}</p>\n    </section>\n    <section>\n      <div class=\"detail\">\n        <dl>${rows}</dl>\n      </div>\n      <div class=\"actions\">\n        <a class=\"button primary\" href=\"${escapeHtml(detailHref)}\">返回项目控制台</a>\n        <a class=\"button\" href=\"${escapeHtml(queueHref)}\">查看队列</a>\n        <a class=\"button\" href=\"/webhook/novel-review-list\">审核中心</a>\n        <a class=\"button\" href=\"/webhook/novel-project-list\">项目列表</a>\n      </div>\n    </section>\n  </main>\n</body>\n</html>`;\n\nreturn [{json: {...row, response_html: html, response_status_code: success ? 200 : 409}}];\n"
+      },
+      "id": "code-render-start-chapter-director-result-13b",
+      "name": "代码 - 生成按导演台生成正文结果页",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.response_html }}",
+        "options": {
+          "responseCode": "={{ $json.response_status_code || 200 }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-start-chapter-director-result-13b",
+      "name": "响应Webhook - 返回按导演台生成正文结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1060,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "content": "领取 `PLAN_CHAPTER_DIRECTOR`，读取 Bible、大纲、前后章节、连续性事实和伏笔账本，生成短 JSON 导演台；通过质量闸门后自动创建 `GENERATE_CHAPTER(PENDING)`。",
+        "height": 180,
+        "width": 360,
+        "color": 4
+      },
+      "id": "note-director-13b",
+      "name": "说明 - 导演台规划",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -920,
+        -420
+      ]
+    }
+  ],
+  "connections": {
+    "手动触发": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取PLAN_CHAPTER_DIRECTOR任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "触发器 - 后台执行导演台规划": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 读取导演台上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取PLAN_CHAPTER_DIRECTOR任务": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 读取导演台上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 读取导演台上下文": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建导演台 GLM请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建导演台 GLM请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 调用GLM生成导演台",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 调用GLM生成导演台": {
+      "main": [
+        [
+          {
+            "node": "代码 - 合并导演台 GLM响应上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 合并导演台 GLM响应上下文": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析导演台 GLM响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析导演台 GLM响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 记录导演台 AI调用",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 记录导演台 AI调用": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 取消旧当前导演台版本",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 取消旧当前导演台版本": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 保存导演台并按闸门排正文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 保存导演台并按闸门排正文": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记导演台任务成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 前端立即生成导演台": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验前端生成导演台",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验前端生成导演台": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 前端领取PLAN_CHAPTER_DIRECTOR任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 前端领取PLAN_CHAPTER_DIRECTOR任务": {
+      "main": [
+        [
+          {
+            "node": "条件判断 - 前端导演台任务已领取",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "条件判断 - 前端导演台任务已领取": {
+      "main": [
+        [
+          {
+            "node": "代码 - 生成前端导演台生成结果页",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "执行子流程 - 异步生成导演台",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "代码 - 生成前端导演台生成结果页",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 生成前端导演台生成结果页": {
+      "main": [
+        [
+          {
+            "node": "响应Webhook - 返回导演台生成结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 保存导演台": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验保存导演台",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验保存导演台": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 取消旧当前手动导演台版本",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 取消旧当前手动导演台版本": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 保存手动导演台版本",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 保存手动导演台版本": {
+      "main": [
+        [
+          {
+            "node": "代码 - 生成保存导演台结果页",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 生成保存导演台结果页": {
+      "main": [
+        [
+          {
+            "node": "响应Webhook - 返回保存导演台结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 重新生成导演台": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验重新生成导演台",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验重新生成导演台": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 创建导演台重生成任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 创建导演台重生成任务": {
+      "main": [
+        [
+          {
+            "node": "代码 - 生成重新生成导演台结果页",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 生成重新生成导演台结果页": {
+      "main": [
+        [
+          {
+            "node": "响应Webhook - 返回重新生成导演台结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 按导演台生成正文": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验按导演台生成正文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验按导演台生成正文": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 按导演台创建正文任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 按导演台创建正文任务": {
+      "main": [
+        [
+          {
+            "node": "代码 - 生成按导演台生成正文结果页",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 生成按导演台生成正文结果页": {
+      "main": [
+        [
+          {
+            "node": "响应Webhook - 返回按导演台生成正文结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "novelDirectorV1Workflow13B-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "description": "Novel director workflow generated from project SQL/code files."
+}

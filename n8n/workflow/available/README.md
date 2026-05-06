@@ -11,6 +11,52 @@
 5. `09_douyin_semiauto_publish_workflow.json`：已通过视频的抖音半自动发布，生成发布包并推送微信提醒。
 6. `10_auto_recovery_workflow.json`：生成中任务自动巡检，每 5 分钟扫描超时任务并按阶段自动恢复。
 
+## 小说工作流 V1
+
+当前小说工作流已跑通“项目创建 -> Bible -> 大纲 -> 导演台 -> 候选章节 -> AI 审稿 -> 人工审核 -> 下一章导演台任务”，并已补齐重写、审核提醒和自动恢复。
+
+使用顺序：
+
+1. `11_novel_center_workflow.json`：小说工作台、项目列表、创建页和项目控制台，`GET /webhook/novel-center` 展示当前待办和需要处理的项目；`GET /webhook/novel-project-list` 展示完整项目列表、筛选和项目级跳转；`GET /webhook/novel-project-new` 展示独立创建表单；`GET /webhook/novel-project-detail?project_id=...` 展示设定集、大纲与目录、章节正文与版本、审稿报告、人工审核记录、连续性事实、模型调用日志、运行日志、失败原因、项目操作记录和全文 Markdown 导出；`POST /webhook/novel-project-create` 创建项目并写入 `GENERATE_BIBLE(PENDING)`，浏览器提交后返回中文结果页，解释“待生成设定集”表示任务已排队但内容尚未生成，并提供“立即生成设定集”“查看项目控制台/查看队列”入口；项目控制台还提供立即生成设定集、立即生成大纲、排队下一步、正式章节重写申请、审核提醒重发、编辑设定集、编辑大纲、修改项目目标、暂停或恢复项目等安全 POST 操作。
+2. `12_novel_bible_workflow.json`：手动执行可领取任意 `GENERATE_BIBLE`；浏览器可提交 `POST /webhook/novel-generate-bible-now` 领取当前项目的 `GENERATE_BIBLE(PENDING)`。两条链路都会调用 GLM，写入 `novel_ai_runs` 和 `novel_bibles`，并创建 `GENERATE_OUTLINE(PENDING)`。
+3. `13_novel_outline_workflow.json`：手动执行可领取任意 `GENERATE_OUTLINE`；浏览器可提交 `POST /webhook/novel-generate-outline-now` 领取当前项目的 `GENERATE_OUTLINE(PENDING)`。两条链路都会调用 GLM，批量写入 `novel_chapter_outlines(READY)`，并创建第 1 章 `PLAN_CHAPTER_DIRECTOR(PENDING)`。
+4. `13b_novel_director_workflow.json`：手动执行可领取任意 `PLAN_CHAPTER_DIRECTOR`；浏览器可提交 `POST /webhook/novel-generate-director-now`，也可在项目控制台编辑、重生成或按当前导演台启动正文。导演台只写短 JSON，检查因果、动机、连续性、伏笔和分段计划；通过质量闸门才创建 `GENERATE_CHAPTER(PENDING)`。
+5. `14_novel_chapter_workflow.json`：手动执行，领取已有当前 READY 导演台的 `GENERATE_CHAPTER`，调用 GLM，原子写入候选章节 `DRAFT_READY + is_current=false`，写入 `PENDING` continuity facts，并创建 `REVIEW_CHAPTER(PENDING)`。
+6. `15_novel_ai_review_workflow.json`：手动执行，领取 `REVIEW_CHAPTER`，调用 GLM 审稿，写入带 `ai_run_id` 的 `novel_review_reports`，章节进入 `NEED_REVIEW + is_current=false`，并创建 `NOTIFY_REVIEW(PENDING)`。
+7. `16_novel_review_workflow.json`：浏览器审核中心，`GET /webhook/novel-review-list` 和 `GET /webhook/novel-review-detail` 只展示页面，`POST /webhook/novel-review-action` 才执行通过、要求重写或拒绝；详情页还提供 `POST /webhook/novel-review-manual-edit` 人工改稿，可保存改稿后重新送审，也可人工改稿后直接通过；通过后章节变 `APPROVED + is_current=true`，facts 变 `ACTIVE`，并创建下一章 `PLAN_CHAPTER_DIRECTOR(PENDING)`。
+8. `17_novel_rewrite_notify_workflow.json`：手动执行，领取 `REWRITE_CHAPTER` 和 `NOTIFY_REVIEW`。重写分支读取原候选稿、人工意见和 AI 审稿意见，调用 GLM 写入新候选版本 `DRAFT_READY + is_current=false`、新 `PENDING` facts，并创建 `REVIEW_CHAPTER(PENDING)`；通知分支只发送审核详情链接 `/webhook/novel-review-detail?chapter_id=...&review_token=...`，不携带通过、拒绝或重写动作链接。
+9. `18_novel_auto_recovery_workflow.json`：定时或手动执行，恢复小说任务队列。`PLAN_CHAPTER_DIRECTOR` 和 `GENERATE_CHAPTER` 超时失败只更新 job，因为章节候选尚未创建；`REVIEW_CHAPTER` 达上限后同步章节为 `FAILED`；`REWRITE_CHAPTER` 达上限后只让重写 job 失败，原章节保持 `REWRITE_REQUESTED`；同时取消已不再待审章节的过期 `NOTIFY_REVIEW`，并补齐“章节已批准但下一章任务缺失”的 `PLAN_CHAPTER_DIRECTOR(PENDING)` 或 READY 导演台后的 `GENERATE_CHAPTER(PENDING)`。
+
+小说入口：
+
+`http://localhost:5678/webhook/novel-center`
+
+项目列表入口：
+
+`http://localhost:5678/webhook/novel-project-list`
+
+创建新项目入口：
+
+`http://localhost:5678/webhook/novel-project-new`
+
+项目控制台入口：
+
+`http://localhost:5678/webhook/novel-project-detail?project_id=项目ID`
+
+创建项目后的结果页会自动提供当前项目的“立即生成设定集”“查看项目控制台”和“查看队列”入口。若从项目列表进入，点击项目卡片或表格里的“查看控制台”即可看到该项目的设定集、大纲与目录、已写章节、正文版本、当前正式版本、待审核入口、模型调用、连续性事实和运行日志。项目控制台会在待处理设定集任务上显示“立即生成设定集”，在待处理大纲任务上显示“立即生成大纲”，并把“排队下一步”明确标为不直接调用模型。
+
+排队下一步、指定当前正式章节重写、重新发送审核提醒都从项目控制台提交 POST 表单。排队下一步只补齐缺失队列任务，不直接调用模型；正式章节重写不会覆盖旧正式版本，只创建 `REWRITE_CHAPTER(PENDING)`；审核提醒只发送详情链接。不要把这些动作改成 GET 链接。
+
+编辑设定集、编辑本章大纲、修改项目目标、暂停和恢复项目、手动编辑正文、归档和恢复归档也都从项目控制台提交 POST 表单，并写入 `novel_project_events`。暂停后待处理任务会保留，但 12、13、14、15、17 号队列领取会跳过暂停项目；归档会取消待处理任务并让队列跳过该项目；恢复后可以继续推进。正文编辑只创建候选版本并进入审稿，不会直接覆盖当前正式版本；删除项目当前实现为归档软删除，不做物理删除。
+
+审核动作后续必须继续使用 POST + token；不要把通过、拒绝或要求重写做成 GET 链接。候选稿、待审稿和重写稿都不能抢占 `is_current`；只有人工通过后的 `APPROVED/PUBLISHED` 版本才是当前正式可续写版本。
+
+Server酱只做提醒，不承载审核动作；提醒链接只能进入详情页，真正操作必须回到审核页表单并走 `POST /webhook/novel-review-action`。如果本地执行 n8n CLI，需要先停止运行中的 n8n 容器，执行完成后再启动，避免 SQLite 执行锁冲突。
+
+真实 GLM smoke test 不要再设置 `GLM_API_BASE_URL=http://host.docker.internal:18080/...`，这样才会走 `.env` 中的外部 GLM。联调时如不希望发送真实微信提醒，可在执行 17 号时加 `NOVEL_DISABLE_SERVERCHAN=true`；工作流仍会记录审核详情链接并把提醒任务标记为已处理，但 `remind_status` 会写为 `SKIPPED_DISABLED`。
+
+日常队列处理可使用 `scripts/run_novel_queue_once.sh`：它会按 12/13/13B/14/15/17/18 顺序跑一轮，默认带 `NOVEL_DISABLE_SERVERCHAN=true`，只有显式 `--real-notify` 才发送真实 Server酱提醒。详细调度、crontab 和真实重写 smoke 步骤见 `docs/novel_workflow/运行手册.md`。
+
 ## 选题入口
 
 `http://localhost:5678/webhook/topic-center`

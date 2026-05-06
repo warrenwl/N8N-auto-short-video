@@ -10,6 +10,8 @@ n8n_stage4_comfyui_starter_pack/
 n8n_stage5_review_buttons_starter_pack/
 n8n_stage6_douyin_semiauto_wechat_starter_pack/
 logs/
+tests/
+test/
 .venv
 *.log
 .omx/
@@ -18,3 +20,4 @@ __pycache__/
 remotion-video/node_modules/
 remotion-video/dist/
 remotion-video/.cache/
+.playwright-cli/

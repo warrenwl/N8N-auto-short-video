@@ -1,0 +1,390 @@
+{
+  "updatedAt": "2026-05-02T07:41:48.218Z",
+  "createdAt": "2026-04-27T07:37:16.129Z",
+  "id": "videoAgentScriptMvp01",
+  "name": "01_生成短视频脚本包_PostgreSQL版",
+  "description": "第一阶段：脚本生成。手动入口领取最早 IDEA；选题中心一键生成入口 /webhook/video-script-start 领取指定 IDEA。两种入口都会生成脚本并写回 SCRIPT_READY，随后自动调用 06 的 /webhook/video-render-start。",
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "手动触发",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  id,\n  topic,\n  platform,\n  style,\n  duration_seconds,\n  language,\n  target_audience,\n  status,\n  created_at,\n  updated_at\nFROM video_topics\nWHERE status = 'IDEA'\nORDER BY created_at ASC\nLIMIT 1;"
+      },
+      "id": "select-idea",
+      "name": "数据库 - 领取一条IDEA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        260,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  status = 'GENERATING_SCRIPT',\n  error = NULL,\n  updated_at = CURRENT_TIMESTAMP\nWHERE id = $1::uuid\n  AND status = 'IDEA'\n  AND ($2::text IS NULL OR review_token = $2)\nRETURNING *\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    'STAGE_STARTED',\n    'script',\n    'IDEA',\n    'GENERATING_SCRIPT',\n    'n8n',\n    '01_postgres_script_workflow',\n    '开始调用 GLM 生成脚本',\n    jsonb_build_object('entrypoint', CASE WHEN $2::text IS NULL THEN 'manual' ELSE 'webhook' END)\n  FROM updated\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.id || $json.task_id, $json.token || null ] }}"
+        }
+      },
+      "id": "mark-generating",
+      "name": "数据库 - 标记生成脚本中",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        520,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code 节点：Build LLM Request Body\n// 读取 /config/glm_script_prompt_config.jsonc 中的 GLM 提示词配置。\n\nconst fs = require('fs');\nconst item = $input.first().json;\nconst configPath = $env.GLM_SCRIPT_PROMPT_CONFIG_PATH || '/config/glm_script_prompt_config.jsonc';\n\nconst fallbackConfig = {\n  model: 'glm-5.1',\n  temperature: 0.7,\n  max_tokens: 8000,\n  system_prompt: '你是一个专业短视频编导、内容运营和平台风控助手。你的任务是生成可执行的短视频脚本包。必须只输出严格 JSON。',\n  user_prompt_template: '请根据选题生成短视频脚本包。\\n选题：{{topic}}\\n平台：{{platform}}\\n风格：{{style}}\\n目标时长：{{duration_seconds}} 秒\\n语言：{{language}}\\n目标用户：{{target_audience}}\\n必须输出严格 JSON，包含 title、hook、script、cover_text、template_type、hashtags、shots、risk_check。'\n};\n\nfunction stripJsonComments(text) {\n  return String(text || '')\n    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, '')\n    .replace(/(^|[^:])\\/\\/.*$/gm, '$1');\n}\n\nfunction readPromptConfig() {\n  try {\n    if (!fs.existsSync(configPath)) return fallbackConfig;\n    const data = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));\n    return { ...fallbackConfig, ...data };\n  } catch (error) {\n    throw new Error('读取 GLM 提示词配置失败：' + configPath + '；' + error.message);\n  }\n}\n\nfunction renderTemplate(template, values) {\n  return String(template || '').replace(/{{\\s*([a-zA-Z0-9_]+)\\s*}}/g, (_, key) => {\n    const value = values[key];\n    return value === undefined || value === null || value === '' ? '' : String(value);\n  });\n}\n\nconst values = {\n  topic: item.topic,\n  platform: item.platform,\n  style: item.style,\n  duration_seconds: item.duration_seconds,\n  language: item.language || 'zh-CN',\n  target_audience: item.target_audience || '普通短视频用户'\n};\nconst promptConfig = readPromptConfig();\nconst systemPrompt = renderTemplate(promptConfig.system_prompt, values);\nconst userPrompt = renderTemplate(promptConfig.user_prompt_template, values);\n\nreturn [\n  {\n    json: {\n      ...item,\n      prompt_config_path: configPath,\n      llm_request_body: {\n        model: promptConfig.model || 'glm-5.1',\n        temperature: promptConfig.temperature ?? 0.7,\n        max_tokens: promptConfig.max_tokens ?? 8000,\n        response_format: { type: 'json_object' },\n        messages: [\n          { role: 'system', content: systemPrompt },\n          { role: 'user', content: userPrompt }\n        ]\n      }\n    }\n  }\n];\n"
+      },
+      "id": "build-llm-request",
+      "name": "代码 - 构建LLM请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $env.GLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { ...$json.llm_request_body, model: $env.GLM_MODEL || $json.llm_request_body.model } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "specifyBody": "json"
+      },
+      "id": "http-llm",
+      "name": "HTTP请求 - 调用LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code 节点：Parse LLM Response\n// 作用：兼容 OpenAI-compatible HTTP Response / n8n AI 节点的常见输出格式，解析 JSON，并整理成 Postgres 更新字段。\n\nfunction extractText(json) {\n  if (!json || typeof json !== 'object') return '';\n\n  // 如果 HTTP Request 使用了 “Put Response in Field = llm_response”\n  if (json.llm_response?.choices?.[0]?.message?.content) {\n    return json.llm_response.choices[0].message.content;\n  }\n\n  // OpenAI-compatible 原始响应\n  if (json.choices?.[0]?.message?.content) {\n    return json.choices[0].message.content;\n  }\n\n  // 一些 n8n AI / LLM 节点常见字段\n  if (typeof json.output === 'string') return json.output;\n  if (typeof json.text === 'string') return json.text;\n  if (typeof json.response === 'string') return json.response;\n  if (typeof json.message?.content === 'string') return json.message.content;\n\n  // 万不得已：尝试把整个对象当作文本解析\n  return JSON.stringify(json);\n}\n\nfunction cleanJsonText(text) {\n  let s = String(text || '').trim();\n  s = s.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n\n  // 如果模型输出前后有废话，截取第一个 { 到最后一个 }\n  const start = s.indexOf('{');\n  const end = s.lastIndexOf('}');\n  if (start >= 0 && end > start) {\n    s = s.slice(start, end + 1);\n  }\n  return s;\n}\n\nconst input = $input.first().json;\nconst source = $('数据库 - 标记生成脚本中').first().json;\nconst raw = extractText(input);\nconst cleaned = cleanJsonText(raw);\n\nlet data;\ntry {\n  data = JSON.parse(cleaned);\n} catch (err) {\n  throw new Error(`LLM 输出不是合法 JSON：${err.message}\\n原始输出：${raw.slice(0, 1000)}`);\n}\n\nconst hashtags = Array.isArray(data.hashtags) ? data.hashtags : [];\nconst shots = Array.isArray(data.shots) ? data.shots : [];\nconst templateType = ['knowledge', 'list', 'contrast', 'story'].includes(data.template_type) ? data.template_type : 'knowledge';\nconst riskCheck = data.risk_check && typeof data.risk_check === 'object' ? data.risk_check : {};\n\nreturn [\n  {\n    json: {\n      id: source.id,\n      topic: source.topic,\n      platform: source.platform,\n      style: source.style,\n      duration_seconds: source.duration_seconds,\n      title: data.title || '',\n      hook: data.hook || '',\n      script: data.script || '',\n      cover_text: data.cover_text || '',\n      hashtags,\n      hashtags_json: JSON.stringify(hashtags),\n      shots,\n      shots_json: JSON.stringify(shots),\n      template_type: templateType,\n      risk_check: riskCheck,\n      risk_check_json: JSON.stringify(riskCheck),\n      status: 'SCRIPT_READY',\n      updated_at: new Date().toISOString()\n    }\n  }\n];\n"
+      },
+      "id": "parse-llm",
+      "name": "代码 - 解析LLM响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\nUPDATE video_topics\nSET\n  title = $1,\n  hook = $2,\n  script = $3,\n  cover_text = $4,\n  template_type = $5,\n  hashtags = $6::jsonb,\n  shots_json = $7::jsonb,\n  risk_check = $8::jsonb,\n  status = 'SCRIPT_READY',\n  error = NULL\nWHERE id = $9\nRETURNING *\n), event_insert AS (\n  INSERT INTO video_task_events (\n    video_topic_id, event_type, stage, old_status, new_status, actor, source, message, metadata\n  )\n  SELECT\n    id,\n    event_type,\n    stage,\n    old_status,\n    new_status,\n    'n8n',\n    '01_postgres_script_workflow',\n    message,\n    metadata\n  FROM updated\n  CROSS JOIN LATERAL (\n    VALUES\n      ('STAGE_COMPLETED'::text, 'script'::text, 'GENERATING_SCRIPT'::text, 'SCRIPT_READY'::text, '脚本文案生成完成'::text, '{}'::jsonb),\n      ('AUTO_TRIGGER'::text, 'render'::text, 'SCRIPT_READY'::text, 'SCRIPT_READY'::text, '自动触发 06 首渲染入口'::text, jsonb_build_object('webhook', 'video-render-start'))\n  ) AS events(event_type, stage, old_status, new_status, message, metadata)\n  RETURNING 1\n)\nSELECT * FROM updated;",
+        "options": {
+          "queryReplacement": "={{ [ $json.title, $json.hook, $json.script, $json.cover_text, $json.template_type, $json.hashtags_json, $json.shots_json, $json.risk_check_json, $json.id ] }}"
+        }
+      },
+      "id": "update-script-ready",
+      "name": "数据库 - 更新为SCRIPT_READY",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1560,
+        100
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "video-script-start",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-video-script-start",
+      "name": "Webhook - 启动脚本生成",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        520
+      ],
+      "webhookId": "video-script-start-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate one-click video generation webhook query.\nlet source = {};\ntry {\n  source = $('Webhook - 启动脚本生成').first().json || {};\n} catch (error) {\n  source = {};\n}\nif (!source.query) {\n  const items = $input.all();\n  source = (items[0] && items[0].json) || $json || {};\n}\nconst query = source.query || source.params || source;\nconst taskId = String(query.task_id || query.id || '').trim();\nconst token = String(query.token || '').trim();\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {\n  throw new Error('缺少合法 task_id');\n}\nif (!token) {\n  throw new Error('缺少 token');\n}\nreturn [{json: {id: taskId, task_id: taskId, token, received_at: new Date().toISOString()}}];\n"
+      },
+      "id": "validate-video-script-start",
+      "name": "代码 - 校验脚本生成参数",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ \"http://localhost:5678/webhook/video-render-start?task_id=\" + $json.id + \"&token=\" + ($json.review_token || \"\") }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "http-trigger-render-start-01",
+      "name": "HTTP请求 - 触发06开始渲染",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 01 脚本生成主路径：IDEA → SCRIPT_READY\n\n手动执行工作流时，领取最早一条 `IDEA`。选题中心自动入口会先校验指定 `task_id + review_token`，再进入同一条脚本生成链路。\n\n本路径调用 GLM 生成脚本、分镜、字幕和 `template_type`，最后写回 `SCRIPT_READY`。",
+        "height": 160,
+        "width": 2140,
+        "color": 4
+      },
+      "id": "说明-01-脚本生成主路径",
+      "name": "说明 - 01 脚本生成主路径",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -190
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 选题中心自动入口\n\n访问 `/webhook/video-script-start`。只领取指定 `IDEA` 记录，适配选题中心“生成视频”按钮。\n\n校验通过后进入上方脚本生成主链路。",
+        "height": 150,
+        "width": 980,
+        "color": 5
+      },
+      "id": "说明-选题中心自动入口",
+      "name": "说明 - 选题中心自动入口",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        330
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 自动衔接 06 渲染\n\n`SCRIPT_READY` 写回成功后调用 `/webhook/video-render-start`。\n\n这样选题中心一键生成可以从 `IDEA` 自动跑到首渲染。",
+        "height": 150,
+        "width": 760,
+        "color": 6
+      },
+      "id": "说明-自动衔接06渲染",
+      "name": "说明 - 自动衔接06渲染",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1720,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "手动触发": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取一条IDEA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取一条IDEA": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记生成脚本中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 标记生成脚本中": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建LLM请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建LLM请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 调用LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 调用LLM": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析LLM响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析LLM响应": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 更新为SCRIPT_READY",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - 启动脚本生成": {
+      "main": [
+        [
+          {
+            "node": "代码 - 校验脚本生成参数",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 校验脚本生成参数": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记生成脚本中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 更新为SCRIPT_READY": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 触发06开始渲染",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "description": "MVP: 从 video_agent.video_topics 读取 IDEA，调用 GLM-5.1 生成脚本包，再回写 SCRIPT_READY。导入后需要绑定 Postgres credential，并设置 GLM_API_KEY。",
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {},
+  "versionId": "ce98f24c-fed9-4bc2-bd63-0105653a375a",
+  "activeVersionId": "ce98f24c-fed9-4bc2-bd63-0105653a375a",
+  "versionCounter": 239,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-04-27T07:37:16.129Z",
+      "createdAt": "2026-04-27T07:37:16.129Z",
+      "role": "workflow:owner",
+      "workflowId": "videoAgentScriptMvp01",
+      "projectId": "NGUCqFuUfTK6tdLq",
+      "project": {
+        "updatedAt": "2026-04-27T07:29:09.598Z",
+        "createdAt": "2026-04-27T07:23:49.700Z",
+        "id": "NGUCqFuUfTK6tdLq",
+        "name": "旭磊 王 <814521841@qq.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "176fa689-fd98-4246-ae4b-018b12cafe3a"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

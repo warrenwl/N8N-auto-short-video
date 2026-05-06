@@ -1,0 +1,220 @@
+{
+  "updatedAt": "2026-04-29T08:08:20.345Z",
+  "createdAt": "2026-04-27T13:59:15.172Z",
+  "id": "videoAgentRenderTtsMvp03",
+  "name": "03_口播语音整合_VoxCPM_TTS",
+  "description": null,
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger-03",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH picked AS (\n  SELECT id\n  FROM video_topics\n  WHERE status = 'SCRIPT_READY'\n  ORDER BY created_at ASC\n  LIMIT 1\n  FOR UPDATE SKIP LOCKED\n)\nUPDATE video_topics AS vt\nSET\n  status = 'RENDERING',\n  render_started_at = CURRENT_TIMESTAMP,\n  audio_started_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nFROM picked\nWHERE vt.id = picked.id\nRETURNING vt.*;\n",
+        "options": {}
+      },
+      "id": "claim-script-ready-tts",
+      "name": "Postgres - Claim One SCRIPT_READY TTS",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        280,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Build Render Request TTS\n * Input: one row from PostgreSQL video_topics.\n * Output: JSON body for POST http://video-worker:8000/render\n */\n\nconst row = $json;\n\nfunction parseJsonMaybe(value, fallback) {\n  if (!value) return fallback;\n  if (Array.isArray(value) || typeof value === 'object') return value;\n  try {\n    return JSON.parse(value);\n  } catch (e) {\n    return fallback;\n  }\n}\n\nlet shots = parseJsonMaybe(row.shots_json, []);\nif (!Array.isArray(shots) || shots.length === 0) {\n  shots = [\n    {\n      shot_id: 1,\n      duration: Number(row.duration || 8),\n      subtitle: row.hook || row.cover_text || row.title || row.topic,\n      visual_prompt_cn: row.cover_text || row.title || row.topic,\n    },\n  ];\n}\n\nshots = shots.map((shot, index) => ({\n  shot_id: shot.shot_id ?? index + 1,\n  duration: Number(shot.duration || 5),\n  subtitle: String(shot.subtitle || ''),\n  visual_prompt_cn: String(shot.visual_prompt_cn || shot.prompt || shot.subtitle || ''),\n  visual_prompt_en: String(shot.visual_prompt_en || ''),\n}));\n\nreturn [\n  {\n    json: {\n      task_id: String(row.id),\n      title: String(row.title || row.topic || 'AI 短视频'),\n      script: String(row.script || row.hook || row.topic || ''),\n      cover_text: String(row.cover_text || row.title || row.topic || ''),\n      shots,\n      width: 1080,\n      height: 1920,\n      fps: 30,\n      enable_tts: true,\n      // n8n inside Docker calls video-worker inside Docker.\n      // video-worker then calls the host Mac's VoxCPM server through host.docker.internal.\n      tts_base_url: 'http://host.docker.internal:8010',\n    },\n  },\n];"
+      },
+      "id": "build-render-request-tts",
+      "name": "Code - Build Render Request TTS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://video-worker:8000/render",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 1800000
+        }
+      },
+      "id": "http-render-video-tts",
+      "name": "HTTP Request - Render Multi-shot Video with TTS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code node: Parse Render Response TTS\n * Input: JSON returned by video-worker v0.3.0.\n * Output: fields used by PostgreSQL update query.\n */\n\nconst data = $json;\n\nif (!data || data.status !== 'ok') {\n  throw new Error(`Render failed or invalid response: ${JSON.stringify(data).slice(0, 1000)}`);\n}\n\nreturn [\n  {\n    json: {\n      task_id: data.task_id,\n      video_path: data.video_path,\n      cover_path: data.cover_path || null,\n      subtitle_path: data.subtitle_path || null,\n      clips_json: JSON.stringify(data.clips || []),\n      render_manifest: JSON.stringify(data),\n      voice_path: data.voice_path || null,\n      audio_duration: Number(data.audio_duration || 0),\n      audio_engine: data.audio_engine || 'VoxCPM',\n    },\n  },\n];"
+      },
+      "id": "parse-render-response-tts",
+      "name": "Code - Parse Render Response TTS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE video_topics\nSET\n  video_path = $1,\n  cover_path = $2,\n  subtitle_path = $3,\n  clips_json = $4::jsonb,\n  render_manifest = $5::jsonb,\n  voice_path = $6,\n  audio_duration = $7,\n  audio_engine = $8,\n  status = 'NEED_REVIEW',\n  audio_finished_at = CURRENT_TIMESTAMP,\n  render_finished_at = CURRENT_TIMESTAMP,\n  updated_at = CURRENT_TIMESTAMP,\n  error = NULL\nWHERE id = $9\nRETURNING id, status, video_path, voice_path, audio_duration, updated_at;\n",
+        "options": {
+          "queryReplacement": "={{ [ $json.video_path, $json.cover_path, $json.subtitle_path, $json.clips_json, $json.render_manifest, $json.voice_path, $json.audio_duration, $json.audio_engine, $json.task_id ] }}"
+        }
+      },
+      "id": "update-need-review-tts",
+      "name": "Postgres - Update NEED_REVIEW TTS",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1400,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Claim One SCRIPT_READY TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres - Claim One SCRIPT_READY TTS": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Render Request TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Render Request TTS": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request - Render Multi-shot Video with TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request - Render Multi-shot Video with TTS": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Render Response TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Render Response TTS": {
+      "main": [
+        [
+          {
+            "node": "Postgres - Update NEED_REVIEW TTS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "description": "第三阶段：SCRIPT_READY -> RENDERING，调用 video-worker v0.3.0 和宿主机 VoxCPM TTS 服务生成 voice.wav 并合成带口播 final.mp4，回写 NEED_REVIEW。"
+  },
+  "pinData": null,
+  "versionId": "cb92c2f7-1662-4ef4-acbc-eda4865ef5d8",
+  "activeVersionId": null,
+  "versionCounter": 3,
+  "triggerCount": 0,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-04-27T13:59:15.172Z",
+      "createdAt": "2026-04-27T13:59:15.172Z",
+      "role": "workflow:owner",
+      "workflowId": "videoAgentRenderTtsMvp03",
+      "projectId": "NGUCqFuUfTK6tdLq",
+      "project": {
+        "updatedAt": "2026-04-27T07:29:09.598Z",
+        "createdAt": "2026-04-27T07:23:49.700Z",
+        "id": "NGUCqFuUfTK6tdLq",
+        "name": "旭磊 王 <814521841@qq.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "176fa689-fd98-4246-ae4b-018b12cafe3a"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}
