@@ -196,8 +196,19 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function score(value, fallback = 0) {
-  return Math.min(Math.max(Math.round(number(value, fallback)), 0), 100);
+function score(value, fallback = 0, options = {}) {
+  const parsed = number(value, fallback);
+  const scaled = options.scaleTenPoint && parsed > 0 && parsed <= 10
+    ? parsed * 10
+    : parsed;
+  return Math.min(Math.max(Math.round(scaled), 0), 100);
+}
+
+function shouldScaleTenPointScores(values) {
+  const scores = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  return scores.length > 0 && scores.every((value) => value >= 0 && value <= 10) && scores.some((value) => value > 0);
 }
 
 function base64Text(value) {
@@ -607,6 +618,18 @@ if (
   parsed.commercial_score !== undefined ||
   parsed.total_score !== undefined
 ) {
+  const scaleTenPointScores = shouldScaleTenPointScores([
+    parsed.consistency_score,
+    parsed.readability_score,
+    parsed.plot_score,
+    parsed.commercial_score,
+    parsed.total_score,
+  ]);
+  const consistencyScore = score(parsed.consistency_score, 0, {scaleTenPoint: scaleTenPointScores});
+  const readabilityScore = score(parsed.readability_score, 0, {scaleTenPoint: scaleTenPointScores});
+  const plotScore = score(parsed.plot_score, 0, {scaleTenPoint: scaleTenPointScores});
+  const commercialScore = score(parsed.commercial_score, 0, {scaleTenPoint: scaleTenPointScores});
+  const totalScore = score(parsed.total_score, 0, {scaleTenPoint: scaleTenPointScores});
   const reviewIssues = normalizeReviewIssues(parsed.issues, response);
   const reviewSuggestions = asArray(parsed.suggestions);
   const transitionReview = hardenTransitionReview(
@@ -624,19 +647,25 @@ if (
   }
   const reviewPayload = {
     ...parsed,
+    consistency_score: consistencyScore,
+    readability_score: readabilityScore,
+    plot_score: plotScore,
+    commercial_score: commercialScore,
+    total_score: totalScore,
     issues: filteredReviewIssues,
     suggestions: reviewSuggestions,
     cross_chapter_transition_review: transitionReview,
+    score_scale_normalized_from: scaleTenPointScores ? '0-10' : '0-100',
   };
   Object.assign(normalized, {
     run_type: runType || 'REVIEW_CHAPTER',
     parsed_payload: reviewPayload,
     parsed_payload_json: JSON.stringify(reviewPayload),
-    consistency_score: score(parsed.consistency_score, 0),
-    readability_score: score(parsed.readability_score, 0),
-    plot_score: score(parsed.plot_score, 0),
-    commercial_score: score(parsed.commercial_score, 0),
-    total_score: score(parsed.total_score, 0),
+    consistency_score: consistencyScore,
+    readability_score: readabilityScore,
+    plot_score: plotScore,
+    commercial_score: commercialScore,
+    total_score: totalScore,
     issues_json: JSON.stringify(filteredReviewIssues),
     suggestions_json: JSON.stringify(reviewSuggestions),
     cross_chapter_transition_review: transitionReview,

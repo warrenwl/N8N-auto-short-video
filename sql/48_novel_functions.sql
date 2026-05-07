@@ -356,6 +356,18 @@ BEGIN
       COALESCE(NULLIF(p_reviewer, ''), 'local_user')
     FROM approved a
     RETURNING *
+  ), cancelled_review_reminders AS (
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(j.error_message, '人工审核已通过，取消待发送审核提醒任务'),
+      finished_at = COALESCE(j.finished_at, NOW()),
+      updated_at = NOW()
+    FROM approved a
+    WHERE j.chapter_id = a.id
+      AND j.job_type = 'NOTIFY_REVIEW'
+      AND j.status IN ('PENDING', 'RUNNING')
+    RETURNING j.*
   ), inactive_old_facts AS (
     UPDATE novel_continuity_facts f
     SET status = 'INACTIVE'
@@ -466,8 +478,36 @@ BEGIN
       'REQUEST_REWRITE',
       NULLIF(p_comment, ''),
       COALESCE(NULLIF(p_reviewer, ''), 'local_user')
-	    FROM requested r
-	    RETURNING *
+    FROM requested r
+    RETURNING *
+  ), cancelled_review_reminders AS (
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(j.error_message, '人工要求重写，取消待发送审核提醒任务'),
+      finished_at = COALESCE(j.finished_at, NOW()),
+      updated_at = NOW()
+    FROM requested r
+    WHERE j.chapter_id = r.id
+      AND j.job_type = 'NOTIFY_REVIEW'
+      AND j.status IN ('PENDING', 'RUNNING')
+    RETURNING j.*
+  ), updated_project AS (
+    UPDATE novel_projects p
+    SET
+      status = 'WRITING',
+      updated_at = NOW()
+    FROM requested r
+    WHERE p.id = r.project_id
+      AND p.status = 'REVIEWING'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM novel_chapters pending
+        WHERE pending.project_id = r.project_id
+          AND pending.id <> r.id
+          AND pending.status = 'NEED_REVIEW'
+      )
+    RETURNING p.*
 	  ), latest_review_report AS (
 	    SELECT rr.*
 	    FROM novel_review_reports rr
@@ -554,6 +594,71 @@ BEGIN
       NULLIF(p_comment, ''),
       COALESCE(NULLIF(p_reviewer, ''), 'local_user')
     FROM rejected r
+    RETURNING *
+  ), cancelled_review_reminders AS (
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(j.error_message, '人工拒绝候选稿，取消待发送审核提醒任务'),
+      finished_at = COALESCE(j.finished_at, NOW()),
+      updated_at = NOW()
+    FROM rejected r
+    WHERE j.chapter_id = r.id
+      AND j.job_type = 'NOTIFY_REVIEW'
+      AND j.status IN ('PENDING', 'RUNNING')
+    RETURNING j.*
+  ), updated_project AS (
+    UPDATE novel_projects p
+    SET
+      status = 'WRITING',
+      updated_at = NOW()
+    FROM rejected r
+    WHERE p.id = r.project_id
+      AND p.status = 'REVIEWING'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM novel_chapters pending
+        WHERE pending.project_id = r.project_id
+          AND pending.id <> r.id
+          AND pending.status = 'NEED_REVIEW'
+      )
+    RETURNING p.*
+  ), retry_director_job AS (
+    INSERT INTO novel_generation_jobs (
+      project_id,
+      job_type,
+      chapter_no,
+      payload,
+      status
+    )
+    SELECT
+      r.project_id,
+      'PLAN_CHAPTER_DIRECTOR',
+      r.chapter_no,
+      jsonb_build_object(
+        'trigger_source', 'chapter_rejected_retry',
+        'requested_by', COALESCE(NULLIF(p_reviewer, ''), 'local_user'),
+        'comment', NULLIF(p_comment, ''),
+        'rejected_chapter_id', r.id
+      ),
+      'PENDING'
+    FROM rejected r
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM novel_chapters pending
+        WHERE pending.project_id = r.project_id
+          AND pending.id <> r.id
+          AND pending.status = 'NEED_REVIEW'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM novel_generation_jobs active
+        WHERE active.project_id = r.project_id
+          AND active.chapter_no = r.chapter_no
+          AND active.job_type IN ('PLAN_CHAPTER_DIRECTOR', 'GENERATE_CHAPTER', 'REVIEW_CHAPTER', 'REWRITE_CHAPTER')
+          AND active.status IN ('PENDING', 'RUNNING')
+      )
+    ON CONFLICT DO NOTHING
     RETURNING *
   )
   SELECT
@@ -683,8 +788,17 @@ BEGIN
       rejected.project_id,
       rejected.chapter_no,
       rejected.chapter_status,
-      NULL::text AS project_status,
-      NULL::uuid AS next_job_id,
+      (SELECT p.status FROM novel_projects p WHERE p.id = rejected.project_id) AS project_status,
+      (
+        SELECT j.id
+        FROM novel_generation_jobs j
+        WHERE j.project_id = rejected.project_id
+          AND j.chapter_no = rejected.chapter_no
+          AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'
+          AND j.status IN ('PENDING', 'RUNNING')
+        ORDER BY j.created_at DESC
+        LIMIT 1
+      ) AS next_job_id,
       NULL::uuid AS rewrite_job_id,
       0::bigint AS activated_fact_count,
       0::bigint AS inactivated_fact_count
@@ -757,6 +871,7 @@ DECLARE
   v_outline_count INTEGER;
   v_max_current_chapter_no INTEGER;
   v_next_chapter_no INTEGER;
+  v_rejected_retry_chapter_id UUID;
   v_job novel_generation_jobs%ROWTYPE;
 BEGIN
   SELECT *
@@ -1022,6 +1137,17 @@ BEGIN
   WHERE id = p_project_id
     AND status NOT IN ('PAUSED', 'FAILED', 'COMPLETED');
 
+  SELECT c.id
+  INTO v_rejected_retry_chapter_id
+  FROM novel_chapters c
+  WHERE c.project_id = p_project_id
+    AND c.chapter_no = v_next_chapter_no
+    AND c.status = 'REJECTED'
+  ORDER BY
+    c.generation_version DESC,
+    COALESCE(c.updated_at, c.created_at) DESC
+  LIMIT 1;
+
   INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, status, payload)
   VALUES (
     p_project_id,
@@ -1029,8 +1155,10 @@ BEGIN
     v_next_chapter_no,
     'PENDING',
     jsonb_build_object(
+      'trigger_source', CASE WHEN v_rejected_retry_chapter_id IS NULL THEN 'project_continue' ELSE 'chapter_rejected_retry' END,
       'requested_by', COALESCE(NULLIF(p_reviewer, ''), 'local_user'),
-      'comment', NULLIF(p_comment, '')
+      'comment', NULLIF(p_comment, ''),
+      'rejected_chapter_id', v_rejected_retry_chapter_id
     )
   )
   ON CONFLICT DO NOTHING
@@ -1045,7 +1173,10 @@ BEGIN
     'PLAN_CHAPTER_DIRECTOR'::text,
     v_next_chapter_no,
     v_job.id,
-    format('已创建第 %s 章导演台规划任务。', v_next_chapter_no)::text;
+    CASE
+      WHEN v_rejected_retry_chapter_id IS NULL THEN format('已创建第 %s 章导演台规划任务。', v_next_chapter_no)
+      ELSE format('已创建第 %s 章继续重写任务，会先经过导演台规划。', v_next_chapter_no)
+    END::text;
 END;
 $$ LANGUAGE plpgsql;
 

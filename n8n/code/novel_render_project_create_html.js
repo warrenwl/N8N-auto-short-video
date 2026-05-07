@@ -102,7 +102,7 @@ const html = `<!doctype html>
   <title>创建新小说项目</title>
   <meta name="theme-color" content="#f6f7f9" />
   <style>
-    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d8dee8; --accent:#1f7a5c; --accent-soft:#edf8f3; }
+    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --ink:#182230; --muted:#667085; --line:#d8dee8; --accent:#1f7a5c; --accent-soft:#edf8f3; --danger:#b42318; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-tap-highlight-color: rgba(31, 122, 92, .14); }
     .app-shell { min-height: 100vh; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
@@ -138,8 +138,13 @@ const html = `<!doctype html>
     .wide { grid-column: 1 / -1; }
     .actions { grid-column: 1 / -1; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     button[type="submit"] { border: 0; border-radius: 8px; min-height: 42px; padding: 0 18px; font: inherit; font-weight: 700; color: white; background: var(--accent); cursor: pointer; touch-action: manipulation; }
-    .ai-assist { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; touch-action: manipulation; white-space: nowrap; }
+    .ai-assist { min-width: 76px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; touch-action: manipulation; white-space: nowrap; }
     .ai-assist:hover { border-color: var(--accent); background: #e2f3eb; }
+    .ai-assist:disabled { opacity: .72; cursor: wait; }
+    .ai-assist.is-loading { background: #fff; border-color: var(--accent); }
+    .ai-feedback { grid-column: 1 / -1; min-height: 20px; margin: -4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .ai-feedback.is-error { color: var(--danger); }
+    .ai-feedback.is-success { color: var(--accent); }
     .secondary { min-height: 42px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; background: #fff; color: var(--ink); text-decoration: none; font-weight: 650; }
     button[type="submit"]:hover { background: #19664e; }
     .secondary:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -193,6 +198,7 @@ const html = `<!doctype html>
           <span class="field-head"><span>核心创意</span><button class="ai-assist" type="button" data-ai-idea>AI创意</button></span>
           <textarea name="premise" required placeholder="例如：主角、目标、主要冲突和爽点…" autocomplete="off"></textarea>
         </label>
+        <p class="ai-feedback" data-ai-feedback aria-live="polite"></p>
         <div class="actions">
           <button type="submit">提交创建</button>
           <a class="secondary" href="/webhook/novel-center">返回工作台</a>
@@ -213,149 +219,116 @@ const html = `<!doctype html>
       const styleSelect = form.querySelector('[name="style"]');
       const titleButton = form.querySelector('[data-ai-title]');
       const ideaButton = form.querySelector('[data-ai-idea]');
-
-      const profiles = {
-        urban: {
-          lead: ['濒临破产的前创投天才', '被亲近之人背叛的商业操盘手', '背着债务重回关键节点的普通青年'],
-          trigger: ['重生回到命运崩塌前七十二小时', '意外拿到未来三年的行业暗线', '被迫接手一家濒临清算的小公司'],
-          conflict: ['资本围猎、亲友背叛和舆论反噬同时压来', '旧敌提前布局，试图抢走最后一张底牌', '每一次翻盘都会引出更高层级的幕后玩家'],
-          payoff: ['破局翻盘、打脸反转和商业博弈爽点', '短目标兑现、强反转和章末危机升级'],
-          hook: ['新的盟友其实藏着前世没看穿的秘密', '赢下当前局后，真正的操盘者才露出轮廓'],
-          title: ['逆流成王', '重启破局', '资本回响', '绝境翻盘', '暗盘重生'],
-        },
-        fantasy: {
-          lead: ['被废掉根基的少年', '携带残缺传承的边境小人物', '从宗门底层爬起的弃徒'],
-          trigger: ['在生死关头唤醒古老传承', '发现体内封印着失落时代的规则碎片', '被迫踏入一场跨越诸天的试炼'],
-          conflict: ['宗门压迫、血脉谜团和强敌追杀层层升级', '修炼规则被权贵垄断，主角只能用禁忌路径破局', '每次升级都要付出代价，也逼近隐藏真相'],
-          payoff: ['升级突破、越级反杀和秘境夺宝爽点', '境界成长、热血战斗和强章末钩子'],
-          hook: ['传承真正的主人并未死去', '下一处秘境里藏着主角身世的反证'],
-          title: ['万道归墟', '逆命天途', '长生破劫', '九霄燃骨', '一剑开天'],
-        },
-        suspense: {
-          lead: ['背负旧案的民间调查者', '被卷入连环事件的普通人', '拥有异常记忆的年轻刑侦顾问'],
-          trigger: ['收到一封来自死者的定时信件', '发现身边人都在隐瞒同一个夜晚', '被迫调查一桩被反复删改的旧案'],
-          conflict: ['证据被不断改写，嫌疑人和受害者身份多次反转', '真相牵出更大的组织，也让主角成为下一个目标', '每个答案都会打开一个更危险的问题'],
-          payoff: ['线索推进、身份反转和高压追查', '悬念递进、证据闭环和克制反转'],
-          hook: ['最后一条线索指向主角自己', '下一名证人开口前已经失踪'],
-          title: ['第十三封信', '雾中回声', '旧案未眠', '死者来电', '无声证词'],
-        },
-        romance: {
-          lead: ['被迫重启人生的女主', '在人生低谷里重新夺回主动权的年轻女性', '带着秘密归来的女主'],
-          trigger: ['意外发现婚约背后的利益骗局', '与曾经错过的人在新身份下重逢', '为了守住家人和事业，被迫进入一段契约关系'],
-          conflict: ['情感拉扯、家族压力和事业危机交织推进', '旧误会被层层揭开，真心和利益难以分辨', '亲密关系每进一步都会触发新的外部阻力'],
-          payoff: ['情绪递进、关系拉扯和双向奔赴', '高密度互动、甜虐反转和人物成长'],
-          hook: ['对方保留的秘密恰好能推翻旧真相', '一次公开选择让两人的关系彻底失控'],
-          title: ['春夜迟来', '偏爱入局', '雾色告白', '心动合约', '旧梦吻痕'],
-        },
-        sciFi: {
-          lead: ['末世边缘的维修师', '掌握异常数据的底层研究员', '在灾变后醒来的普通人'],
-          trigger: ['发现灾变倒计时并非自然生成', '捡到一段来自未来的求救信号', '意外绑定一套失控的生存系统'],
-          conflict: ['资源争夺、秩序崩塌和隐藏实验同时爆发', '主角必须在生存和真相之间不断取舍', '每次修复世界都会暴露更大的系统漏洞'],
-          payoff: ['生存压迫、技术破局和团队升级', '危机推进、末世爽点和悬念反转'],
-          hook: ['下一次灾变其实已经被人为提前', '所谓安全区藏着最危险的实验核心'],
-          title: ['废土回声', '末日重启者', '星火避难所', '倒计时纪元', '异常生还'],
-        },
-        general: {
-          lead: ['被命运逼到低谷的主角', '拥有隐秘优势的小人物', '在关键节点重新选择的人'],
-          trigger: ['意外获得一次改写人生的机会', '发现身边危机背后藏着更大的阴谋', '被迫接下一个看似不可能完成的目标'],
-          conflict: ['外部强压、内部误解和隐藏敌人连续升级', '每一步胜利都会换来更高难度的反击', '主角必须在情感、利益和信念之间做选择'],
-          payoff: ['目标推进、冲突升级和章末钩子', '人物成长、情绪兑现和持续追更理由'],
-          hook: ['真正的幕后人物在结尾露出线索', '新的选择会改变所有人的命运'],
-          title: ['逆光回响', '破局之日', '长夜将明', '风起旧城', '命运回声'],
-        },
-      };
+      const feedback = form.querySelector('[data-ai-feedback]');
+      const assistUrl = '/webhook/novel-project-ai-assist';
 
       function valueOf(node) {
         return String(node && node.value ? node.value : '').trim();
       }
 
-      function profileFor(genre) {
-        if (/玄幻|仙侠|异世界/.test(genre)) return profiles.fantasy;
-        if (/悬疑|灵异/.test(genre)) return profiles.suspense;
-        if (/言情|甜宠/.test(genre)) return profiles.romance;
-        if (/科幻|末世/.test(genre)) return profiles.sciFi;
-        if (/都市|现实|游戏|历史|种田/.test(genre)) return profiles.urban;
-        return profiles.general;
+      function markUserEdited(input) {
+        if (!input) return;
+        input.addEventListener('input', () => {
+          if (input.dataset.settingAi === 'true') return;
+          delete input.dataset.aiGenerated;
+        });
       }
 
-      function hash(text) {
-        let result = 0;
-        for (let index = 0; index < text.length; index += 1) {
-          result = ((result << 5) - result + text.charCodeAt(index)) | 0;
-        }
-        return Math.abs(result);
-      }
+      markUserEdited(titleInput);
+      markUserEdited(premiseInput);
 
-      function pick(list, seed, offset) {
-        return list[(seed + offset) % list.length];
-      }
-
-      function readerEmotion(audience) {
-        if (/男频|爽文|快节奏/.test(audience)) return '逆袭快感、压迫释放和连续打脸';
-        if (/女频|情感|甜/.test(audience)) return '情绪拉扯、关系递进和人物成长';
-        if (/悬疑|烧脑/.test(audience)) return '线索闭环、反转惊喜和真相追逐';
-        if (/玄幻|仙侠/.test(audience)) return '升级成就、越级挑战和世界观探索';
-        return '清晰目标、稳定爽点和持续追更期待';
-      }
-
-      function styleBeat(style) {
-        return style.split('、').filter(Boolean).slice(0, 2).join('、') || '冲突推进、章末留钩';
-      }
-
-      function buildIdea() {
-        const genre = valueOf(genreSelect);
-        const audience = valueOf(audienceSelect);
-        const style = valueOf(styleSelect);
-        const profile = profileFor(genre);
-        const seed = hash([genre, audience, style, Date.now()].join('|'));
-        const lead = pick(profile.lead, seed, 1);
-        const trigger = pick(profile.trigger, seed, 3);
-        const conflict = pick(profile.conflict, seed, 5);
-        const payoff = pick(profile.payoff, seed, 7);
-        const hook = pick(profile.hook, seed, 11);
-        return '主角是' + lead + '，在' + trigger + '后，被迫用一条高风险路径改写命运。表层冲突是' + conflict + '；核心看点是' + payoff + '。前期按“' + styleBeat(style) + '”推进，每章只解决一个明确目标，同时埋下更大的反转。面向' + audience + '，重点兑现' + readerEmotion(audience) + '。章末钩子：' + hook + '。';
-      }
-
-      function titleSuffixByPremise(premise) {
-        if (/重生|回到|前世/.test(premise)) return ['重生', '回响', '归来', '破局'];
-        if (/系统|数据|芯片|末世|灾变/.test(premise)) return ['纪元', '信号', '重启', '星火'];
-        if (/旧案|死者|证据|真相/.test(premise)) return ['旧案', '来信', '证词', '迷局'];
-        if (/契约|告白|婚约|重逢/.test(premise)) return ['告白', '合约', '偏爱', '春夜'];
-        return ['破局', '回响', '长明', '入局'];
-      }
-
-      function buildTitle() {
-        const genre = valueOf(genreSelect);
-        const audience = valueOf(audienceSelect);
-        const style = valueOf(styleSelect);
-        const premise = valueOf(premiseInput);
-        const profile = profileFor(genre);
-        const seed = hash([genre, audience, style, premise || Date.now()].join('|'));
-        const base = pick(profile.title, seed, 2);
-        if (!premise) return base;
-        const suffix = pick(titleSuffixByPremise(premise), seed, 9);
-        if (base.includes(suffix)) return base;
-        if (base.length <= 4) return base;
-        return pick([base, suffix + '之日', '逆光' + suffix, '长夜' + suffix], seed, 13);
-      }
-
-      function setValue(input, value) {
+      function setValue(input, value, options = {}) {
         if (!input || !value) return;
+        if (options.aiGenerated) input.dataset.settingAi = 'true';
         input.value = value;
         input.dispatchEvent(new Event('input', {bubbles: true}));
+        if (options.aiGenerated) {
+          input.dataset.aiGenerated = 'true';
+          delete input.dataset.settingAi;
+        } else {
+          delete input.dataset.aiGenerated;
+        }
         input.focus();
+      }
+
+      function setFeedback(message, state) {
+        if (!feedback) return;
+        feedback.textContent = message || '';
+        feedback.classList.toggle('is-error', state === 'error');
+        feedback.classList.toggle('is-success', state === 'success');
+      }
+
+      function setBusy(button, busy) {
+        for (const item of [titleButton, ideaButton]) {
+          if (!item) continue;
+          item.disabled = busy;
+        }
+        if (!button) return;
+        if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
+        button.classList.toggle('is-loading', busy);
+        button.textContent = busy ? '生成中' : button.dataset.idleText;
+      }
+
+      function payloadFor(assistType) {
+        const wordCountSelect = form.querySelector('[name="target_words_per_chapter"]');
+        const chapterInput = form.querySelector('[name="target_total_chapters"]');
+        const titleIsAi = titleInput && titleInput.dataset.aiGenerated === 'true';
+        const premiseIsAi = premiseInput && premiseInput.dataset.aiGenerated === 'true';
+        const titleValue = valueOf(titleInput);
+        const premiseValue = valueOf(premiseInput);
+        return {
+          assist_type: assistType,
+          assist_nonce: String(Date.now()) + '-' + Math.random().toString(16).slice(2),
+          title: assistType === 'title' && titleIsAi ? '' : titleValue,
+          premise: assistType === 'idea' && premiseIsAi ? '' : premiseValue,
+          previous_ai_title: titleIsAi ? titleValue : '',
+          previous_ai_premise: premiseIsAi ? premiseValue : '',
+          title_is_ai_generated: titleIsAi ? 'true' : 'false',
+          premise_is_ai_generated: premiseIsAi ? 'true' : 'false',
+          genre: valueOf(genreSelect),
+          audience: valueOf(audienceSelect),
+          style: valueOf(styleSelect),
+          target_total_chapters: valueOf(chapterInput),
+          target_words_per_chapter: valueOf(wordCountSelect),
+        };
+      }
+
+      async function requestAssist(assistType, button) {
+        setBusy(button, true);
+        setFeedback('正在请求 GLM...', '');
+        try {
+          const response = await fetch(assistUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payloadFor(assistType)),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok || !data.ok) {
+            throw new Error(data.message || 'GLM 生成失败');
+          }
+          if (data.title && (assistType === 'title' || !valueOf(titleInput))) {
+            setValue(titleInput, data.title, {aiGenerated: true});
+          }
+          if (data.premise && (assistType === 'idea' || !valueOf(premiseInput))) {
+            setValue(premiseInput, data.premise, {aiGenerated: true});
+          }
+          setFeedback(data.message || 'GLM 已生成', 'success');
+        } catch (error) {
+          setFeedback(error && error.message ? error.message : 'GLM 生成失败，请稍后重试。', 'error');
+        } finally {
+          setBusy(button, false);
+        }
       }
 
       if (ideaButton) {
         ideaButton.addEventListener('click', () => {
-          setValue(premiseInput, buildIdea());
+          requestAssist('idea', ideaButton);
         });
       }
 
       if (titleButton) {
         titleButton.addEventListener('click', () => {
-          if (!valueOf(premiseInput)) setValue(premiseInput, buildIdea());
-          setValue(titleInput, buildTitle());
+          requestAssist('title', titleButton);
         });
       }
     })();

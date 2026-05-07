@@ -99,12 +99,43 @@ const centerNodes = nodesByName(center);
 assert(centerNodes.has('Webhook - 小说工作台'), '11 should expose novel workbench page');
 assert(centerNodes.has('Webhook - 小说项目列表'), '11 should expose novel project list page');
 assert(centerNodes.has('Webhook - 创建小说项目'), '11 should expose project create endpoint');
+assert(centerNodes.has('Webhook - 小说创建页GLM助手'), '11 should expose create-page GLM assist endpoint');
 assert.strictEqual(centerNodes.get('Webhook - 小说工作台').parameters.httpMethod, 'GET');
 assert.strictEqual(centerNodes.get('Webhook - 小说工作台').parameters.path, 'novel-center');
 assert.strictEqual(centerNodes.get('Webhook - 小说项目列表').parameters.httpMethod, 'GET');
 assert.strictEqual(centerNodes.get('Webhook - 小说项目列表').parameters.path, 'novel-project-list');
+assert(
+  centerNodes.get('数据库 - 查询小说项目列表').parameters.query.includes("WHEN j.status = 'RUNNING' THEN 0") &&
+    centerNodes.get('数据库 - 查询小说项目列表').parameters.query.includes("WHEN j.status = 'PENDING' THEN 1"),
+  '11 project list should prefer active queue jobs over recently cancelled notification jobs'
+);
+assert(
+  centerNodes.get('数据库 - 查询小说项目列表').parameters.query.includes("j.job_type = 'NOTIFY_REVIEW'") &&
+    centerNodes.get('数据库 - 查询小说项目列表').parameters.query.includes("nc.status = 'NEED_REVIEW'"),
+  '11 project list should ignore stale active review notifications for chapters no longer awaiting review'
+);
 assert.strictEqual(centerNodes.get('Webhook - 创建小说项目').parameters.httpMethod, 'POST');
 assert.strictEqual(centerNodes.get('Webhook - 创建小说项目').parameters.path, 'novel-project-create');
+assert.strictEqual(centerNodes.get('Webhook - 小说创建页GLM助手').parameters.httpMethod, 'POST');
+assert.strictEqual(centerNodes.get('Webhook - 小说创建页GLM助手').parameters.path, 'novel-project-ai-assist');
+assert.strictEqual(centerNodes.get('HTTP请求 - 调用GLM生成创建页灵感').parameters.method, 'POST');
+assert(
+  String(centerNodes.get('HTTP请求 - 调用GLM生成创建页灵感').parameters.headerParameters.parameters[0].value).includes('GLM_API_KEY'),
+  '11 create-page GLM assist should use GLM_API_KEY'
+);
+assert.strictEqual(centerNodes.get('HTTP请求 - 调用GLM生成创建页灵感').onError, 'continueErrorOutput');
+assert.strictEqual(centerNodes.get('代码 - 解析创建页GLM助手响应').onError, 'continueErrorOutput');
+assert(
+  centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('diversityBrief') &&
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('genreInstruction') &&
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('previous_ai_premise'),
+  '11 create-page GLM assist should include diversity and previous-output avoidance in the prompt'
+);
+assert.strictEqual(
+  centerNodes.get('响应Webhook - 返回创建页GLM助手结果').parameters.options.responseHeaders.entries[0].value,
+  'application/json; charset=utf-8',
+  '11 create-page GLM assist should return JSON'
+);
 assert.strictEqual(centerNodes.get('Webhook - 小说事实库操作').parameters.httpMethod, 'POST');
 assert.strictEqual(centerNodes.get('Webhook - 小说事实库操作').parameters.path, 'novel-project-fact-action');
 assert.strictEqual(centerNodes.get('Webhook - 小说过期历史章节清理').parameters.httpMethod, 'POST');
@@ -165,9 +196,16 @@ assert(
   '11 project detail should mark chapters generated before the current outline update as stale'
 );
 assert(
+  centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("j.job_type = 'NOTIFY_REVIEW'") &&
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("nc.status = 'NEED_REVIEW'"),
+  '11 project detail should exclude stale active review notifications from actionable jobs'
+);
+assert(
   centerNodes.get('数据库 - 查询小说队列状态').parameters.query.includes('WITH input AS') &&
     centerNodes.get('数据库 - 查询小说队列状态').parameters.query.includes('scoped_jobs') &&
-    centerNodes.get('数据库 - 查询小说队列状态').parameters.options.queryReplacement.includes('project_id'),
+    centerNodes.get('数据库 - 查询小说队列状态').parameters.options.queryReplacement.includes('project_id') &&
+    centerNodes.get('数据库 - 查询小说队列状态').parameters.query.includes("j.job_type = 'NOTIFY_REVIEW'") &&
+    centerNodes.get('数据库 - 查询小说队列状态').parameters.query.includes("nc.status = 'NEED_REVIEW'"),
   '11 queue status should filter both counts and rows by project_id when opened from a project'
 );
 
@@ -251,6 +289,12 @@ assert(
   directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('novel_plot_threads') &&
     directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('recent_review_issues'),
   '13B should read plot ledger and recent review issues into the director context'
+);
+assert(
+  directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('director_repair_context') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('current_blocking_issues') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes("d.status = 'NEEDS_REVIEW'"),
+  '13B should feed current NEEDS_REVIEW director blockers back into repair regeneration'
 );
 assert(
   directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('previous_chapter_ending') &&

@@ -170,6 +170,9 @@ assert(
     reviewPrompt.includes('【审稿事实边界】') &&
     reviewPrompt.includes('不得把“某个线索/道具”扩写成未铺垫的“某某案相关身份”') &&
     reviewPrompt.includes('allowed=true 且 should_block=false 时，不要把“跨章断链”写入 issues') &&
+    reviewPrompt.includes('【评分硬规则】') &&
+    reviewPrompt.includes('必须使用 0-100 分制整数') &&
+    reviewPrompt.includes('不要输出 9、9.2、9.5') &&
     reviewPrompt.includes('cross_chapter_transition_review'),
   'review prompt should use authoritative DB word count and expose cross-chapter transition analysis'
 );
@@ -233,6 +236,17 @@ const builtDirector = runCodeNode('n8n/code/novel_build_glm_request.js', {
     future_outlines: [{chapter_no: 3, summary: '真实身份仍不能揭露。'}],
     plot_threads: [{thread_key: '第10章身份揭露', status: 'ACTIVE', do_not_reveal_before: 10}],
     recent_review_issues: [{chapter_no: 1, issues: ['角色突然相信陌生人']}],
+    director_request_comment: '解决导演台阻断',
+    director_repair_context: {
+      current_status: 'NEEDS_REVIEW',
+      expected_segment_count: 4,
+      current_segment_count: 3,
+      current_blocking_issues: [
+        '事实来源不足：宫宴名为“太后举办的赏花宴”',
+        '导演台 segment_plan 数量必须等于正文分段数：期望 4，实际 3',
+      ],
+      current_fact_source_audit: [{claim: '太后举办的赏花宴', verdict: 'unsupported'}],
+    },
   },
   env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
 })[0].json;
@@ -250,8 +264,12 @@ assert(
     directorPrompt.includes('fact_source_audit') &&
     directorPrompt.includes('推断') &&
     directorPrompt.includes('【跨章镜头调度】') &&
-    directorPrompt.includes('cross_chapter_transition'),
-  'director prompt should include segment count, plot ledger, recent review issues, and transition planning'
+    directorPrompt.includes('cross_chapter_transition') &&
+    directorPrompt.includes('【导演台阻断修复】') &&
+    directorPrompt.includes('赏花宴') &&
+    directorPrompt.includes('current_blocking_issues') &&
+    directorPrompt.includes('如果上一版段数不足，本版必须补齐对应段计划'),
+  'director prompt should include segment count, plot ledger, recent review issues, transition planning, and blocker repair context'
 );
 
 const parsedDirector = runCodeNode('n8n/code/novel_parse_director_card_json.js', {
@@ -894,6 +912,29 @@ assert.strictEqual(parsedReview.run_type, 'REVIEW_CHAPTER');
 assert.strictEqual(parsedReview.total_score, 87);
 assert.strictEqual(parsedReview.verdict, 'PASS');
 assert.strictEqual(JSON.parse(parsedReview.issues_json)[0].type, '节奏');
+
+const parsedTenPointReview = runCodeNode('n8n/code/novel_parse_glm_json.js', {
+  json: {
+    run_type: 'REVIEW_CHAPTER',
+    choices: [{
+      message: {
+        content: JSON.stringify({
+          consistency_score: 9.5,
+          readability_score: 9,
+          plot_score: 9.5,
+          commercial_score: 9.5,
+          total_score: 9.4,
+          issues: [],
+          suggestions: [],
+          verdict: 'PASS',
+        }),
+      },
+    }],
+  },
+})[0].json;
+assert.strictEqual(parsedTenPointReview.total_score, 94, 'review parser should normalize 0-10 GLM scores to 0-100');
+assert.strictEqual(parsedTenPointReview.readability_score, 90, 'individual 0-10 scores should also be normalized');
+assert.strictEqual(JSON.parse(parsedTenPointReview.parsed_payload_json).score_scale_normalized_from, '0-10');
 
 const parsedTransitionReview = runCodeNode('n8n/code/novel_parse_glm_json.js', {
   json: {

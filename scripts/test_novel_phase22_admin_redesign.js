@@ -116,6 +116,23 @@ const projectRows = [
     updated_at: '2026-05-04T01:20:00.000Z',
   },
   {
+    id: '22000000-0000-0000-0000-000000000005',
+    title: '重写中项目',
+    genre: '古言',
+    audience: '中文读者',
+    status: 'REVIEWING',
+    current_chapter_no: 4,
+    target_total_chapters: 20,
+    approved_chapter_count: 3,
+    need_review_count: 0,
+    waiting_job_count: 0,
+    running_job_count: 1,
+    failed_job_count: 0,
+    latest_job_type: 'REWRITE_CHAPTER',
+    latest_job_status: 'RUNNING',
+    updated_at: '2026-05-04T01:25:00.000Z',
+  },
+  {
     id: '22000000-0000-0000-0000-000000000004',
     title: '暂停项目',
     genre: '现实',
@@ -147,6 +164,8 @@ const projectListText = visibleText(projectListHtml);
 for (const expected of ['小说项目管理', '下一步', '处理审核', '排查失败', '已暂停', '看日志', '打开项目']) {
   assert(projectListText.includes(expected), `project list should include management marker: ${expected}`);
 }
+assert(projectListText.includes('重写中'), 'project list status badge should prefer an active rewrite job over the base review status');
+assert(!projectListText.includes('重写中项目 古言 / 中文读者 进度 3 / 20 / 待处理 0 / 运行中 1 / 失败任务 0 待人工审核'), 'running rewrite projects should not show the base pending-review badge');
 assert(projectListHtml.includes('data-project-filter="paused"'), 'project list should expose paused filter');
 for (const expected of ['app-sidebar', 'th-help', '“打开项目”就是查看控制台，可继续查看设定、大纲、正文、事实、日志和导出。', '查看概览与运行细节']) {
   assert(projectListHtml.includes(expected), `project list should reduce default layout with: ${expected}`);
@@ -177,7 +196,7 @@ const detailRow = {
     villain_setting: [{name: '赵衡', motivation: '控制旧城', conflict_with_mc: '争夺旧城控制权', threat_level: '高'}],
     selling_points: ['逆袭', '爽点'],
   }),
-  outlines: JSON.stringify([{chapter_no: 1, title: '第一章：旧城灯火', summary: '主角回城。', status: 'READY'}]),
+  outlines: JSON.stringify([{id: '22000000-0000-0000-0000-000000000022', chapter_no: 1, title: '第一章：旧城灯火', summary: '主角回城。', status: 'READY'}]),
   chapters: JSON.stringify([
     {
       id: '22000000-0000-0000-0000-000000000021',
@@ -236,6 +255,7 @@ assert(!detailOverviewText.includes('第一章正文不应出现在默认总览'
 assertNoGetWriteLinks(detailOverviewHtml, 'project overview');
 
 const detailBibleHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html;
+const detailBibleText = visibleText(detailBibleHtml);
 for (const expected of ['<dt>姓名</dt>', '<dt>别名</dt>', '<dt>公开称呼</dt>', '<dt>身份</dt>', '<dt>身份说明</dt>', '<dt>目标</dt>', '<dt>定位</dt>', '<dt>与主角关系</dt>', '<dt>动机</dt>', '<dt>与主角冲突</dt>', '<dt>威胁等级</dt>']) {
   assert(detailBibleHtml.includes(expected), `project bible view should localize structured setting key: ${expected}`);
 }
@@ -243,8 +263,19 @@ assert(!detailBibleHtml.includes('<dt>name</dt>'), 'project bible view should hi
 assert(!detailBibleHtml.includes('<dt>Identity Note</dt>'), 'project bible view should hide title-cased English object keys from display cards');
 assert(!detailBibleHtml.includes('<dt>Relationship With Mc</dt>'), 'project bible view should hide relationship_with_mc English label from display cards');
 assert(!detailBibleHtml.includes('<dt>Threat Level</dt>'), 'project bible view should hide threat_level English label from display cards');
-assert(!detailBibleHtml.includes('&quot;identity_note&quot;'), 'project bible edit textareas should display localized keys');
-assert(!detailBibleHtml.includes('&quot;relationship_with_mc&quot;'), 'project bible edit textareas should display localized relationship keys');
+assert(detailBibleHtml.includes('class="bible-card-actions"'), 'project bible cards should expose per-setting edit buttons outside detail drawers');
+assert(detailBibleHtml.includes('data-open-dialog="bible-card-story-core">打开详情</button>'), 'project bible cards should put the detail button in the same card action row');
+assert(detailBibleHtml.includes('data-open-dialog="bible-edit-story-core"'), 'project bible card edit buttons should open the matching setting edit drawer');
+assert(detailBibleHtml.includes('.bible-work-card { min-height: 198px; display: flex; flex-direction: column;'), 'project bible cards should keep action rows aligned across uneven summaries');
+assert(detailBibleHtml.includes('.bible-card-actions button { width: 100%; height: 34px; min-height: 34px;'), 'project bible card action buttons should have a stable equal height');
+assert(detailBibleHtml.includes('class="side-dialog bible-field-edit-dialog"'), 'project bible edit should render per-setting side drawers');
+assert(detailBibleHtml.includes('class="bible-single-edit-form"'), 'project bible edit drawer should render one form for the selected setting item');
+assert(detailBibleHtml.includes('保存故事核心'), 'project bible edit drawer should save a single setting item');
+assert(detailBibleHtml.includes('<input type="hidden" name="world_setting"'), 'single Bible edit forms should preserve other Bible fields through hidden values');
+assert(!detailBibleHtml.includes('id="bible-edit-drawer"'), 'project bible edit should no longer render the old all-fields drawer');
+assert(!detailBibleHtml.includes('class="bible-edit-form" method="POST"'), 'project bible edit drawer should no longer submit one large all-fields form');
+assert(!detailBibleText.includes('identity_note'), 'visible Bible edit text should display localized keys');
+assert(!detailBibleText.includes('relationship_with_mc'), 'visible Bible edit text should display localized relationship keys');
 assert(!detailBibleHtml.includes('<li>{&quot;'), 'project bible view should not show raw JSON for character arrays');
 assert(!detailBibleHtml.includes('主角设定 JSON'), 'project bible edit labels should avoid raw JSON wording');
 
@@ -297,6 +328,26 @@ assert(!detailDirectorHtml.includes('<li>{&quot;'), 'director view should not re
 assert(!detailDirectorHtml.includes('<strong>Segment '), 'director view should not show English segment labels');
 assert(!detailDirectorHtml.includes('编辑导演台 JSON'), 'director view should not label the normal edit affordance as raw JSON');
 assert(!detailDirectorHtml.includes('导演台 JSON'), 'director view should avoid raw JSON wording in visible edit labels');
+assert(detailDirectorHtml.includes('class="director-card director-chapter-panel"'), 'director chapter cards should render as collapsible panels');
+const detailOutlineHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'outline'}])[0].json.response_html;
+assert(detailOutlineHtml.includes('class="catalog-item catalog-panel"'), 'outline chapter cards should render as collapsible panels');
+assert(detailOutlineHtml.includes('class="catalog-panel-summary"'), 'outline chapter panels should expose summaries');
+assert(detailOutlineHtml.includes('.catalog-grid, .chapter-grid { display: grid; grid-template-columns: minmax(0, 1fr);'), 'outline and chapter grids should render as one-column row panels like director view');
+assert(detailOutlineHtml.includes('class="outline-workbench"'), 'outline view should render as a workbench layout');
+assert(detailOutlineHtml.includes('class="outline-dashboard"'), 'outline view should show status cards above the chapter list');
+assert(detailOutlineHtml.includes('data-catalog-action="expand-all"'), 'outline view should expose expand/collapse controls for chapter panels');
+assert(detailOutlineHtml.includes('class="side-dialog outline-edit-dialog"'), 'outline chapter editing should live in a right-side drawer');
+assert(detailOutlineHtml.includes('data-open-dialog="outline-edit-'), 'outline chapter edit buttons should open right-side drawers');
+assert(!detailOutlineHtml.includes('<summary>编辑本章大纲</summary>'), 'outline chapter edit forms should not render as inline details');
+assert(detailOutlineHtml.includes('class="readonly-field"><span>卷号</span>'), 'outline edit drawer should show volume as a read-only field');
+assert(detailOutlineHtml.includes('<input type="hidden" name="volume_no"'), 'outline edit drawer should still submit the current volume number');
+assert(!detailOutlineHtml.includes('name="volume_no" type="number"'), 'outline edit drawer should not allow editing volume number');
+assert(detailDirectorHtml.includes('class="director-chapter-summary"'), 'director chapter cards should expose a collapsible summary header');
+assert((detailDirectorHtml.match(/class="director-panel director-drawer-card"/g) || []).length >= 6, 'director inner planning sections should render as drawer trigger cards');
+assert(detailDirectorHtml.includes('data-open-dialog="director-panel-1-chain"'), 'director inner planning cards should open right-side drawers');
+assert(detailDirectorHtml.includes('class="side-dialog director-panel-dialog"'), 'director inner planning content should live in right-side drawer dialogs');
+assert(detailDirectorHtml.includes('class="director-panel-body"'), 'director drawer panels should wrap their body content');
+assert(!detailDirectorHtml.includes('<details class="director-panel"'), 'director inner planning sections should not render as inline collapsible details');
 for (const expected of ['director-edit-dialog', 'data-open-dialog="director-edit-', '高级编辑（原始结构）', '保存后会创建新的当前版本，页面会自动刷新', '标记阻断已解决', '分段计划需', '保存为当前版本']) {
   assert(detailDirectorHtml.includes(expected), `director view should edit the raw structure in a right-side drawer: ${expected}`);
 }
@@ -304,6 +355,32 @@ assert(!detailDirectorHtml.includes('<details class="director-edit">'), 'directo
 assert(detailDirectorHtml.includes('排队正文生成'), 'director view should describe director-card chapter creation as queueing, not direct generation');
 assert(detailDirectorHtml.includes('不直接调用模型'), 'director view should explain that queueing from director does not start the model call');
 assert(!detailDirectorHtml.includes('按此导演台生成正文'), 'director view should avoid wording that sounds identical to starting chapter generation');
+
+const detailDirectorBlockedHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  ...detailRow,
+  requested_view: 'director',
+  chapters: JSON.stringify([]),
+  outlines: JSON.stringify([{chapter_no: 5, title: '宫宴下马威', summary: '太后刁难，顾南辞护短。', status: 'READY'}]),
+  director_cards: JSON.stringify([{
+    id: '22000000-0000-0000-0000-000000000066',
+    chapter_no: 5,
+    version: 2,
+    is_current: true,
+    status: 'NEEDS_REVIEW',
+    source: 'AI',
+    card_payload: {
+      quality_gate: {
+        pass: false,
+        blocking_issues: ['事实来源不足：宫宴名为“赏花宴”', '导演台 segment_plan 数量必须等于正文分段数：期望 4，实际 3'],
+      },
+      segment_plan: [{segment_no: 1}, {segment_no: 2}, {segment_no: 3}],
+    },
+  }]),
+}])[0].json.response_html;
+assert(detailDirectorBlockedHtml.includes('重跑解决阻断'), 'blocked director cards should expose a focused blocker-repair regeneration button');
+assert(detailDirectorBlockedHtml.includes('带阻断清单'), 'blocker repair button should make its behavior clear');
+assert(detailDirectorBlockedHtml.includes('解决导演台阻断'), 'blocker repair form should send the current blocker summary as the regeneration comment');
+assert(!detailDirectorBlockedHtml.includes('<li>{&quot;'), 'blocked director issues should not show embedded JSON strings as raw list items');
 
 const detailDirectorWithChapterJobHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
   ...detailRow,
@@ -358,10 +435,13 @@ assert(!detailDirectorWithReviewChapterHtml.includes('<span>排队正文生成</
 
 const detailChaptersHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'chapters'}])[0].json.response_html;
 assert(visibleText(detailChaptersHtml).includes('正文工具条'), 'chapter view should keep body toolbar in drill-down');
+assert(detailChaptersHtml.includes('class="chapter-card chapter-panel'), 'chapter cards should render as collapsible panels');
+for (const expected of ['章节正文抽屉', '审稿报告抽屉', '人工审核记录抽屉', '章节模型调用抽屉']) {
+  assert(detailChaptersHtml.includes(expected), `chapter view should expose drawer: ${expected}`);
+}
 assert(detailChaptersHtml.includes('第 1 章：旧城灯火'), 'chapter view should show system chapter number plus clean title');
 assert(!detailChaptersHtml.includes('第 1 章：第1章'), 'chapter view should not duplicate title chapter-number prefixes');
 
-const detailOutlineHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'outline'}])[0].json.response_html;
 assert(detailOutlineHtml.includes('第 1 章：旧城灯火'), 'outline view should prefer current candidate chapter title when a non-stale chapter exists');
 assert(!detailOutlineHtml.includes('第 1 章：第一章'), 'outline view should not surface stale-looking outline title prefixes for written chapters');
 

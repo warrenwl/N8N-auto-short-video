@@ -287,6 +287,7 @@ SELECT
   $1::uuid AS job_id,
   COALESCE((SELECT j.payload->>'trigger_source' FROM novel_generation_jobs j WHERE j.id = $1::uuid), 'queue') AS trigger_source,
   (SELECT j.payload->>'requested_by' FROM novel_generation_jobs j WHERE j.id = $1::uuid) AS requested_by,
+  COALESCE((SELECT j.payload->>'comment' FROM novel_generation_jobs j WHERE j.id = $1::uuid), '') AS director_request_comment,
   'PLAN_CHAPTER_DIRECTOR'::text AS run_type,
   o.id AS outline_id,
   o.chapter_no,
@@ -322,7 +323,8 @@ SELECT
   COALESCE(future.future_outlines, '[]'::jsonb) AS future_outlines,
   COALESCE(facts.continuity_facts, '[]'::jsonb) AS continuity_facts,
   COALESCE(threads.plot_threads, '[]'::jsonb) AS plot_threads,
-  COALESCE(review_issues.recent_review_issues, '[]'::jsonb) AS recent_review_issues
+  COALESCE(review_issues.recent_review_issues, '[]'::jsonb) AS recent_review_issues,
+  COALESCE(current_director.director_repair_context, '{}'::jsonb) AS director_repair_context
 FROM novel_generation_jobs j
 JOIN novel_projects p ON p.id = j.project_id
 JOIN novel_bibles b ON b.project_id = p.id
@@ -452,6 +454,52 @@ LEFT JOIN LATERAL (
     LIMIT 5
   ) picked
 ) review_issues ON true
+LEFT JOIN LATERAL (
+  SELECT jsonb_build_object(
+    'current_director_card_id', d.id,
+    'current_status', d.status,
+    'current_version', d.version,
+    'expected_segment_count', CASE
+      WHEN p.target_words_per_chapter <= 1500 THEN 1
+      WHEN p.target_words_per_chapter <= 2500 THEN 2
+      WHEN p.target_words_per_chapter <= 3500 THEN 3
+      WHEN p.target_words_per_chapter <= 4500 THEN 4
+      WHEN p.target_words_per_chapter <= 6500 THEN 5
+      ELSE 7
+    END,
+    'current_segment_count', COALESCE(
+      CASE
+        WHEN jsonb_typeof(d.card_payload->'segment_plan') = 'array'
+          THEN jsonb_array_length(d.card_payload->'segment_plan')
+        ELSE 0
+      END,
+      0
+    ),
+    'current_blocking_issues', COALESCE(
+      CASE
+        WHEN jsonb_typeof(d.card_payload->'quality_gate'->'blocking_issues') = 'array'
+          THEN d.card_payload->'quality_gate'->'blocking_issues'
+        ELSE '[]'::jsonb
+      END,
+      '[]'::jsonb
+    ),
+    'current_fact_source_audit', COALESCE(
+      CASE
+        WHEN jsonb_typeof(d.card_payload->'fact_source_audit') = 'array'
+          THEN d.card_payload->'fact_source_audit'
+        ELSE '[]'::jsonb
+      END,
+      '[]'::jsonb
+    )
+  ) AS director_repair_context
+  FROM novel_chapter_director_cards d
+  WHERE d.project_id = p.id
+    AND d.chapter_no = o.chapter_no
+    AND d.is_current = TRUE
+    AND d.status = 'NEEDS_REVIEW'
+  ORDER BY d.version DESC, d.created_at DESC
+  LIMIT 1
+) current_director ON true
 WHERE j.id = $1::uuid
   AND j.project_id = $2::uuid
   AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'

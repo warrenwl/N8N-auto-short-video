@@ -233,6 +233,20 @@ const detailBibleAssetText = visibleText(detailBibleViewWithAssets);
 assert(detailBibleViewWithAssets.includes('action="/webhook/novel-project-regenerate"'), 'Bible view should expose POST regeneration action');
 assert(detailBibleViewWithAssets.includes('name="step" value="BIBLE"'), 'Bible regeneration form should submit Bible step');
 assert(detailBibleViewWithAssets.includes('name="regenerate_prompt"'), 'Bible regeneration form should submit a new core idea prompt');
+assert(detailBibleViewWithAssets.includes('data-open-dialog="regenerate-bible-drawer"'), 'Bible regeneration should be opened from a top-right button');
+assert(detailBibleViewWithAssets.includes('class="side-dialog regenerate-dialog"'), 'Bible regeneration form should live in a right-side drawer dialog');
+assert(!detailBibleViewWithAssets.includes('data-open-dialog="bible-edit-drawer"'), 'Bible edit should no longer use the old top-right all-fields button');
+assert(!detailBibleViewWithAssets.includes('id="bible-edit-drawer"'), 'Bible edit should no longer render the old all-fields drawer');
+for (const expected of ['核心摘要', '人物设定', '生成约束', 'class="side-dialog bible-card-dialog"', 'data-open-dialog="bible-card-story-core">打开详情</button>', 'class="bible-card-actions"', 'data-open-dialog="bible-edit-story-core"', 'class="side-dialog bible-field-edit-dialog"', '保存故事核心']) {
+  assert(detailBibleViewWithAssets.includes(expected), `Bible workspace should expose grouped drawer cards: ${expected}`);
+}
+assert(detailBibleViewWithAssets.includes('.bible-card-actions button { width: 100%; height: 34px; min-height: 34px;'), 'Bible card action buttons should keep equal heights across cards');
+assert(!/<section id="bible-section" aria-label="设定集">\s*<div class="section-title"><h2>设定集<\/h2>/.test(detailBibleViewWithAssets), 'Bible section body should not repeat the tab title');
+assert(!detailBibleViewWithAssets.includes('<details class="action-detail danger-detail regenerate-detail">'), 'Bible regeneration should not use inline expanded details');
+assert(
+  detailBibleViewWithAssets.indexOf('data-open-dialog="regenerate-bible-drawer"') < detailBibleViewWithAssets.indexOf('id="bible-section"'),
+  'Bible regeneration button should sit in the current tab header before the Bible section body'
+);
 assert(detailBibleAssetText.includes('重新生成设定集'), 'Bible view should label regeneration clearly');
 assert(detailBibleAssetText.includes('更新核心创意并重排大纲'), 'Bible regeneration should explain impact');
 assert(detailBibleAssetText.includes('新的核心创意 / 生成要求'), 'Bible regeneration should tell users the field affects generation');
@@ -262,6 +276,19 @@ const detailOutlineViewWithAssets = runListCodeNode('n8n/code/novel_render_proje
 const detailOutlineAssetText = visibleText(detailOutlineViewWithAssets);
 assert(detailOutlineViewWithAssets.includes('action="/webhook/novel-project-regenerate"'), 'outline view should expose POST regeneration action');
 assert(detailOutlineViewWithAssets.includes('name="step" value="OUTLINE"'), 'outline regeneration form should submit outline step');
+assert(detailOutlineViewWithAssets.includes('data-open-dialog="regenerate-outline-drawer"'), 'outline regeneration should be opened from a top-right button');
+assert(detailOutlineViewWithAssets.includes('class="side-dialog regenerate-dialog"'), 'outline regeneration form should live in a right-side drawer dialog');
+assert(!detailOutlineViewWithAssets.includes('<details class="action-detail danger-detail regenerate-detail">'), 'outline regeneration should not use inline expanded details');
+assert(
+  detailOutlineViewWithAssets.indexOf('data-open-dialog="regenerate-outline-drawer"') < detailOutlineViewWithAssets.indexOf('id="catalog-section"'),
+  'outline regeneration button should sit in the current tab header before the outline section body'
+);
+assert(detailOutlineViewWithAssets.includes('class="outline-workbench"'), 'outline view should render as an outline workbench');
+assert(detailOutlineViewWithAssets.includes('class="outline-dashboard"'), 'outline workbench should expose a status strip before chapter panels');
+assert(detailOutlineViewWithAssets.includes('data-chapter-filter="unwritten"'), 'outline workbench should expose unwritten filter');
+assert(detailOutlineViewWithAssets.includes('data-chapter-filter="director-blocked"'), 'outline workbench should expose director blocker filter');
+assert(detailOutlineViewWithAssets.includes('data-chapter-filter="no-director"'), 'outline workbench should expose no-director filter');
+assert(detailOutlineViewWithAssets.includes('data-catalog-action="expand-all"'), 'outline workbench should expose expand-all controls');
 assert(detailOutlineAssetText.includes('重新生成大纲'), 'outline view should label regeneration clearly');
 assert(detailOutlineAssetText.includes('覆盖目录并保留章节'), 'outline regeneration should explain chapter preservation');
 assert(!/href=["'][^"']*novel-project-regenerate/i.test(detailOutlineViewWithAssets), 'outline regeneration must not be a GET link');
@@ -342,6 +369,93 @@ assert(detailChaptersStaleText.includes('一键清理过期历史章节'), 'chap
 assert(detailChaptersViewWithStaleRejectedChapter.includes('action="/webhook/novel-stale-chapters-cleanup"'), 'stale chapter cleanup should submit through POST');
 assert(detailChaptersViewWithStaleRejectedChapter.includes('name="cleanup_action" value="CLEAR_STALE_CHAPTERS"'), 'stale chapter cleanup should submit the cleanup action');
 assert(!/href=["'][^"']*novel-stale-chapters-cleanup/i.test(detailChaptersViewWithStaleRejectedChapter), 'stale chapter cleanup must not be a GET link');
+
+const detailViewWithStaleReviewNotify = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  requested_view: 'overview',
+  title: '第二十一阶段项目',
+  genre: '都市逆袭',
+  audience: '中文读者',
+  style: '节奏快',
+  premise: '验证拒绝后过期提醒不污染下一步动作。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 4,
+  status: 'REVIEWING',
+  bible: JSON.stringify({story_core: '主角从低谷翻身。'}),
+  outlines: JSON.stringify([{chapter_no: 5, title: '第五章', summary: '候选稿待决策', status: 'READY'}]),
+  chapters: JSON.stringify([{
+    id: '21000000-0000-0000-0000-000000000081',
+    chapter_no: 5,
+    title: '已拒绝候选稿',
+    body: '被拒绝的候选正文',
+    summary: '已拒绝',
+    status: 'REJECTED',
+    is_current: false,
+    generation_version: 3,
+  }]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([{
+    id: '21000000-0000-0000-0000-000000000082',
+    chapter_id: '21000000-0000-0000-0000-000000000081',
+    chapter_no: 5,
+    job_type: 'NOTIFY_REVIEW',
+    status: 'PENDING',
+    updated_at: '2026-05-06T15:30:13.000Z',
+    created_at: '2026-05-06T15:30:13.000Z',
+  }]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const staleReviewNotifyText = visibleText(detailViewWithStaleReviewNotify);
+assert(staleReviewNotifyText.includes('下一步动作区：继续重写第 5 章'), 'rejected chapter should clearly offer same-chapter rewrite continuation');
+assert(!staleReviewNotifyText.includes('下一步动作区：第 5 章审核提醒待发送'), 'rejected chapter notification should not be shown as pending review reminder');
+assert(!staleReviewNotifyText.includes('下一步动作区：启动第 5 章导演台'), 'rejected chapter should not expose director planning as the primary creator-facing action');
+assert(/队列中\s*0/.test(staleReviewNotifyText), 'stale review notification should not count as active queue work');
+
+const detailViewWithRejectedRetryDirector = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  requested_view: 'overview',
+  title: '第二十一阶段项目',
+  genre: '都市逆袭',
+  audience: '中文读者',
+  style: '节奏快',
+  premise: '验证拒绝后已排导演台时也显示继续重写。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 4,
+  status: 'WRITING',
+  bible: JSON.stringify({story_core: '主角从低谷翻身。'}),
+  outlines: JSON.stringify([{chapter_no: 5, title: '第五章', summary: '候选稿待决策', status: 'READY'}]),
+  chapters: JSON.stringify([{
+    id: '21000000-0000-0000-0000-000000000083',
+    chapter_no: 5,
+    title: '已拒绝候选稿',
+    body: '被拒绝的候选正文',
+    summary: '已拒绝',
+    status: 'REJECTED',
+    is_current: false,
+    generation_version: 3,
+  }]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([{
+    id: '21000000-0000-0000-0000-000000000084',
+    chapter_no: 5,
+    job_type: 'PLAN_CHAPTER_DIRECTOR',
+    status: 'PENDING',
+    payload: {trigger_source: 'chapter_rejected_retry'},
+    updated_at: '2026-05-06T15:35:13.000Z',
+    created_at: '2026-05-06T15:35:13.000Z',
+  }]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const rejectedRetryDirectorText = visibleText(detailViewWithRejectedRetryDirector);
+assert(rejectedRetryDirectorText.includes('下一步动作区：继续重写第 5 章'), 'pending rejected retry director should be presented as continuing the chapter rewrite');
+assert(rejectedRetryDirectorText.includes('继续重写第 5 章'), 'primary action should say continue rewriting the chapter');
+assert(!rejectedRetryDirectorText.includes('下一步动作区：启动第 5 章导演台'), 'pending rejected retry director should not be the primary title');
 
 const detailFactsView = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
   is_empty: false,

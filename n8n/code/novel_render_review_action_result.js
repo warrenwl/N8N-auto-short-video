@@ -40,12 +40,14 @@ const helpText = success
     ? '这一章已经成为正式版本。下一步通常是回项目确认续写状态，或继续处理下一条待审。'
     : action === 'REQUEST_REWRITE'
       ? '重写要求已经记录，后台重写任务会立即启动。你可以去队列查看进度，或回项目查看章节上下文。'
-      : '审核结论已经记录。下一步通常是回项目确认后续处理，或继续处理下一条待审。')
+      : nextJobId
+        ? `这一稿已拒绝，系统已为第 ${chapterNo || ''} 章排好继续重写任务。回项目后首屏会显示“继续重写第 ${chapterNo || ''} 章”。`
+        : `这一稿已拒绝。回项目后可以继续重写第 ${chapterNo || ''} 章，不会跳过本章。`)
   : '常见原因：章节不存在、review_token 不匹配，或当前章节状态不允许执行该动作。';
 const projectHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-project-list';
 const chapterHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}&view=chapters${chapterNo ? `#chapter-${encodeURIComponent(chapterNo)}` : '#written-section'}` : '/webhook/novel-project-list';
 const queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';
-const primaryLabel = success ? '继续审核下一章' : '返回审核中心';
+const primaryLabel = success && action === 'REJECT' ? '返回项目继续重写' : (success ? '继续审核下一章' : '返回审核中心');
 
 const rows = [
   ['动作', actionLabel],
@@ -102,7 +104,7 @@ const html = `<!doctype html>
       <div class="badge">${escapeHtml(statusText)}</div>
       <div class="tip">${escapeHtml(helpText)}</div>
       <div class="links">
-        <a class="primary" href="/webhook/novel-review-list">${escapeHtml(primaryLabel)}</a>
+        <a class="primary" href="${escapeHtml(action === 'REJECT' && success ? projectHref : '/webhook/novel-review-list')}">${escapeHtml(primaryLabel)}</a>
         <a href="${escapeHtml(projectHref)}">返回项目</a>
         <a href="${escapeHtml(chapterHref)}">返回章节</a>
         <a href="${escapeHtml(queueHref)}">查看队列</a>

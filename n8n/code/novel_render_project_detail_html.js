@@ -494,8 +494,169 @@ function settingChips(value) {
   }).join('')}</div>`;
 }
 
-function bibleCard(title, contentHtml) {
-  return `<article class="bible-card"><h3>${escapeHtml(title)}</h3>${contentHtml}</article>`;
+function structuredPlainText(value) {
+  const data = normalizeStructuredValue(value);
+  if (isEmptyStructuredValue(data)) return '';
+  if (Array.isArray(data)) {
+    return data.map(structuredPlainText).filter(Boolean).join('；');
+  }
+  if (data && typeof data === 'object') {
+    const preferred = ['name', '姓名', 'title', '标题', 'identity', '身份', 'role', '定位', 'goal', '目标', 'motivation', '动机', 'relationship_with_mc', '与主角关系', 'conflict_with_mc', '与主角冲突'];
+    const picked = preferred
+      .filter((key) => !isEmptyStructuredValue(data[key]))
+      .map((key) => `${humanizeBibleKey(key)}：${structuredPlainText(data[key])}`);
+    const pairs = picked.length ? picked : Object.entries(data)
+      .filter(([, val]) => !isEmptyStructuredValue(val))
+      .slice(0, 4)
+      .map(([key, val]) => `${humanizeBibleKey(key)}：${structuredPlainText(val)}`);
+    return pairs.join('；');
+  }
+  return String(data || '').replace(/\s+/g, ' ').trim();
+}
+
+function excerpt(value, maxLength = 96) {
+  const text = structuredPlainText(value);
+  if (!text) return '未记录';
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function countStructuredItems(value) {
+  const data = normalizeStructuredValue(value);
+  if (isEmptyStructuredValue(data)) return 0;
+  return Array.isArray(data) ? data.length : 1;
+}
+
+function jsonInputValue(value, fallback) {
+  const data = value === undefined || value === null || value === '' ? fallback : normalizeStructuredValue(value);
+  try {
+    return JSON.stringify(data);
+  } catch (error) {
+    return String(data || '');
+  }
+}
+
+function bibleFieldValues(bible) {
+  return {
+    story_core: bible.story_core || '',
+    world_setting: bible.world_setting || '',
+    power_system: bible.power_system || '',
+    tone_rules: bible.tone_rules || '',
+    forbidden_rules: bible.forbidden_rules || '',
+    main_character_json: jsonInputValue(bible.main_character, {}),
+    supporting_characters_json: jsonInputValue(bible.supporting_characters, []),
+    villain_setting_json: jsonInputValue(bible.villain_setting, []),
+    relationship_map_json: jsonInputValue(bible.relationship_map, []),
+    selling_points_json: jsonInputValue(bible.selling_points, []),
+  };
+}
+
+function bibleFieldConfigs(bible) {
+  return [
+    {name: 'story_core', label: '故事核心', group: '核心摘要', type: 'text', value: bible.story_core, help: '只保存故事核心，不影响其他设定项。'},
+    {name: 'world_setting', label: '世界设定', group: '核心摘要', type: 'text', value: bible.world_setting, help: '只保存时代、环境和世界规则。'},
+    {name: 'tone_rules', label: '文风规则', group: '核心摘要', type: 'text', value: bible.tone_rules, help: '只保存正文、大纲和审稿会参考的文风规则。'},
+    {name: 'main_character_json', label: '主角设定', group: '人物设定', type: 'json', value: bible.main_character, fallback: {}, help: '只保存主角身份、目标和成长线。'},
+    {name: 'supporting_characters_json', label: '配角设定', group: '人物设定', type: 'json', value: bible.supporting_characters, fallback: [], help: '只保存配角列表。'},
+    {name: 'villain_setting_json', label: '反派设定', group: '人物设定', type: 'json', value: bible.villain_setting, fallback: [], help: '只保存反派和阻力角色。'},
+    {name: 'relationship_map_json', label: '人物关系', group: '人物设定', type: 'json', value: bible.relationship_map, fallback: [], help: '只保存人物关系线。'},
+    {name: 'power_system', label: '能力体系', group: '生成约束', type: 'text', value: bible.power_system, help: '只保存能力、限制和升级规则。'},
+    {name: 'forbidden_rules', label: '禁忌规则', group: '生成约束', type: 'text', value: bible.forbidden_rules, help: '只保存后续生成不可突破的边界。'},
+    {name: 'selling_points_json', label: '卖点', group: '生成约束', type: 'json', value: bible.selling_points, fallback: [], help: '只保存商业卖点。'},
+  ];
+}
+
+function bibleHiddenFields(projectId, bible, activeName) {
+  const values = bibleFieldValues(bible);
+  return [
+    formHidden('project_id', projectId),
+    formHidden('reviewer', 'local_user'),
+    ...Object.entries(values)
+      .filter(([name]) => name !== activeName)
+      .map(([name, value]) => formHidden(name, value)),
+  ].join('');
+}
+
+function bibleSingleFieldEditForm(projectId, bible, config) {
+  const isJson = config.type === 'json';
+  const currentValue = bibleFieldValues(bible)[config.name] || '';
+  const inputHtml = isJson
+    ? jsonTextareaField(config.name, `${config.label}（单项编辑）`, config.value, config.fallback, {localizeKeys: true})
+    : `<label><span>${escapeHtml(config.label)}（单项编辑）</span><textarea name="${escapeHtml(config.name)}">${escapeHtml(currentValue)}</textarea></label>`;
+  return `
+    <form class="bible-single-edit-form" method="POST" action="/webhook/novel-bible-update" data-confirm="确认只保存“${escapeHtml(config.label)}”？其他设定项会保持当前值。">
+      ${bibleHiddenFields(projectId, bible, config.name)}
+      ${isJson ? `<div class="json-tools compact"><button type="button" data-format-json>格式化${escapeHtml(config.label)}</button><span>${escapeHtml(config.help || '只保存当前设定项。')}</span></div>` : `<p class="form-help">${escapeHtml(config.help || '只保存当前设定项。')}</p>`}
+      ${inputHtml}
+      <label>
+        <span>修改说明</span>
+        <textarea name="comment" placeholder="例如：补充${escapeHtml(config.label)}…"></textarea>
+      </label>
+      <div class="drawer-action-row inline-sticky">
+        <button class="primary" type="submit">保存${escapeHtml(config.label)}</button>
+      </div>
+    </form>`;
+}
+
+function bibleFieldEditDialog(projectId, bible, config, drawerId) {
+  return `
+    <dialog class="side-dialog bible-field-edit-dialog" id="${escapeHtml(drawerId)}" aria-label="编辑${escapeHtml(config.label)}抽屉">
+      <div class="drawer-panel bible-edit-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">单项编辑</p>
+            <h2>编辑${escapeHtml(config.label)}</h2>
+            <p class="muted">只保存当前设定项；其他设定会保持当前值。</p>
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+        </div>
+        ${bibleSingleFieldEditForm(projectId, bible, config)}
+      </div>
+    </dialog>`;
+}
+
+function bibleCard(title, contentHtml, options = {}) {
+  const drawerId = options.drawerId || `bible-card-${title}`;
+  const editDrawerId = options.editDrawerId || '';
+  const summary = options.summary || '未记录';
+  const meta = options.meta || '';
+  const isEmpty = summary === '未记录';
+  return `
+    <article class="bible-card bible-work-card${isEmpty ? ' is-empty' : ''}">
+      <div class="bible-card-summary">
+        <span>${escapeHtml(title)}</span>
+        <strong>${escapeHtml(summary)}</strong>
+        ${meta ? `<small>${escapeHtml(meta)}</small>` : ''}
+      </div>
+      <div class="bible-card-actions">
+        <button type="button" data-open-dialog="${escapeHtml(drawerId)}">打开详情</button>
+        ${editDrawerId ? `<button type="button" data-open-dialog="${escapeHtml(editDrawerId)}">编辑</button>` : ''}
+      </div>
+      <dialog class="side-dialog bible-card-dialog" id="${escapeHtml(drawerId)}" aria-label="${escapeHtml(title)}抽屉">
+        <div class="drawer-panel bible-card-panel">
+          <div class="drawer-head">
+            <div>
+              <p class="ops-kicker">设定集</p>
+              <h2>${escapeHtml(title)}</h2>
+              ${meta ? `<p class="muted">${escapeHtml(meta)}</p>` : ''}
+            </div>
+            <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+          </div>
+          <div class="bible-card-content">${contentHtml}</div>
+        </div>
+      </dialog>
+      ${options.editDialogHtml || ''}
+    </article>`;
+}
+
+function bibleWorkspaceGroup(title, description, cardsHtml) {
+  return `
+    <section class="bible-workspace-section" aria-label="${escapeHtml(title)}">
+      <div class="section-title compact-title">
+        <h2>${escapeHtml(title)}</h2>
+        <p class="muted">${escapeHtml(description)}</p>
+      </div>
+      <div class="bible-workspace-grid">${cardsHtml}</div>
+    </section>`;
 }
 
 function formHidden(name, value) {
@@ -516,16 +677,21 @@ function jsonTextareaField(name, label, value, fallback, options = {}) {
   return `<label class="json-field"><span>${escapeHtml(label)}</span><textarea class="json-textarea" name="${escapeHtml(name)}" data-json-field>${escapeHtml(jsonTextareaValue(value, fallback, options))}</textarea><small class="json-feedback" data-json-feedback>结构格式正常，保存时会自动转为后端字段</small></label>`;
 }
 
-function continueForm(projectId) {
+function continueForm(projectId, options = {}) {
+  const labelText = options.label || '排队下一步';
+  const subText = options.subText || '不直接调用模型';
+  const confirmText = options.confirm || '继续写作只会补齐缺失的下一步队列任务，不会直接调用模型；如果页面已经出现“启动设定集生成”或“启动大纲生成”，建议优先点击对应按钮。确认补齐任务？';
   return `
-    <form class="inline-form action-queue" method="POST" action="/webhook/novel-project-continue" data-confirm="继续写作只会补齐缺失的下一步队列任务，不会直接调用模型；如果页面已经出现“启动设定集生成”或“启动大纲生成”，建议优先点击对应按钮。确认补齐任务？">
+    <form class="inline-form action-queue" method="POST" action="/webhook/novel-project-continue" data-confirm="${escapeHtml(confirmText)}">
       ${formHidden('project_id', projectId)}
       ${formHidden('reviewer', 'local_user')}
-      <button type="submit"><span>排队下一步</span><small>不直接调用模型</small></button>
+      <button type="submit"><span>${escapeHtml(labelText)}</span><small>${escapeHtml(subText)}</small></button>
     </form>`;
 }
 
-function generationRunForm(projectId, jobType, job = {}) {
+function generationRunForm(projectId, jobType, job = {}, options = {}) {
+  const isRejectedRetry = jobType === 'PLAN_CHAPTER_DIRECTOR' && isRejectedRetryDirectorJob(job);
+  const rejectedRetryChapter = job.chapter_no ? `第 ${job.chapter_no} 章` : '当前章节';
   const config = {
     GENERATE_BIBLE: {
       action: '/webhook/novel-generate-bible-now',
@@ -542,8 +708,13 @@ function generationRunForm(projectId, jobType, job = {}) {
     PLAN_CHAPTER_DIRECTOR: {
       action: '/webhook/novel-generate-director-now',
       step: 'director',
-      label: job.chapter_no ? `启动第 ${job.chapter_no} 章导演台` : '启动导演台',
-      confirm: '这会领取当前项目已排队的导演台任务；提交完成后会留在当前项目页并刷新状态，模型调用会继续在 n8n 后台执行。确认启动？',
+      label: isRejectedRetry
+        ? `继续重写${rejectedRetryChapter}`
+        : (job.chapter_no ? `启动第 ${job.chapter_no} 章导演台` : '启动导演台'),
+      subText: isRejectedRetry ? '先过导演台，再生成正文' : '后台执行并刷新状态',
+      confirm: isRejectedRetry
+        ? `这会继续重写${rejectedRetryChapter}；系统会先运行导演台检查，质量通过后再排正文生成。确认继续？`
+        : '这会领取当前项目已排队的导演台任务；提交完成后会留在当前项目页并刷新状态，模型调用会继续在 n8n 后台执行。确认启动？',
     },
     GENERATE_CHAPTER: {
       action: '/webhook/novel-generate-chapter-now',
@@ -553,11 +724,14 @@ function generationRunForm(projectId, jobType, job = {}) {
     },
   }[jobType];
   if (!projectId || !config) return '';
+  const labelText = options.label || config.label;
+  const subText = options.subText || config.subText || '后台执行并刷新状态';
+  const confirmText = options.confirm || config.confirm;
   return `
-    <form class="inline-form action-now" method="POST" action="${escapeHtml(config.action)}" data-confirm="${escapeHtml(config.confirm)}">
+    <form class="inline-form action-now" method="POST" action="${escapeHtml(config.action)}" data-confirm="${escapeHtml(confirmText)}">
       ${formHidden('project_id', projectId)}
       ${formHidden('step', config.step)}
-      <button class="primary" type="submit"><span>${escapeHtml(config.label)}</span><small>后台执行并刷新状态</small></button>
+      <button class="primary" type="submit"><span>${escapeHtml(labelText)}</span><small>${escapeHtml(subText)}</small></button>
     </form>`;
 }
 
@@ -583,6 +757,7 @@ function regenerateAssetForm(projectId, step, options = {}) {
   const isBible = step === 'BIBLE';
   const labelText = isBible ? '重新生成设定集' : '重新生成大纲';
   const smallText = isBible ? '更新核心创意并重排大纲' : '覆盖目录并保留章节';
+  const drawerId = isBible ? 'regenerate-bible-drawer' : 'regenerate-outline-drawer';
   const confirmText = isBible
     ? '这会用新的核心创意/生成要求重新生成设定集，并取消旧的待处理任务；新设定完成后会覆盖当前设定，并继续创建新的大纲生成任务。已生成章节不会自动删除。确认重跑？'
     : '这会重新生成大纲，并取消旧的待处理章节/审稿/重写任务；新大纲完成后会覆盖当前目录，已生成章节不会自动删除。确认重跑？';
@@ -595,18 +770,31 @@ function regenerateAssetForm(projectId, step, options = {}) {
     ? '例如：一女主三男主，前朝落难公主被仇家异姓王收养，前期甜宠修罗场，后期身份揭露转虐恋…'
     : '例如：设定集已修正，重跑章节目录…';
   return `
-    <details class="action-detail danger-detail regenerate-detail">
-      <summary>${escapeHtml(labelText)}</summary>
-      <form method="POST" action="/webhook/novel-project-regenerate" data-confirm="${escapeHtml(confirmText)}">
-        ${formHidden('project_id', projectId)}
-        ${formHidden('step', step)}
-        ${formHidden('reviewer', 'local_user')}
-        <p class="muted">${escapeHtml(note)}</p>
-        <label><span>${escapeHtml(textareaLabel)}</span><textarea name="${escapeHtml(textareaName)}" placeholder="${escapeHtml(textareaPlaceholder)}"></textarea></label>
-        ${isBible ? '<input type="hidden" name="comment" value="以新的核心创意重新生成设定集" />' : ''}
-        <button type="submit"><span>${escapeHtml(labelText)}</span><small>${escapeHtml(smallText)}</small></button>
-      </form>
-    </details>`;
+    <button class="drawer-button regenerate-trigger" type="button" data-open-dialog="${escapeHtml(drawerId)}">${escapeHtml(labelText)}</button>
+    <dialog class="side-dialog regenerate-dialog" id="${escapeHtml(drawerId)}" aria-label="${escapeHtml(labelText)}抽屉">
+      <div class="drawer-panel regenerate-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">高风险重生成</p>
+            <h2>${escapeHtml(labelText)}</h2>
+            <p class="muted">${escapeHtml(smallText)}</p>
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+        </div>
+        <form class="regenerate-form" method="POST" action="/webhook/novel-project-regenerate" data-confirm="${escapeHtml(confirmText)}">
+          ${formHidden('project_id', projectId)}
+          ${formHidden('step', step)}
+          ${formHidden('reviewer', 'local_user')}
+          <p class="muted">${escapeHtml(note)}</p>
+          <label><span>${escapeHtml(textareaLabel)}</span><textarea name="${escapeHtml(textareaName)}" placeholder="${escapeHtml(textareaPlaceholder)}"></textarea></label>
+          ${isBible ? '<input type="hidden" name="comment" value="以新的核心创意重新生成设定集" />' : ''}
+          <div class="drawer-action-row">
+            <button class="danger-submit" type="submit"><span>${escapeHtml(labelText)}</span><small>${escapeHtml(smallText)}</small></button>
+            <button type="button" data-close-dialog>取消</button>
+          </div>
+        </form>
+      </div>
+    </dialog>`;
 }
 
 function projectTargetsForm(row) {
@@ -698,70 +886,63 @@ function projectArchiveForms(row) {
     </details>`;
 }
 
-function bibleEditForm(projectId, bible) {
-  return `
-    <details class="action-detail management-detail">
-      <summary>编辑设定集（高级）</summary>
-      <form method="POST" action="/webhook/novel-bible-update" data-confirm="确认保存设定集？后续生成会读取新的设定。">
-        ${formHidden('project_id', projectId)}
-        ${formHidden('reviewer', 'local_user')}
-        <div class="json-tools">
-          <button type="button" data-format-json>格式化结构化字段</button>
-          <span>保存前会检查结构化内容，避免无效数据写入设定集。</span>
-        </div>
-        <div class="form-grid">
-          <label><span>故事核心</span><textarea name="story_core">${escapeHtml(bible.story_core || '')}</textarea></label>
-          <label><span>世界设定</span><textarea name="world_setting">${escapeHtml(bible.world_setting || '')}</textarea></label>
-          <label><span>能力体系</span><textarea name="power_system">${escapeHtml(bible.power_system || '')}</textarea></label>
-          <label><span>文风规则</span><textarea name="tone_rules">${escapeHtml(bible.tone_rules || '')}</textarea></label>
-          <label><span>禁忌规则</span><textarea name="forbidden_rules">${escapeHtml(bible.forbidden_rules || '')}</textarea></label>
-          ${jsonTextareaField('main_character_json', '主角设定（可编辑结构）', bible.main_character, {}, {localizeKeys: true})}
-          ${jsonTextareaField('supporting_characters_json', '配角设定（可编辑结构）', bible.supporting_characters, [], {localizeKeys: true})}
-          ${jsonTextareaField('villain_setting_json', '反派设定（可编辑结构）', bible.villain_setting, [], {localizeKeys: true})}
-          ${jsonTextareaField('relationship_map_json', '人物关系（可编辑结构）', bible.relationship_map, [], {localizeKeys: true})}
-          ${jsonTextareaField('selling_points_json', '卖点（可编辑结构）', bible.selling_points, [], {localizeKeys: true})}
-        </div>
-        <label>
-          <span>修改说明</span>
-          <textarea name="comment" placeholder="例如：补充反派动机和能力限制…"></textarea>
-        </label>
-        <button type="submit">保存设定集</button>
-      </form>
-    </details>`;
-}
-
 function outlineEditForm(projectId, outline) {
+  const drawerId = `outline-edit-${outline.id || outline.chapter_no}`;
   return `
-    <details class="action-detail management-detail">
-      <summary>编辑本章大纲</summary>
-      <form method="POST" action="/webhook/novel-outline-update" data-confirm="确认保存本章大纲？后续生成会读取新的大纲。">
-        ${formHidden('project_id', projectId)}
-        ${formHidden('outline_id', outline.id)}
-        ${formHidden('reviewer', 'local_user')}
-        <div class="form-grid">
-          <label><span>卷号</span><input name="volume_no" type="number" min="1" step="1" inputmode="numeric" value="${escapeHtml(outline.volume_no || 1)}" /></label>
-          <label><span>章节标题</span><input name="title" value="${escapeHtml(stripChapterTitlePrefix(outline.title || ''))}" /></label>
-          <label><span>大纲摘要</span><textarea name="summary">${escapeHtml(outline.summary || '')}</textarea></label>
-          <label><span>章节目标</span><textarea name="chapter_goal">${escapeHtml(outline.chapter_goal || '')}</textarea></label>
-          <label><span>冲突点</span><textarea name="conflict_point">${escapeHtml(outline.conflict_point || '')}</textarea></label>
-          <label><span>情绪点</span><textarea name="emotional_point">${escapeHtml(outline.emotional_point || '')}</textarea></label>
-          <label><span>章末钩子</span><textarea name="hook">${escapeHtml(outline.hook || '')}</textarea></label>
+    <button type="button" data-open-dialog="${escapeHtml(drawerId)}">编辑本章大纲</button>
+    <dialog class="side-dialog outline-edit-dialog" id="${escapeHtml(drawerId)}" aria-label="编辑本章大纲抽屉">
+      <div class="drawer-panel outline-edit-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">大纲编排</p>
+            <h2>编辑本章大纲</h2>
+            <p class="muted">${escapeHtml(chapterHeading(outline.chapter_no, outline.title || '未命名章节'))}。保存后续生成会读取新的大纲。</p>
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
         </div>
-        <label>
-          <span>修改说明</span>
-          <textarea name="comment" placeholder="例如：强化本章反转，保留结尾悬念…"></textarea>
-        </label>
-        <button type="submit">保存本章大纲</button>
-      </form>
-    </details>`;
+        <form class="outline-edit-form" method="POST" action="/webhook/novel-outline-update" data-confirm="确认保存本章大纲？后续生成会读取新的大纲。">
+          ${formHidden('project_id', projectId)}
+          ${formHidden('outline_id', outline.id)}
+          ${formHidden('reviewer', 'local_user')}
+          ${formHidden('volume_no', outline.volume_no || 1)}
+          <div class="form-grid">
+            <div class="readonly-field"><span>卷号</span><strong>第 ${escapeHtml(outline.volume_no || 1)} 卷</strong><small>卷归属由大纲结构决定，编辑章节时不可修改。</small></div>
+            <label><span>章节标题</span><input name="title" value="${escapeHtml(stripChapterTitlePrefix(outline.title || ''))}" /></label>
+            <label><span>大纲摘要</span><textarea name="summary">${escapeHtml(outline.summary || '')}</textarea></label>
+            <label><span>章节目标</span><textarea name="chapter_goal">${escapeHtml(outline.chapter_goal || '')}</textarea></label>
+            <label><span>冲突点</span><textarea name="conflict_point">${escapeHtml(outline.conflict_point || '')}</textarea></label>
+            <label><span>情绪点</span><textarea name="emotional_point">${escapeHtml(outline.emotional_point || '')}</textarea></label>
+            <label><span>章末钩子</span><textarea name="hook">${escapeHtml(outline.hook || '')}</textarea></label>
+          </div>
+          <label>
+            <span>修改说明</span>
+            <textarea name="comment" placeholder="例如：强化本章反转，保留结尾悬念…"></textarea>
+          </label>
+          <div class="drawer-action-row">
+            <button class="primary" type="submit">保存本章大纲</button>
+            <button type="button" data-close-dialog>取消</button>
+          </div>
+        </form>
+      </div>
+    </dialog>`;
 }
 
 function rewriteForm(chapter) {
   if (!chapter.is_current || !['APPROVED', 'PUBLISHED'].includes(chapter.status)) return '';
+  const drawerId = `chapter-rewrite-${chapter.id || chapter.chapter_no}`;
   return `
-    <details class="action-detail">
-      <summary>申请重写此章</summary>
-      <form method="POST" action="/webhook/novel-chapter-rewrite-request" data-confirm="这会为当前正式版本创建重写任务。旧正式版本会继续保持当前可续写，确认申请重写？">
+    <button type="button" data-open-dialog="${escapeHtml(drawerId)}">申请重写此章</button>
+    <dialog class="side-dialog chapter-action-dialog" id="${escapeHtml(drawerId)}" aria-label="申请重写此章抽屉">
+      <div class="drawer-panel chapter-drawer-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">章节操作</p>
+            <h2>申请重写此章</h2>
+            <p class="muted">${escapeHtml(chapterHeading(chapter.chapter_no, chapter.title || '未命名章节'))}。旧正式版本会继续保留，重写只会创建后台任务。</p>
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+        </div>
+      <form class="chapter-drawer-form" method="POST" action="/webhook/novel-chapter-rewrite-request" data-confirm="这会为当前正式版本创建重写任务。旧正式版本会继续保持当前可续写，确认申请重写？">
         ${formHidden('chapter_id', chapter.id)}
         ${formHidden('review_token', chapter.review_token)}
         ${formHidden('reviewer', 'local_user')}
@@ -769,18 +950,33 @@ function rewriteForm(chapter) {
           <span>重写要求</span>
           <textarea name="comment" placeholder="例如：强化冲突、压缩铺垫、保留结尾钩子…"></textarea>
         </label>
-        <button type="submit">提交重写申请</button>
+        <p class="form-help" data-async-feedback>提交后会刷新页面；可在队列页观察重写任务。</p>
+        <div class="drawer-action-row">
+          <button class="primary" type="submit">提交重写申请</button>
+          <button type="button" data-close-dialog>取消</button>
+        </div>
       </form>
-    </details>`;
+      </div>
+    </dialog>`;
 }
 
 function manualEditForm(chapter) {
   if (!chapter.body || !['DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED'].includes(chapter.status)) return '';
   const canSaveCandidate = chapter.is_current && ['APPROVED', 'PUBLISHED'].includes(chapter.status);
+  const drawerId = `chapter-manual-edit-${chapter.id || chapter.chapter_no}`;
   return `
-    <details class="action-detail">
-      <summary>手动编辑正文</summary>
-      <form method="POST" action="/webhook/novel-chapter-manual-edit" data-confirm="确认保存正文？">
+    <button type="button" data-open-dialog="${escapeHtml(drawerId)}">手动编辑正文</button>
+    <dialog class="side-dialog chapter-edit-dialog" id="${escapeHtml(drawerId)}" aria-label="手动编辑正文抽屉">
+      <div class="drawer-panel chapter-drawer-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">人工改稿</p>
+            <h2>手动编辑正文</h2>
+            <p class="muted">${escapeHtml(chapterHeading(chapter.chapter_no, chapter.title || '未命名章节'))}。可直接保存当前版本，也可创建候选稿并送审。</p>
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+        </div>
+      <form class="chapter-drawer-form" method="POST" action="/webhook/novel-chapter-manual-edit" data-confirm="确认保存正文？">
         ${formHidden('chapter_id', chapter.id)}
         ${formHidden('review_token', chapter.review_token)}
         ${formHidden('reviewer', 'local_user')}
@@ -797,12 +993,15 @@ function manualEditForm(chapter) {
           <textarea name="comment" placeholder="例如：压缩开头铺垫，强化结尾反转…"></textarea>
         </label>
         <p class="form-help">直接保存会修改当前版本，不调用模型；保存为候选稿会创建新候选版本并进入智能审稿，原正式版本不变。</p>
-        <div class="manual-edit-actions">
+        <p class="form-help" data-async-feedback>保存后页面会刷新；如果要保持旧正式版本，优先选择候选稿送审。</p>
+        <div class="drawer-action-row manual-edit-actions">
           ${canSaveCandidate ? '<button type="submit" name="edit_mode" value="candidate_review" data-confirm="这会创建新的人工编辑候选稿，不覆盖当前正式版本；候选稿会进入智能审稿队列。确认保存为候选稿并送审？">保存为候选稿并送审</button>' : '<span class="disabled-action">候选稿送审仅支持当前正式版本</span>'}
           <button type="submit" name="edit_mode" value="direct_save" data-confirm="这会直接保存当前章节版本，不创建候选稿、不调用模型、不新增审稿任务。确认直接保存？">直接保存</button>
+          <button type="button" data-close-dialog>取消</button>
         </div>
       </form>
-    </details>`;
+      </div>
+    </dialog>`;
 }
 
 function remindForm(chapter) {
@@ -863,6 +1062,21 @@ function directorRegenerateForm(projectId, chapterNo, cardId = '') {
       ${formHidden('director_action', 'REGENERATE')}
       ${formHidden('reviewer', 'local_user')}
       <button type="submit"><span>重新生成导演台</span><small>只排队规划</small></button>
+    </form>`;
+}
+
+function directorResolveBlockersForm(projectId, chapterNo, cardId, blockingIssues) {
+  if (!projectId || !chapterNo || !parseArray(blockingIssues).length) return '';
+  const issueSummary = directorValueText(blockingIssues).slice(0, 900);
+  return `
+    <form class="inline-form action-repair" method="POST" action="/webhook/novel-director-card-regenerate" data-confirm="这会带着当前阻断清单重新生成导演台，新版本通过质量闸门后才会自动排正文。确认重跑解决阻断？">
+      ${formHidden('project_id', projectId)}
+      ${formHidden('director_card_id', cardId || '')}
+      ${formHidden('chapter_no', chapterNo)}
+      ${formHidden('director_action', 'REGENERATE')}
+      ${formHidden('reviewer', 'local_user')}
+      ${formHidden('comment', `解决导演台阻断：${issueSummary}`)}
+      <button type="submit"><span>重跑解决阻断</span><small>带阻断清单</small></button>
     </form>`;
 }
 
@@ -960,21 +1174,30 @@ function outlineCard(outline, chaptersByNo, projectId, directorByNo = new Map(),
     return new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime();
   })[0] || null;
   const hasBody = Boolean(latest && latest.body);
+  const hasCurrent = chapters.some((chapter) => chapter.is_current);
+  const hasReview = chapters.some((chapter) => chapter.status === 'NEED_REVIEW');
+  const directorBlocked = director?.status === 'NEEDS_REVIEW';
+  const noDirector = !director && !directorJob;
+  const shouldOpen = Boolean(chapters.some((chapter) => chapter.status === 'NEED_REVIEW') || directorJob?.status === 'PENDING' || directorJob?.status === 'RUNNING');
   const filterValues = ['all'];
+  if (!hasBody) filterValues.push('unwritten');
   if (hasBody) filterValues.push('written');
-  if (chapters.some((chapter) => chapter.is_current)) filterValues.push('current');
-  if (chapters.some((chapter) => chapter.status === 'NEED_REVIEW')) filterValues.push('review');
+  if (hasCurrent) filterValues.push('current');
+  if (hasReview) filterValues.push('review');
+  if (directorBlocked) filterValues.push('director-blocked');
+  if (noDirector) filterValues.push('no-director');
   const chapterHref = hasBody ? projectViewHref('chapters', `#chapter-${encodeURIComponent(outline.chapter_no || '')}`) : '';
   return `
-    <article class="catalog-item" data-chapter-values="${escapeHtml(filterValues.join(' '))}">
-      <div class="item-head">
-        <div>
+    <details class="catalog-item catalog-panel${directorBlocked ? ' is-blocked' : ''}${!hasBody ? ' is-unwritten' : ''}" id="catalog-${escapeHtml(outline.chapter_no || '')}" data-chapter-values="${escapeHtml(filterValues.join(' '))}"${shouldOpen ? ' open' : ''}>
+      <summary class="catalog-panel-summary">
+        <div class="catalog-summary-text">
           <strong>${escapeHtml(chapterHeading(outline.chapter_no, latest?.title || outline.title || '未命名章节'))}</strong>
-          <span>第 ${escapeHtml(outline.volume_no || 1)} 卷</span>
+          <span>第 ${escapeHtml(outline.volume_no || 1)} 卷 · ${escapeHtml(excerpt(outline.summary || outline.chapter_goal || '', 72))}</span>
         </div>
         <div class="badge-row">${directorCardBadge(director, directorJob)}${latest ? badge(latest.status, chapterStatusLabel) : badge(outline.status, outlineStatusLabel)}</div>
-      </div>
-      <dl>
+      </summary>
+      <div class="catalog-panel-body">
+      <dl class="outline-detail-grid">
         <dt>大纲摘要</dt><dd>${escapeHtml(outline.summary || '暂无大纲摘要')}</dd>
         <dt>章节目标</dt><dd>${escapeHtml(outline.chapter_goal || '未记录')}</dd>
         <dt>冲突点</dt><dd>${escapeHtml(outline.conflict_point || '未记录')}</dd>
@@ -985,9 +1208,11 @@ function outlineCard(outline, chaptersByNo, projectId, directorByNo = new Map(),
         ${directorMiniLink(director, outline, directorJob)}
         ${hasBody ? `<a href="${escapeHtml(chapterHref)}">看正文</a>` : '<span class="disabled-action">未生成正文</span>'}
         ${latest ? reviewLink(latest) : ''}
+        ${directorBlocked ? `<a href="${escapeHtml(projectViewHref('director', `#director-${encodeURIComponent(outline.chapter_no || '')}`))}">处理导演台</a>` : ''}
+        ${outline.id ? outlineEditForm(projectId, outline) : ''}
       </div>
-      ${outline.id ? outlineEditForm(projectId, outline) : ''}
-    </article>`;
+      </div>
+    </details>`;
 }
 
 function isStaleChapter(chapter) {
@@ -1110,6 +1335,25 @@ function chapterHistoryTimeline(chapter, history = []) {
   };
 }
 
+function chapterDrawer(drawerId, kicker, title, description, content, options = {}) {
+  const {buttonLabel = title, dialogClass = 'chapter-info-dialog'} = options;
+  return `
+    <button type="button" data-open-dialog="${escapeHtml(drawerId)}">${escapeHtml(buttonLabel)}</button>
+    <dialog class="side-dialog ${escapeHtml(dialogClass)}" id="${escapeHtml(drawerId)}" aria-label="${escapeHtml(title)}抽屉">
+      <div class="drawer-panel chapter-drawer-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">${escapeHtml(kicker)}</p>
+            <h2>${escapeHtml(title)}</h2>
+            ${description ? `<p class="muted">${escapeHtml(description)}</p>` : ''}
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+        </div>
+        <div class="chapter-drawer-content">${content}</div>
+      </div>
+    </dialog>`;
+}
+
 function chapterCard(chapter, options = {}) {
   const title = chapter.title || '未命名章节';
   const body = chapter.body || '';
@@ -1118,56 +1362,94 @@ function chapterCard(chapter, options = {}) {
   const historyDrawer = stale ? {button: '', dialog: ''} : chapterHistoryTimeline(chapter, history);
   const current = chapter.is_current ? '<span class="badge good">当前正式版本</span>' : '';
   const staleBadge = stale ? '<span class="badge muted">旧大纲历史</span>' : '';
+  const chapterKey = chapter.id || `${stale ? 'stale-' : ''}${chapter.chapter_no || 'chapter'}`;
+  const chapterTitle = chapterHeading(chapter.chapter_no, title);
+  const chapterOpen = Boolean(!stale && chapter.status === 'NEED_REVIEW');
+  const bodyDrawer = chapterDrawer(
+    `chapter-body-drawer-${chapterKey}`,
+    '章节正文',
+    '章节正文',
+    chapterTitle,
+    `<pre id="body-${escapeHtml(chapter.id || chapterKey)}">${escapeHtml(body || '暂无正文')}</pre>`,
+    {dialogClass: 'chapter-body-dialog'}
+  );
+  const reviewDrawer = chapterDrawer(
+    `chapter-review-drawer-${chapterKey}`,
+    '智能审稿',
+    '审稿报告',
+    chapterTitle,
+    reviewReportBlock(chapter)
+  );
+  const humanDrawer = chapterDrawer(
+    `chapter-human-drawer-${chapterKey}`,
+    '人工记录',
+    '人工审核记录',
+    chapterTitle,
+    humanReviewBlock(chapter)
+  );
+  const runsDrawer = chapterDrawer(
+    `chapter-runs-drawer-${chapterKey}`,
+    '模型调用',
+    '章节模型调用',
+    chapterTitle,
+    chapterAiRunsBlock(chapter)
+  );
   const actions = stale
     ? '<span class="disabled-action">旧大纲历史只读</span>'
     : `
         ${reviewLink(chapter) || '<span class="disabled-action">只读正文</span>'}
         ${historyDrawer.button}
         ${copyReviewButton(chapter)}
-        <button type="button" data-copy-target="body-${escapeHtml(chapter.id)}">复制正文</button>
+        <button type="button" data-copy-target="body-${escapeHtml(chapter.id || chapterKey)}">复制正文</button>
         ${remindForm(chapter)}
       `;
   return `
-    <article id="${stale ? 'stale-' : ''}chapter-${escapeHtml(chapter.chapter_no)}" class="chapter-card${stale ? ' stale-chapter-card' : ''}" data-written-status="${escapeHtml(chapter.status || '')}" data-version-kind="${stale ? 'stale' : (chapter.is_current ? 'current' : 'candidate')}">
-      <div class="item-head">
+    <details id="${stale ? 'stale-' : ''}chapter-${escapeHtml(chapter.chapter_no)}" class="chapter-card chapter-panel${stale ? ' stale-chapter-card' : ''}" data-written-status="${escapeHtml(chapter.status || '')}" data-version-kind="${stale ? 'stale' : (chapter.is_current ? 'current' : 'candidate')}"${chapterOpen ? ' open' : ''}>
+      <summary class="chapter-panel-summary">
         <div>
-          <strong>${escapeHtml(chapterHeading(chapter.chapter_no, title))}</strong>
+          <strong>${escapeHtml(chapterTitle)}</strong>
           <span>版本 ${escapeHtml(chapter.generation_version || 1)} / 字数 ${escapeHtml(chapter.word_count || 0)} / ${escapeHtml(formatLocalTime(chapter.updated_at || chapter.created_at))}</span>
         </div>
         <div class="badge-row">${badge(chapter.status, chapterStatusLabel)}${current}${staleBadge}</div>
+      </summary>
+      <div class="chapter-panel-body">
+        ${stale ? '<p class="stale-note">这份正文生成于当前大纲更新之前，仅作为历史记录保留，不再参与当前章节审核和下一步判断。</p>' : ''}
+        <p class="chapter-summary">${escapeHtml(chapter.summary || '暂无章节摘要')}</p>
+        ${chapterEvidenceStrip(chapter)}
+        <div class="row-actions">
+          ${actions}
+          ${stale ? '' : rewriteForm(chapter)}
+          ${stale ? '' : manualEditForm(chapter)}
+          ${bodyDrawer}
+          ${reviewDrawer}
+          ${humanDrawer}
+          ${runsDrawer}
+        </div>
+        ${historyDrawer.dialog}
       </div>
-      ${stale ? '<p class="stale-note">这份正文生成于当前大纲更新之前，仅作为历史记录保留，不再参与当前章节审核和下一步判断。</p>' : ''}
-      <p class="chapter-summary">${escapeHtml(chapter.summary || '暂无章节摘要')}</p>
-      ${chapterEvidenceStrip(chapter)}
-      <div class="row-actions">
-        ${actions}
-      </div>
-      ${historyDrawer.dialog}
-      ${stale ? '' : rewriteForm(chapter)}
-      ${stale ? '' : manualEditForm(chapter)}
-      <details class="chapter-body">
-        <summary>章节正文</summary>
-        <pre id="body-${escapeHtml(chapter.id)}">${escapeHtml(body || '暂无正文')}</pre>
-      </details>
-      <details class="chapter-extra">
-        <summary>审稿报告</summary>
-        ${reviewReportBlock(chapter)}
-      </details>
-      <details class="chapter-extra">
-        <summary>人工审核记录</summary>
-        ${humanReviewBlock(chapter)}
-      </details>
-      <details class="chapter-extra">
-        <summary>章节模型调用</summary>
-        ${chapterAiRunsBlock(chapter)}
-      </details>
-    </article>`;
+    </details>`;
+}
+
+function parseInlineJsonValue(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || !['{', '['].includes(trimmed[0])) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function directorValueText(value) {
   if (value === undefined || value === null || value === '') return '';
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (Array.isArray(value)) return value.map(directorValueText).filter(Boolean).join('；');
+  if (typeof value === 'string') {
+    const parsed = parseInlineJsonValue(value);
+    return parsed ? directorValueText(parsed) : value;
+  }
   if (typeof value === 'object') {
     return Object.values(value).map(directorValueText).filter(Boolean).join('；');
   }
@@ -1175,7 +1457,10 @@ function directorValueText(value) {
 }
 
 function directorListItem(item) {
-  if (typeof item === 'string') return escapeHtml(item);
+  if (typeof item === 'string') {
+    const parsed = parseInlineJsonValue(item);
+    return parsed ? directorListItem(parsed) : escapeHtml(item);
+  }
   if (!item || typeof item !== 'object') return escapeHtml(directorValueText(item));
   const risk = item.risk || item.title || item.issue || '';
   const reason = item.reason || item.why || '';
@@ -1248,6 +1533,31 @@ function directorSegmentPlanHtml(payload) {
   `).join('')}</ol>`;
 }
 
+function directorPanelHtml(title, content, options = {}) {
+  const {drawerId = '', summary = ''} = options;
+  const safeDrawerId = drawerId || `director-panel-${title}`;
+  return `
+    <article class="director-panel director-drawer-card">
+      <button class="director-panel-trigger" type="button" data-open-dialog="${escapeHtml(safeDrawerId)}">
+        <span>${escapeHtml(title)}</span>
+        ${summary ? `<small>${escapeHtml(summary)}</small>` : ''}
+      </button>
+      <dialog class="side-dialog director-panel-dialog" id="${escapeHtml(safeDrawerId)}" aria-label="${escapeHtml(title)}抽屉">
+        <div class="drawer-panel director-panel-drawer">
+          <div class="drawer-head">
+            <div>
+              <p class="ops-kicker">导演台</p>
+              <h2>${escapeHtml(title)}</h2>
+              ${summary ? `<p class="muted">${escapeHtml(summary)}</p>` : ''}
+            </div>
+            <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+          </div>
+          <div class="director-panel-body">${content}</div>
+        </div>
+      </dialog>
+    </article>`;
+}
+
 function directorCardArticle(card, outline, activeJob, chapterJob = null, chapter = null) {
   const payload = directorPayload(card);
   const chain = parseObject(payload.causal_chain);
@@ -1258,6 +1568,23 @@ function directorCardArticle(card, outline, activeJob, chapterJob = null, chapte
   const title = stripChapterTitlePrefix(outline?.title || '', '未命名章节');
   const statusBadgeHtml = directorCardBadge(card, activeJob);
   const sourceText = card?.id ? `${label(directorSourceLabel, card.source, '来源未知')} / v${card.version || 1}` : '暂无版本';
+  const hasActiveWork = ['PENDING', 'RUNNING'].includes(activeJob?.status) || ['PENDING', 'RUNNING'].includes(chapterJob?.status);
+  const chapterOpen = Boolean(blockingIssues.length || hasActiveWork || card?.manual_override);
+  const chainContent = directorDl([
+    ['章节意图', payload.chapter_intent],
+    ['前因', chain.from_previous],
+    ['触发', chain.trigger],
+    ['不可逆结果', chain.irreversible_result],
+    ['推向后续', chain.to_next],
+  ]);
+  const motives = parseArray(chain.character_motives);
+  const rememberCount = parseArray(constraints.must_remember).length;
+  const breakCount = parseArray(constraints.must_not_break).length;
+  const guardrailCount = parseArray(constraints.future_outline_guardrails).length;
+  const ops = parseArray(payload.foreshadowing_ops);
+  const risks = parseArray(payload.abruptness_risks);
+  const segments = parseArray(payload.segment_plan);
+  const repairAction = directorResolveBlockersForm(projectId, chapterNo, card?.id, blockingIssues);
   const actions = card?.id
     ? `
       ${directorStartChapterForm(projectId, card, chapterJob, chapter)}
@@ -1268,35 +1595,29 @@ function directorCardArticle(card, outline, activeJob, chapterJob = null, chapte
     `
     : `${directorRegenerateForm(projectId, chapterNo) || '<span class="disabled-action">等待大纲</span>'}`;
   return `
-    <article id="director-${escapeHtml(chapterNo)}" class="director-card">
-      <div class="item-head">
+    <details id="director-${escapeHtml(chapterNo)}" class="director-card director-chapter-panel"${chapterOpen ? ' open' : ''}>
+      <summary class="director-chapter-summary">
         <div>
           <strong>第 ${escapeHtml(chapterNo || '-')} 章：${escapeHtml(title)}</strong>
           <span>${escapeHtml(sourceText)} / ${escapeHtml(formatLocalTime(card?.updated_at || card?.created_at || activeJob?.updated_at))}</span>
         </div>
         <div class="badge-row">${statusBadgeHtml}${card?.manual_override ? '<span class="badge warn">已手改</span>' : ''}</div>
-      </div>
-      ${blockingIssues.length ? `<div class="director-warning"><strong>阻断问题</strong><p class="muted">这些来自导演台原始结构里的质量闸门；保存后仍有阻断内容时，状态会继续显示待调整。</p>${directorList(blockingIssues)}</div>` : ''}
+      </summary>
+      ${blockingIssues.length ? `<div class="director-warning"><strong>阻断问题</strong><p class="muted">这些来自导演台原始结构里的质量闸门；保存后仍有阻断内容时，状态会继续显示待调整。也可以直接带着这份清单重跑导演台，让模型只处理阻断。</p>${directorList(blockingIssues)}${repairAction ? `<div class="director-warning-actions">${repairAction}</div>` : ''}</div>` : ''}
       <div class="director-grid">
-        <section class="director-panel"><h3>情节因果链</h3>${directorDl([
-          ['章节意图', payload.chapter_intent],
-          ['前因', chain.from_previous],
-          ['触发', chain.trigger],
-          ['不可逆结果', chain.irreversible_result],
-          ['推向后续', chain.to_next],
-        ])}</section>
-        <section class="director-panel"><h3>人物动机</h3>${directorList(chain.character_motives)}</section>
-        <section class="director-panel"><h3>连续性约束</h3>${directorDl([
+        ${directorPanelHtml('情节因果链', chainContent, {drawerId: `director-panel-${chapterNo}-chain`, summary: chain.from_previous ? '前后承接' : '未记录'})}
+        ${directorPanelHtml('人物动机', directorList(chain.character_motives), {drawerId: `director-panel-${chapterNo}-motives`, summary: motives.length ? `${motives.length} 条动机` : '未记录'})}
+        ${directorPanelHtml('连续性约束', directorDl([
           ['必须记住', parseArray(constraints.must_remember).join('；')],
           ['不能打破', parseArray(constraints.must_not_break).join('；')],
           ['后文护栏', parseArray(constraints.future_outline_guardrails).join('；')],
-        ])}</section>
-        <section class="director-panel"><h3>伏笔操作</h3>${directorForeshadowingOpsHtml(payload.foreshadowing_ops)}</section>
-        <section class="director-panel"><h3>突兀风险</h3>${directorList(payload.abruptness_risks)}</section>
-        <section class="director-panel"><h3>分段计划</h3>${directorSegmentPlanHtml(payload)}</section>
+        ]), {drawerId: `director-panel-${chapterNo}-constraints`, summary: `${rememberCount + breakCount + guardrailCount} 条约束`})}
+        ${directorPanelHtml('伏笔操作', directorForeshadowingOpsHtml(payload.foreshadowing_ops), {drawerId: `director-panel-${chapterNo}-foreshadow`, summary: ops.length ? `${ops.length} 条伏笔` : '未记录'})}
+        ${directorPanelHtml('突兀风险', directorList(payload.abruptness_risks), {drawerId: `director-panel-${chapterNo}-risks`, summary: risks.length ? `${risks.length} 条风险` : '未记录'})}
+        ${directorPanelHtml('分段计划', directorSegmentPlanHtml(payload), {drawerId: `director-panel-${chapterNo}-segments`, summary: segments.length ? `${segments.length} 段` : '未记录'})}
       </div>
       <div class="row-actions">${actions}</div>
-    </article>`;
+    </details>`;
 }
 
 function staleChapterCleanupForm(projectId, staleCount) {
@@ -1517,6 +1838,23 @@ const currentDirectorByNo = new Map(directorCards
 const latestChapters = Array.from(latestChapterByNo.values())
   .sort((a, b) => Number(a.chapter_no || 0) - Number(b.chapter_no || 0));
 
+const nextRejectedChapter = latestChapters.find((chapter) =>
+  chapter.status === 'REJECTED'
+    && Number(chapter.chapter_no || 0) === Number(row.current_chapter_no || 0) + 1
+) || latestChapters.find((chapter) => chapter.status === 'REJECTED');
+
+function isRejectedRetryDirectorJob(job) {
+  if (!job || job.job_type !== 'PLAN_CHAPTER_DIRECTOR') return false;
+  const payload = parseObject(job.payload);
+  if (payload.trigger_source === 'chapter_rejected_retry') return true;
+  const chapter = latestChapterByNo.get(Number(job.chapter_no || 0));
+  return chapter?.status === 'REJECTED';
+}
+
+function rejectedRetryLabel(chapterNo) {
+  return chapterNo ? `第 ${chapterNo} 章` : '当前章节';
+}
+
 const syntheticOutlines = outlines.length
   ? outlines
   : latestChapters.map((chapter) => ({
@@ -1531,8 +1869,18 @@ const writtenVersionCount = chapters.filter((chapter) => chapter.body).length;
 const writtenCount = latestChapters.filter((chapter) => chapter.body).length;
 const currentCount = latestChapters.filter((chapter) => chapter.is_current).length;
 const reviewCount = latestChapters.filter((chapter) => chapter.status === 'NEED_REVIEW').length;
-const waitingCount = jobs.filter((job) => job.status === 'PENDING').length;
-const runningCount = jobs.filter((job) => job.status === 'RUNNING').length;
+function isActionableQueueJob(job) {
+  const status = String(job?.status || '');
+  if (!['PENDING', 'RUNNING'].includes(status)) return false;
+  if (job.job_type !== 'NOTIFY_REVIEW') return true;
+  return latestChapters.some((chapter) =>
+    Number(chapter.chapter_no || 0) === Number(job.chapter_no || 0)
+      && chapter.status === 'NEED_REVIEW'
+  );
+}
+
+const waitingCount = jobs.filter((job) => isActionableQueueJob(job) && job.status === 'PENDING').length;
+const runningCount = jobs.filter((job) => isActionableQueueJob(job) && job.status === 'RUNNING').length;
 const failedJobs = jobs.filter((job) => job.status === 'FAILED');
 const activeQueueCount = waitingCount + runningCount;
 const activeFacts = facts.filter((fact) => fact.status === 'ACTIVE').length;
@@ -1552,7 +1900,7 @@ const runningOutlineJob = jobs.find((job) => job.job_type === 'GENERATE_OUTLINE'
 const runningDirectorJob = jobs.find((job) => job.job_type === 'PLAN_CHAPTER_DIRECTOR' && job.status === 'RUNNING');
 const runningChapterJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'RUNNING');
 const activeQueueJobs = jobs
-  .filter((job) => ['PENDING', 'RUNNING'].includes(job.status))
+  .filter(isActionableQueueJob)
   .sort((a, b) => {
     if (a.status !== b.status) return a.status === 'RUNNING' ? -1 : 1;
     return new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime();
@@ -1614,8 +1962,16 @@ function liveProjectStatusInfo() {
   if (pendingBibleJob) return withBase('PENDING', '设定集待启动');
   if (runningOutlineJob) return withBase('RUNNING', '大纲生成中');
   if (pendingOutlineJob) return withBase('PENDING', '大纲待启动');
-  if (runningDirectorJob) return withBase('RUNNING', `${chapterLabel(runningDirectorJob)}导演台规划中`);
-  if (pendingDirectorJob) return withBase('PENDING', `${chapterLabel(pendingDirectorJob)}导演台待启动`);
+  if (runningDirectorJob) {
+    return withBase('RUNNING', isRejectedRetryDirectorJob(runningDirectorJob)
+      ? `${chapterLabel(runningDirectorJob)}重写规划中`
+      : `${chapterLabel(runningDirectorJob)}导演台规划中`);
+  }
+  if (pendingDirectorJob) {
+    return withBase('PENDING', isRejectedRetryDirectorJob(pendingDirectorJob)
+      ? `${chapterLabel(pendingDirectorJob)}待继续重写`
+      : `${chapterLabel(pendingDirectorJob)}导演台待启动`);
+  }
   if (needsReviewDirector) return withBase('NEEDS_REVIEW', `第 ${needsReviewDirector.chapter_no} 章导演台需调整`);
   if (pendingChapterWithoutReadyDirectorJob) return withBase('PENDING', `${chapterLabel(pendingChapterWithoutReadyDirectorJob)}等待导演台`);
   if (runningChapterJob) return withBase('RUNNING', `${chapterLabel(runningChapterJob)}生成中`);
@@ -1698,17 +2054,25 @@ function recommendationState() {
     mode: '后台运行中',
   };
   if (pendingDirectorJob) return {
-    title: pendingDirectorJob.chapter_no ? `启动第 ${pendingDirectorJob.chapter_no} 章导演台` : '启动导演台',
-    body: pendingDirectorJob.chapter_no
-      ? `第 ${pendingDirectorJob.chapter_no} 章导演台任务已排队。点击“启动第 ${pendingDirectorJob.chapter_no} 章导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。`
-      : '导演台任务已排队。点击“启动导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。',
-    intent: '生成导演台规划',
+    title: isRejectedRetryDirectorJob(pendingDirectorJob)
+      ? `继续重写${rejectedRetryLabel(pendingDirectorJob.chapter_no)}`
+      : (pendingDirectorJob.chapter_no ? `启动第 ${pendingDirectorJob.chapter_no} 章导演台` : '启动导演台'),
+    body: isRejectedRetryDirectorJob(pendingDirectorJob)
+      ? `上一稿已拒绝，${rejectedRetryLabel(pendingDirectorJob.chapter_no)}不会被跳过。点击“继续重写${rejectedRetryLabel(pendingDirectorJob.chapter_no)}”后，系统会先跑导演台检查因果链、人物动机、连续性约束和伏笔账本；通过后再自动排正文生成。`
+      : (pendingDirectorJob.chapter_no
+        ? `第 ${pendingDirectorJob.chapter_no} 章导演台任务已排队。点击“启动第 ${pendingDirectorJob.chapter_no} 章导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。`
+        : '导演台任务已排队。点击“启动导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。'),
+    intent: isRejectedRetryDirectorJob(pendingDirectorJob) ? '继续重写章节' : '生成导演台规划',
     mode: '后台执行',
   };
   if (runningDirectorJob) return {
-    title: runningDirectorJob.chapter_no ? `第 ${runningDirectorJob.chapter_no} 章导演台规划中` : '导演台规划中',
-    body: '导演台模型调用正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。',
-    intent: '观察导演台',
+    title: isRejectedRetryDirectorJob(runningDirectorJob)
+      ? `${rejectedRetryLabel(runningDirectorJob.chapter_no)}重写规划中`
+      : (runningDirectorJob.chapter_no ? `第 ${runningDirectorJob.chapter_no} 章导演台规划中` : '导演台规划中'),
+    body: isRejectedRetryDirectorJob(runningDirectorJob)
+      ? '重写规划正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。'
+      : '导演台模型调用正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。',
+    intent: isRejectedRetryDirectorJob(runningDirectorJob) ? '观察重写规划' : '观察导演台',
     mode: '后台运行中',
   };
   if (needsReviewDirector) return {
@@ -1800,14 +2164,22 @@ function recommendationState() {
     mode: '不会调用模型',
   };
   return {
-    title: '排队下一步',
-    body: '当前没有待处理任务。点击“排队下一步”只会补齐下一步任务，后续由队列或后台启动入口推进。',
-    intent: '补齐任务',
+    title: nextRejectedChapter ? `继续重写${rejectedRetryLabel(nextRejectedChapter.chapter_no)}` : '排队下一步',
+    body: nextRejectedChapter
+      ? `${rejectedRetryLabel(nextRejectedChapter.chapter_no)}上一稿已拒绝。点击“继续重写${rejectedRetryLabel(nextRejectedChapter.chapter_no)}”只会先补齐重写所需任务；后续会经过导演台检查，再生成新的候选正文。`
+      : '当前没有待处理任务。点击“排队下一步”只会补齐下一步任务，后续由队列或后台启动入口推进。',
+    intent: nextRejectedChapter ? '继续重写章节' : '补齐任务',
     mode: '不直接调用模型',
   };
 }
 
 const recommendationInfo = recommendationState();
+
+const rejectedRetryContinueOptions = nextRejectedChapter ? {
+  label: `继续重写${rejectedRetryLabel(nextRejectedChapter.chapter_no)}`,
+  subText: '先补齐任务',
+  confirm: `这会继续重写${rejectedRetryLabel(nextRejectedChapter.chapter_no)}；系统会先补齐导演台/正文生成所需任务，不会跳到下一章。确认继续？`,
+} : null;
 
 function executionLabel(info) {
   if (info.mode === '后台执行') return '会调用模型';
@@ -1827,8 +2199,55 @@ function riskItem(title, value, detail, tone = '') {
     </article>`;
 }
 
-const catalogHtml = syntheticOutlines.length
-  ? syntheticOutlines.map((outline) => outlineCard(outline, chaptersByNo, projectId, currentDirectorByNo, directorJobsByNo)).join('')
+function outlineHasBody(outline) {
+  return (chaptersByNo.get(Number(outline.chapter_no || 0)) || []).some((chapter) => chapter.body);
+}
+
+function outlineHasReview(outline) {
+  return (chaptersByNo.get(Number(outline.chapter_no || 0)) || []).some((chapter) => chapter.status === 'NEED_REVIEW');
+}
+
+function outlineDirectorBlocked(outline) {
+  return currentDirectorByNo.get(Number(outline.chapter_no || 0))?.status === 'NEEDS_REVIEW';
+}
+
+function outlineHasNoDirector(outline) {
+  const chapterNo = Number(outline.chapter_no || 0);
+  return !currentDirectorByNo.has(chapterNo) && !directorJobsByNo.has(chapterNo);
+}
+
+function outlineVolumeStats(volumeOutlines) {
+  const written = volumeOutlines.filter(outlineHasBody).length;
+  const review = volumeOutlines.filter(outlineHasReview).length;
+  const blocked = volumeOutlines.filter(outlineDirectorBlocked).length;
+  return `${volumeOutlines.length} 章 · 已写 ${written} · 待审 ${review} · 阻断 ${blocked}`;
+}
+
+const outlineTotalCount = syntheticOutlines.length;
+const outlineUnwrittenCount = syntheticOutlines.filter((outline) => !outlineHasBody(outline)).length;
+const outlineReviewCount = syntheticOutlines.filter(outlineHasReview).length;
+const outlineDirectorBlockedCount = syntheticOutlines.filter(outlineDirectorBlocked).length;
+const outlineNoDirectorCount = syntheticOutlines.filter(outlineHasNoDirector).length;
+
+const outlineVolumeGroups = Array.from(syntheticOutlines.reduce((acc, outline) => {
+  const volumeNo = Number(outline.volume_no || 1);
+  if (!acc.has(volumeNo)) acc.set(volumeNo, []);
+  acc.get(volumeNo).push(outline);
+  return acc;
+}, new Map()).entries()).sort(([a], [b]) => a - b);
+
+const catalogHtml = outlineVolumeGroups.length
+  ? outlineVolumeGroups.map(([volumeNo, volumeOutlines]) => `
+      <section class="outline-volume-section" aria-label="第 ${escapeHtml(volumeNo)} 卷大纲">
+        <div class="section-title compact-title outline-volume-head">
+          <div>
+            <p class="ops-kicker">卷轴</p>
+            <h2>第 ${escapeHtml(volumeNo)} 卷</h2>
+            <p class="muted">${escapeHtml(outlineVolumeStats(volumeOutlines))}</p>
+          </div>
+        </div>
+        <div class="catalog-grid">${volumeOutlines.map((outline) => outlineCard(outline, chaptersByNo, projectId, currentDirectorByNo, directorJobsByNo)).join('')}</div>
+      </section>`).join('')
   : '<article class="empty">暂无章节目录。生成大纲后会出现在这里。</article>';
 
 const writtenHtml = latestChapters.length
@@ -1902,43 +2321,118 @@ const overviewHtml = `
       <div class="overview-grid">${recentChapterHtml || '<article class="empty">暂无已写或待审核章节。</article>'}</div>
     </section>`;
 
+const bibleEditConfigs = new Map(bibleFieldConfigs(bible).map((config) => [config.name, config]));
+function bibleEditOptions(fieldName, drawerId) {
+  const config = bibleEditConfigs.get(fieldName);
+  if (!config) return {};
+  return {
+    editDrawerId: drawerId,
+    editDialogHtml: bibleFieldEditDialog(projectId, bible, config, drawerId),
+  };
+}
+
+const bibleCoreCardsHtml = [
+  bibleCard('故事核心', settingText(bible.story_core), {
+    drawerId: 'bible-card-story-core',
+    summary: excerpt(bible.story_core, 120),
+    meta: '全书主线、核心爽点和追更理由',
+    ...bibleEditOptions('story_core', 'bible-edit-story-core'),
+  }),
+  bibleCard('世界设定', settingText(bible.world_setting), {
+    drawerId: 'bible-card-world-setting',
+    summary: excerpt(bible.world_setting, 120),
+    meta: '时代、环境、规则和基础舞台',
+    ...bibleEditOptions('world_setting', 'bible-edit-world-setting'),
+  }),
+  bibleCard('文风规则', settingText(bible.tone_rules), {
+    drawerId: 'bible-card-tone-rules',
+    summary: excerpt(bible.tone_rules, 110),
+    meta: '正文、大纲和审稿都会参考',
+    ...bibleEditOptions('tone_rules', 'bible-edit-tone-rules'),
+  }),
+].join('');
+const bibleCharacterCardsHtml = [
+  bibleCard('主角设定', settingEntries(bible.main_character, '主角'), {
+    drawerId: 'bible-card-main-character',
+    summary: excerpt(bible.main_character, 120),
+    meta: countStructuredItems(bible.main_character) ? '主名、身份、目标和成长线' : '缺少主角设定',
+    ...bibleEditOptions('main_character_json', 'bible-edit-main-character'),
+  }),
+  bibleCard('配角设定', settingEntries(bible.supporting_characters, '配角'), {
+    drawerId: 'bible-card-supporting-characters',
+    summary: excerpt(bible.supporting_characters, 120),
+    meta: `${countStructuredItems(bible.supporting_characters)} 个配角`,
+    ...bibleEditOptions('supporting_characters_json', 'bible-edit-supporting-characters'),
+  }),
+  bibleCard('反派设定', settingEntries(bible.villain_setting, '反派'), {
+    drawerId: 'bible-card-villains',
+    summary: excerpt(bible.villain_setting, 120),
+    meta: `${countStructuredItems(bible.villain_setting)} 个反派/阻力`,
+    ...bibleEditOptions('villain_setting_json', 'bible-edit-villains'),
+  }),
+  bibleCard('人物关系', settingEntries(bible.relationship_map, '关系'), {
+    drawerId: 'bible-card-relationships',
+    summary: excerpt(bible.relationship_map, 120),
+    meta: `${countStructuredItems(bible.relationship_map)} 条关系线`,
+    ...bibleEditOptions('relationship_map_json', 'bible-edit-relationships'),
+  }),
+].join('');
+const bibleConstraintCardsHtml = [
+  bibleCard('能力体系', settingText(bible.power_system), {
+    drawerId: 'bible-card-power-system',
+    summary: excerpt(bible.power_system, 120),
+    meta: '能力、限制、升级或资源规则',
+    ...bibleEditOptions('power_system', 'bible-edit-power-system'),
+  }),
+  bibleCard('禁忌规则', settingText(bible.forbidden_rules), {
+    drawerId: 'bible-card-forbidden-rules',
+    summary: excerpt(bible.forbidden_rules, 120),
+    meta: '后续生成不可突破的边界',
+    ...bibleEditOptions('forbidden_rules', 'bible-edit-forbidden-rules'),
+  }),
+  bibleCard('卖点', settingChips(bible.selling_points), {
+    drawerId: 'bible-card-selling-points',
+    summary: excerpt(bible.selling_points, 120),
+    meta: `${countStructuredItems(bible.selling_points)} 个卖点`,
+    ...bibleEditOptions('selling_points_json', 'bible-edit-selling-points'),
+  }),
+].join('');
+const bibleWorkspaceHtml = [
+  bibleWorkspaceGroup('核心摘要', '先看故事气质、舞台和文风是否稳定。', bibleCoreCardsHtml),
+  bibleWorkspaceGroup('人物设定', '对比主角、配角、反派与关系线，避免称呼和动机漂移。', bibleCharacterCardsHtml),
+  bibleWorkspaceGroup('生成约束', '后续大纲、导演台和正文会参考这些规则。', bibleConstraintCardsHtml),
+].join('');
+
 const bibleSectionHtml = `
     <section id="bible-section" aria-label="设定集">
-      <div class="section-title"><h2>设定集</h2><p class="muted">管理生成长篇时会反复参考的项目级设定。</p></div>
-      ${bibleRegenerateControl ? `<div class="asset-action-row">${bibleRegenerateControl}</div>` : ''}
-      <div class="section-title">${bibleEditForm(projectId, bible)}</div>
       ${Object.keys(bible).length ? `
-        <div class="bible-grid">
-          ${bibleCard('故事核心', settingText(bible.story_core))}
-          ${bibleCard('世界设定', settingText(bible.world_setting))}
-          ${bibleCard('主角设定', settingEntries(bible.main_character, '主角'))}
-          ${bibleCard('配角设定', settingEntries(bible.supporting_characters, '配角'))}
-          ${bibleCard('反派设定', settingEntries(bible.villain_setting, '反派'))}
-          ${bibleCard('能力体系', settingText(bible.power_system))}
-          ${bibleCard('人物关系', settingEntries(bible.relationship_map, '关系'))}
-          ${bibleCard('文风规则', settingText(bible.tone_rules))}
-          ${bibleCard('禁忌规则', settingText(bible.forbidden_rules))}
-          ${bibleCard('卖点', settingChips(bible.selling_points))}
-        </div>` : `<article class="empty">暂无设定集。${pendingBibleJob ? '点击“启动设定集生成”会把模型调用交给后台完成。' : '排队下一步会优先补齐生成设定集任务。'}</article>`}
+        <div class="bible-workspace">${bibleWorkspaceHtml}</div>` : `<article class="empty">暂无设定集。${pendingBibleJob ? '点击“启动设定集生成”会把模型调用交给后台完成。' : '排队下一步会优先补齐生成设定集任务。'}</article>`}
     </section>`;
 
 const outlineSectionHtml = `
-    <section class="filters" aria-label="目录筛选">
-      <div class="filter-row">
-        <strong>目录筛选</strong>
-        <button class="filter-chip" type="button" data-chapter-filter="all" aria-pressed="false">全部目录</button>
-        <button class="filter-chip" type="button" data-chapter-filter="written" aria-pressed="false">只看已写</button>
-        <button class="filter-chip" type="button" data-chapter-filter="current" aria-pressed="false">正式版本</button>
-        <button class="filter-chip" type="button" data-chapter-filter="review" aria-pressed="false">待审核</button>
+    <section id="catalog-section" class="outline-workbench" aria-label="大纲与目录">
+      <div class="outline-dashboard" aria-label="大纲状态条">
+        ${riskItem('总章节', `${outlineTotalCount} 章`, '当前大纲内的章节规划总数。', outlineTotalCount ? 'good' : '')}
+        ${riskItem('已写正文', `${writtenCount} 章`, '已有正文的章节可以直接跳到章节视图。', writtenCount ? 'good' : '')}
+        ${riskItem('待审核', `${outlineReviewCount} 章`, outlineReviewCount ? '先处理候选稿，避免后续续写上下文阻塞。' : '当前没有候选稿待人工审核。', outlineReviewCount ? 'warn' : 'good')}
+        ${riskItem('导演台阻断', `${outlineDirectorBlockedCount} 章`, outlineDirectorBlockedCount ? '这些章节正文生成会暂停，先到导演台处理。' : `无导演台 ${outlineNoDirectorCount} 章。`, outlineDirectorBlockedCount ? 'warn' : 'good')}
       </div>
-    </section>
-    <section id="catalog-section" aria-label="大纲与目录">
-      <div class="section-title">
-        <h2>大纲与目录</h2>
-        <p class="muted">目录来自章节大纲；生成过正文的章节可以直接跳到正文和版本记录。</p>
+      <div class="outline-toolbar" aria-label="目录筛选">
+        <div class="filter-row">
+          <strong>目录筛选</strong>
+          <button class="filter-chip" type="button" data-chapter-filter="all" aria-pressed="false">全部</button>
+          <button class="filter-chip" type="button" data-chapter-filter="unwritten" aria-pressed="false">未写</button>
+          <button class="filter-chip" type="button" data-chapter-filter="written" aria-pressed="false">已写</button>
+          <button class="filter-chip" type="button" data-chapter-filter="review" aria-pressed="false">待审核</button>
+          <button class="filter-chip" type="button" data-chapter-filter="director-blocked" aria-pressed="false">导演台阻断</button>
+          <button class="filter-chip" type="button" data-chapter-filter="no-director" aria-pressed="false">无导演台</button>
+        </div>
+        <div class="outline-toolbar-actions">
+          <button type="button" data-catalog-action="expand-all">展开全部</button>
+          <button type="button" data-catalog-action="collapse-all">收起全部</button>
+        </div>
       </div>
-      ${outlineRegenerateControl ? `<div class="asset-action-row">${outlineRegenerateControl}</div>` : ''}
-      <div class="catalog-grid">${catalogHtml}</div>
+      <div class="outline-volume-list">${catalogHtml}</div>
     </section>
     <p class="empty filter-empty" data-catalog-empty hidden>当前筛选下暂无目录项</p>`;
 
@@ -1985,8 +2479,8 @@ const chaptersSectionHtml = `
       </div>
       <div class="reader-toolbar" aria-label="正文工具条">
         <strong>正文工具条</strong>
-        <button type="button" data-body-action="expand-all">展开全部正文</button>
-        <button type="button" data-body-action="collapse-all">收起全部正文</button>
+        <button type="button" data-body-action="expand-all">展开全部章节</button>
+        <button type="button" data-body-action="collapse-all">收起全部章节</button>
       </div>
       <div class="chapter-grid">${writtenHtml}</div>
       ${staleChapterHtml}
@@ -2056,10 +2550,21 @@ const activeViewHtml = {
   ops: opsSectionHtml,
   export: exportSectionHtml,
 }[activeView] || overviewHtml;
+const activeViewActionControl = {
+  bible: bibleRegenerateControl,
+  outline: outlineRegenerateControl,
+}[activeView] || '';
 
 const projectViewShell = `
     <section class="sticky-jump-section" aria-label="项目二级导航">
-      <div class="section-title"><p class="ops-kicker">项目二级视图</p><h2>${escapeHtml(viewConfig[activeView].title)}</h2><p class="muted">${escapeHtml(viewConfig[activeView].description)}</p></div>
+      <div class="section-title view-shell-title">
+        <div>
+          <p class="ops-kicker">项目二级视图</p>
+          <h2>${escapeHtml(viewConfig[activeView].title)}</h2>
+          <p class="muted">${escapeHtml(viewConfig[activeView].description)}</p>
+        </div>
+        ${activeViewActionControl ? `<div class="view-shell-actions">${activeViewActionControl}</div>` : ''}
+      </div>
       ${viewTabs()}
     </section>
     ${activeViewHtml}`;
@@ -2146,8 +2651,6 @@ const html = `<!doctype html>
     .action-guide div { border-top: 1px solid var(--line); padding-top: 10px; }
     .action-guide strong { display: block; margin-bottom: 4px; font-size: 13px; }
     .action-guide span { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
-    .asset-action-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; padding: 0 16px 14px; }
-    .asset-action-row .action-now { display: inline-flex; }
     .summary-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .summary-facts a, .summary-facts span { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; color: var(--ink); text-decoration: none; }
     .summary-facts strong { display: block; margin-top: 3px; font-size: 20px; font-variant-numeric: tabular-nums; }
@@ -2155,13 +2658,38 @@ const html = `<!doctype html>
     .project-info .action-bar { flex: 1; justify-content: center; align-content: center; align-items: center; margin: 18px auto 8px; padding: 20px 8px; max-width: 720px; }
     .drawer-button { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 11px; background: #fff; color: var(--ink); font: inherit; font-weight: 750; cursor: pointer; }
     .drawer-button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .regenerate-trigger { border-color: #f2b8b5; color: var(--danger); background: #fff; }
+    .regenerate-trigger:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
     .side-dialog { width: min(520px, calc(100vw - 24px)); max-width: none; max-height: 100vh; height: 100vh; margin: 0 0 0 auto; padding: 0; border: 0; background: transparent; }
     .side-dialog::backdrop { background: rgba(15, 23, 42, .28); }
     .drawer-panel { min-height: 100%; padding: 18px; background: #fff; border-left: 1px solid var(--line); box-shadow: -24px 0 48px rgba(16, 24, 40, .18); overflow: auto; }
     .drawer-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
     .drawer-close { min-height: 34px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: #fff; color: var(--ink); font: inherit; cursor: pointer; }
     .drawer-panel details { border-top: 1px solid var(--line); padding-top: 12px; }
+    .chapter-action-dialog, .chapter-info-dialog { width: min(620px, calc(100vw - 24px)); }
+    .chapter-edit-dialog, .chapter-body-dialog { width: min(860px, calc(100vw - 24px)); }
+    .chapter-drawer-panel { display: flex; flex-direction: column; gap: 12px; }
+    .chapter-drawer-panel .drawer-head { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
+    .chapter-drawer-form { display: grid; gap: 10px; }
+    .chapter-drawer-form label { display: grid; gap: 6px; margin: 0; color: var(--muted); font-size: 13px; }
+    .chapter-drawer-content pre { max-height: calc(100vh - 180px); overflow: auto; }
+    .chapter-drawer-content .history { padding-right: 8px; }
+    .bible-field-edit-dialog, .bible-card-dialog, .outline-edit-dialog { width: min(760px, calc(100vw - 24px)); }
+    .bible-edit-panel, .bible-card-panel, .outline-edit-panel { display: flex; flex-direction: column; gap: 12px; }
+    .bible-edit-panel .drawer-head, .bible-card-panel .drawer-head, .outline-edit-panel .drawer-head { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
+    .bible-single-edit-form { display: grid; gap: 10px; padding: 12px; }
+    .bible-single-edit-form label { display: grid; gap: 6px; margin: 0; font-weight: 700; color: var(--ink); }
+    .json-tools.compact { margin: 0; }
+    .bible-card-content { padding-top: 4px; overflow-x: auto; }
+    .outline-edit-form { display: grid; gap: 12px; }
+    .outline-edit-form label { display: grid; gap: 6px; font-weight: 700; color: var(--ink); }
+    .readonly-field { display: grid; gap: 5px; margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8fafb; }
+    .readonly-field span { color: var(--muted); font-size: 13px; font-weight: 700; }
+    .readonly-field strong { color: var(--ink); font-size: 16px; }
+    .readonly-field small { color: var(--muted); line-height: 1.45; }
     .director-edit-dialog { width: min(780px, calc(100vw - 24px)); }
+    .regenerate-dialog { width: min(620px, calc(100vw - 24px)); }
+    .director-panel-dialog { width: min(720px, calc(100vw - 24px)); }
     .director-edit-panel { display: flex; flex-direction: column; gap: 12px; }
     .director-edit-panel .drawer-head { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
     .director-edit-panel .ops-kicker { margin: 0 0 4px; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: 0; }
@@ -2172,7 +2700,9 @@ const html = `<!doctype html>
     .director-edit-form input, .director-edit-form textarea { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; color: var(--ink); font: inherit; }
     .director-edit-form button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
     .drawer-action-row { position: sticky; bottom: -18px; display: flex; flex-wrap: wrap; gap: 8px; margin: 0 -18px -18px; padding: 12px 18px; border-top: 1px solid var(--line); background: rgba(255, 255, 255, .97); backdrop-filter: blur(8px); }
+    .drawer-action-row.inline-sticky { position: static; margin: 0; padding: 0; border-top: 0; background: transparent; backdrop-filter: none; }
     .drawer-action-row button { min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; background: #fff; color: var(--ink); font: inherit; font-weight: 750; cursor: pointer; }
+    .drawer-action-row button.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
     .metric-details { padding: 0; }
     .metric-details > summary { padding: 14px 16px; color: var(--accent); }
     .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 0 16px 16px; }
@@ -2181,10 +2711,15 @@ const html = `<!doctype html>
     .metric strong { display: block; margin-top: 6px; font-size: 22px; }
     .metric strong, .status-strip strong { font-variant-numeric: tabular-nums; }
     .section-title, .filters { padding: 14px 16px; }
+    .view-shell-title { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+    .view-shell-title > div:first-child { min-width: 0; }
+    .view-shell-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: flex-start; margin-left: auto; }
     .quick-nav, .action-bar, .reader-toolbar, .filter-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .quick-nav { padding: 0 16px 16px; }
     .quick-nav a, .row-actions a, .row-actions button, .disabled-action, .reader-toolbar button, .reader-toolbar a, .action-bar a, .inline-form button, .action-detail button, .filter-chip { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 11px; background: #fff; color: var(--accent); text-decoration: none; font: inherit; font-weight: 650; cursor: pointer; touch-action: manipulation; }
     .quick-nav a:hover, .row-actions a:hover, .row-actions button:hover, .reader-toolbar button:hover, .reader-toolbar a:hover, .action-bar a:hover, .inline-form button:hover, .action-detail button:hover, .filter-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .filter-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: #fff; box-shadow: 0 6px 14px rgba(31, 122, 92, .18); }
+    .filter-chip[aria-pressed="true"]:hover { background: #16684e; color: #fff; }
     .sticky-jump-section { position: sticky; top: 0; z-index: 30; box-shadow: 0 10px 24px rgba(16, 24, 40, .08); }
     .sticky-jump-section .section-title { padding-bottom: 8px; }
     .sticky-jump-section .quick-nav { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
@@ -2209,12 +2744,14 @@ const html = `<!doctype html>
     .danger-detail button { border-color: #f2b8b5; color: var(--danger); background: #fff; }
     .manual-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     .manual-edit-actions button[value="direct_save"] { border-color: var(--line); color: #344054; }
-    .regenerate-detail { min-width: min(100%, 520px); border: 1px solid #f2b8b5; border-radius: 8px; padding: 10px; background: var(--danger-soft); }
-    .regenerate-detail form { display: grid; gap: 10px; margin-top: 10px; }
-    .regenerate-detail label { display: grid; gap: 5px; font-weight: 700; color: var(--ink); }
-    .regenerate-detail textarea { min-height: 70px; }
-    .regenerate-detail button { align-items: flex-start; flex-direction: column; justify-content: center; min-height: 44px; width: fit-content; }
-    .regenerate-detail button small { display: block; font-size: 11px; line-height: 1.2; font-weight: 650; opacity: .8; }
+    .regenerate-panel { display: flex; flex-direction: column; gap: 12px; }
+    .regenerate-panel .drawer-head { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
+    .regenerate-form { display: grid; gap: 12px; }
+    .regenerate-form label { display: grid; gap: 6px; font-weight: 700; color: var(--ink); }
+    .regenerate-form textarea { width: 100%; min-height: 120px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; color: var(--ink); font: inherit; resize: vertical; }
+    .regenerate-form .danger-submit { align-items: flex-start; flex-direction: column; justify-content: center; min-height: 44px; border-color: #f2b8b5; color: var(--danger); background: #fff; }
+    .regenerate-form .danger-submit:hover { border-color: var(--danger); background: var(--danger-soft); }
+    .regenerate-form button small { display: block; font-size: 11px; line-height: 1.2; font-weight: 650; opacity: .8; }
     .json-tools { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin: 10px 0; color: var(--muted); font-size: 13px; }
     .json-tools button { min-height: 34px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: #fff; color: var(--ink); font: inherit; font-weight: 750; cursor: pointer; }
     .json-tools button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -2226,16 +2763,71 @@ const html = `<!doctype html>
     .json-feedback.is-valid { color: var(--accent); }
     .form-help { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .catalog-grid, .chapter-grid, .fact-grid, .bible-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }
+    .catalog-grid, .chapter-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 16px 16px; }
+    .fact-grid, .bible-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 16px 16px; }
     .catalog-item, .chapter-card, .fact-card, .bible-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; content-visibility: auto; contain-intrinsic-size: 280px; }
+    .bible-workspace { display: grid; gap: 16px; padding-bottom: 16px; }
+    .bible-workspace-section { background: transparent; border: 0; margin: 0; overflow: visible; }
+    .bible-workspace-section .compact-title { padding-bottom: 10px; }
+    .bible-workspace-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0 16px; }
+    .bible-work-card { min-height: 198px; display: flex; flex-direction: column; padding: 0; overflow: hidden; content-visibility: visible; contain-intrinsic-size: auto; }
+    .bible-card-summary { flex: 1 1 auto; min-height: 132px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 14px; background: #fff; }
+    .bible-card-summary span { color: var(--muted); font-size: 12px; font-weight: 850; letter-spacing: .04em; }
+    .bible-card-summary strong { color: #263545; line-height: 1.55; font-weight: 750; }
+    .bible-card-summary small { color: var(--muted); line-height: 1.45; }
+    .bible-work-card.is-empty .bible-card-summary { background: #f8fafb; }
+    .bible-card-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; align-items: stretch; margin-top: auto; border-top: 1px solid var(--line); padding: 10px 14px; background: #fbfcfd; }
+    .bible-card-actions button { width: 100%; height: 34px; min-height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 11px; background: #fff; color: var(--accent); font: inherit; font-size: 13px; font-weight: 750; line-height: 1; white-space: nowrap; cursor: pointer; }
+    .bible-card-actions button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .outline-workbench { overflow: visible; }
+    .outline-dashboard { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 16px; }
+    .outline-dashboard .risk-card { padding: 12px; }
+    .outline-toolbar { position: sticky; top: 76px; z-index: 24; display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); box-shadow: 0 8px 18px rgba(16, 24, 40, .06); }
+    .outline-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+    .outline-toolbar-actions button { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 11px; background: #fff; color: #344054; font: inherit; font-weight: 650; cursor: pointer; }
+    .outline-toolbar-actions button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .outline-volume-list { display: grid; gap: 16px; padding-bottom: 16px; }
+    .outline-volume-section { background: transparent; border: 0; margin: 0; overflow: visible; }
+    .outline-volume-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding-bottom: 10px; }
+    .catalog-panel { padding: 0; overflow: hidden; scroll-margin-top: 18px; }
+    .catalog-panel-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 14px; cursor: pointer; list-style: none; }
+    .catalog-summary-text { min-width: 0; display: grid; gap: 4px; }
+    .catalog-summary-text strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .catalog-summary-text span { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .catalog-panel-summary::-webkit-details-marker { display: none; }
+    .catalog-panel-summary::after { content: '展开'; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .catalog-panel[open] > .catalog-panel-summary { border-bottom: 1px solid var(--line); background: #fbfcfd; }
+    .catalog-panel[open] > .catalog-panel-summary::after { content: '收起'; color: var(--accent); border-color: #b9e3d4; background: var(--accent-soft); }
+    .catalog-panel.is-blocked { border-color: #f0c36a; background: #fffaf0; }
+    .catalog-panel.is-unwritten:not(.is-blocked) { background: #fbfcfd; }
+    .catalog-panel-body { padding: 14px; }
+    .outline-detail-grid { grid-template-columns: 108px minmax(0, 1fr); }
     .director-list { display: grid; gap: 14px; padding: 0 16px 16px; }
-    .director-card { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #fff; scroll-margin-top: 18px; }
+    .director-card { border: 1px solid var(--line); border-radius: 8px; background: #fff; scroll-margin-top: 18px; overflow: hidden; }
     .director-card:target { outline: 2px solid var(--accent); }
-    .director-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
-    .director-panel { margin: 0; padding: 12px; background: #f8fafb; border: 1px solid var(--line); border-radius: 8px; }
-    .director-panel h3 { margin-bottom: 8px; }
-    .director-warning { margin: 10px 0; border: 1px solid #f0c36a; border-radius: 8px; padding: 10px; background: var(--warn-soft); color: var(--warn); }
+    .director-chapter-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 14px; cursor: pointer; list-style: none; }
+    .director-chapter-summary::-webkit-details-marker { display: none; }
+    .director-chapter-summary::after { content: '展开'; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .director-card[open] > .director-chapter-summary { border-bottom: 1px solid var(--line); background: #fbfcfd; }
+    .director-card[open] > .director-chapter-summary::after { content: '收起'; color: var(--accent); border-color: #b9e3d4; background: var(--accent-soft); }
+    .director-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 14px 14px; }
+    .director-card > .row-actions { margin-top: 0; padding: 0 14px 14px; }
+    .director-panel { margin: 0; padding: 0; background: #f8fafb; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .director-panel-trigger { width: 100%; min-height: 52px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; border: 0; border-radius: 0; padding: 10px 12px; background: transparent; color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+    .director-panel-trigger span { font-weight: 800; }
+    .director-panel-trigger small { color: var(--muted); font-weight: 650; white-space: nowrap; }
+    .director-panel-trigger::after { content: '打开'; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .director-panel-trigger:hover { background: #fff; }
+    .director-panel-trigger:hover::after { color: var(--accent); border-color: #b9e3d4; background: var(--accent-soft); }
+    .director-panel-body { padding: 12px; }
+    .director-panel-drawer { display: flex; flex-direction: column; gap: 0; }
+    .director-panel-drawer .drawer-head { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
+    .director-panel-drawer .director-panel-body { padding: 16px 0 0; overflow-x: auto; }
+    .director-warning { margin: 10px 14px; border: 1px solid #f0c36a; border-radius: 8px; padding: 10px; background: var(--warn-soft); color: var(--warn); }
     .director-warning strong { display: block; margin-bottom: 6px; color: var(--warn); }
+    .director-warning-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(167, 101, 8, .24); }
+    .inline-form.action-repair button { border-color: #f0c36a; color: var(--warn); background: #fffaf0; }
+    .inline-form.action-repair button:hover { border-color: var(--warn); background: #fff3d6; }
     .director-segments { display: grid; gap: 8px; margin: 0; padding-left: 20px; }
     .director-segments li { padding: 8px 0 0; border-top: 1px solid var(--line); }
     .director-segments li:first-child { padding-top: 0; border-top: 0; }
@@ -2258,6 +2850,14 @@ const html = `<!doctype html>
     .fact-status-form button { min-height: 34px; }
     .fact-edit { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8fafb; }
     .chapter-card { contain-intrinsic-size: 460px; }
+    .chapter-panel { padding: 0; overflow: hidden; scroll-margin-top: 18px; }
+    .chapter-panel-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 14px; cursor: pointer; list-style: none; }
+    .chapter-panel-summary::-webkit-details-marker { display: none; }
+    .chapter-panel-summary::after { content: '展开'; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .chapter-panel[open] > .chapter-panel-summary { border-bottom: 1px solid var(--line); background: #fbfcfd; }
+    .chapter-panel[open] > .chapter-panel-summary::after { content: '收起'; color: var(--accent); border-color: #b9e3d4; background: var(--accent-soft); }
+    .chapter-panel-body { padding: 14px; }
+    .chapter-panel-body .row-actions { margin-bottom: 0; }
     .stale-chapter-history { margin: 0 16px 16px; border: 1px dashed #c7d1df; border-radius: 8px; background: #f8fafb; }
     .stale-chapter-history summary { padding: 12px 14px; color: #344054; font-weight: 800; cursor: pointer; }
     .stale-history-toolbar { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin: 0 14px 12px; }
@@ -2349,9 +2949,24 @@ const html = `<!doctype html>
       .side-primary { display: none; }
       header, .summary { display: block; }
       .page-actions { justify-content: flex-start; margin-top: 12px; }
+      .view-shell-title { display: grid; gap: 10px; }
+      .view-shell-actions { justify-content: flex-start; margin-left: 0; }
+      .view-shell-actions .drawer-button, .view-shell-actions .inline-form, .view-shell-actions .inline-form button { width: 100%; }
       nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
       .metrics, .recommendation { margin-top: 14px; }
-      .metric-grid, .catalog-grid, .chapter-grid, .fact-grid, .bible-grid, .overview-grid, .form-grid, .risk-grid, .director-grid { grid-template-columns: 1fr; padding: 0 12px 12px; }
+      .metric-grid, .catalog-grid, .chapter-grid, .fact-grid, .bible-grid, .bible-workspace-grid, .overview-grid, .form-grid, .risk-grid, .director-grid, .outline-dashboard { grid-template-columns: 1fr; padding: 0 12px 12px; }
+      .director-card > .row-actions { padding: 0 12px 12px; }
+      .director-chapter-summary { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; }
+      .director-chapter-summary .badge-row { grid-column: 1 / -1; justify-content: flex-start; }
+      .catalog-panel-summary { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; }
+      .catalog-panel-summary .badge-row { grid-column: 1 / -1; justify-content: flex-start; }
+      .catalog-summary-text strong { white-space: normal; }
+      .catalog-panel-body { padding: 12px; }
+      .chapter-panel-summary { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; }
+      .chapter-panel-summary .badge-row { grid-column: 1 / -1; justify-content: flex-start; }
+      .chapter-panel-body { padding: 12px; }
+      .director-panel-trigger { grid-template-columns: minmax(0, 1fr) auto; }
+      .director-panel-trigger small { grid-column: 1 / -1; }
       .director-list { padding: 0 12px 12px; }
       .fact-toolbar { display: grid; margin-left: 12px; margin-right: 12px; }
       .stale-history-toolbar { display: grid; }
@@ -2359,8 +2974,11 @@ const html = `<!doctype html>
       .fact-maintenance-actions { min-width: 0; }
       .fact-create-form, .fact-edit form { grid-template-columns: 1fr; }
       .action-guide, .chapter-evidence, .status-strip, .summary-facts { grid-template-columns: 1fr; }
-      .quick-nav, .section-title, .filters, .reader-toolbar, .export-box { padding-left: 12px; padding-right: 12px; }
-      dl, .compact-dl, .setting-dl { grid-template-columns: 1fr; }
+      .quick-nav, .section-title, .filters, .reader-toolbar, .export-box, .outline-toolbar { padding-left: 12px; padding-right: 12px; }
+      .outline-toolbar { position: static; display: grid; }
+      .outline-toolbar-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; }
+      .outline-toolbar-actions button { justify-content: center; }
+      dl, .compact-dl, .setting-dl, .outline-detail-grid { grid-template-columns: 1fr; }
       .item-head { display: block; }
       .badge-row { justify-content: flex-start; margin-top: 8px; }
       .quick-nav, .action-bar { display: grid; }
@@ -2412,7 +3030,7 @@ const html = `<!doctype html>
           ${pendingDirectorJob ? generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', pendingDirectorJob) : ''}
           ${pendingChapterJob ? generationRunForm(projectId, 'GENERATE_CHAPTER', pendingChapterJob) : ''}
           ${activeRewriteActionJob ? rewriteRunForm(projectId, activeRewriteActionJob) : ''}
-          ${canShowContinueForm ? continueForm(projectId) : ''}
+          ${canShowContinueForm ? continueForm(projectId, rejectedRetryContinueOptions || {}) : ''}
           <button class="drawer-button" type="button" data-open-dialog="project-actions-drawer">项目操作抽屉</button>
           <a href="/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}">查看队列</a>
           <a href="${escapeHtml(projectViewHref('export'))}">导出全文</a>
@@ -2472,7 +3090,7 @@ const html = `<!doctype html>
         <section class="drawer-section">
           <h3>队列推进</h3>
           <p class="muted">用于补齐缺失的下一步任务；如果当前有待审核、失败或运行中的任务，后台会返回阻断原因。</p>
-          ${hasFrontStartJob || activeQueueCount > 0 ? '<p class="muted">当前已有可启动或运行中的任务，先处理首屏推荐动作。</p>' : continueForm(projectId)}
+          ${hasFrontStartJob || activeQueueCount > 0 ? '<p class="muted">当前已有可启动或运行中的任务，先处理首屏推荐动作。</p>' : continueForm(projectId, rejectedRetryContinueOptions || {})}
         </section>
         ${projectTargetsForm(row)}
         ${projectPauseForms(row)}
@@ -2487,8 +3105,8 @@ const html = `<!doctype html>
       const chapterFilterButtons = Array.from(document.querySelectorAll('[data-chapter-filter]'));
       const catalogItems = Array.from(document.querySelectorAll('.catalog-item'));
       const empty = document.querySelector('[data-catalog-empty]');
-      const bodies = Array.from(document.querySelectorAll('.chapter-body'));
-      const catalogValues = new Set(['all', 'written', 'current', 'review']);
+      const bodies = Array.from(document.querySelectorAll('.chapter-panel'));
+      const catalogValues = new Set(['all', 'unwritten', 'written', 'current', 'review', 'director-blocked', 'no-director']);
 
       document.querySelectorAll('[data-open-dialog]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -2516,6 +3134,21 @@ const html = `<!doctype html>
           if (event.target === dialog && typeof dialog.close === 'function') dialog.close();
         });
       });
+
+      const openHashTargetPanel = () => {
+        if (!window.location.hash) return;
+        let id = window.location.hash.slice(1);
+        try {
+          id = decodeURIComponent(id);
+        } catch (error) {
+          return;
+        }
+        const target = document.getElementById(id);
+        if (!target) return;
+        if (target.tagName === 'DETAILS') target.open = true;
+      };
+      openHashTargetPanel();
+      window.addEventListener('hashchange', openHashTargetPanel);
 
       const readSearchValue = (name, fallback, allowedValues) => {
         const params = new URLSearchParams(window.location.search);
@@ -2552,6 +3185,14 @@ const html = `<!doctype html>
       applyCatalogFilter(readSearchValue('catalog', 'all', catalogValues), {write: false});
       window.addEventListener('popstate', () => {
         applyCatalogFilter(readSearchValue('catalog', 'all', catalogValues), {write: false});
+      });
+      document.querySelectorAll('[data-catalog-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const shouldOpen = button.dataset.catalogAction === 'expand-all';
+          catalogItems.forEach((item) => {
+            if (!item.hidden) item.open = shouldOpen;
+          });
+        });
       });
 
       document.querySelectorAll('[data-body-action]').forEach((button) => {

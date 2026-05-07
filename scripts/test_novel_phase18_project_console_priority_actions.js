@@ -98,6 +98,9 @@ for (const marker of [
   '申请重写此章',
   '重新发送提醒',
   '复制审核链接',
+  'chapter-panel',
+  'catalog-panel',
+  'chapter-drawer-panel',
 ]) {
   assert(detailCode.includes(marker), `project console renderer should include marker: ${marker}`);
 }
@@ -208,9 +211,13 @@ for (const expected of [
   '复制审核链接',
   '审稿报告',
   '人工审核记录',
+  '章节模型调用',
   '第一章正文',
 ]) {
   assert(detailText.includes(expected), `project console chapter view visible text should include: ${expected}`);
+}
+for (const expected of ['chapter-action-dialog', 'chapter-edit-dialog', 'chapter-body-dialog', 'chapter-info-dialog']) {
+  assert(detailHtml.includes(expected), `project console chapter view should expose drawer class: ${expected}`);
 }
 
 const detailBibleHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html;

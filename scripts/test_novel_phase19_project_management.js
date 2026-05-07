@@ -95,7 +95,7 @@ for (const [name, pathName] of [
 
 const detailCode = read('n8n/code/novel_render_project_detail_html.js');
 for (const marker of [
-  '编辑设定集',
+  'bible-card-actions',
   '编辑本章大纲',
   '修改项目目标',
   'select name="target_words_per_chapter"',
@@ -167,7 +167,8 @@ const detailRow = {
 };
 
 const detailOverviewText = visibleText(runListCodeNode('n8n/code/novel_render_project_detail_html.js', [detailRow])[0].json.response_html);
-const detailBibleText = visibleText(runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html);
+const detailBibleHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html;
+const detailBibleText = visibleText(detailBibleHtml);
 const detailOutlineText = visibleText(runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'outline'}])[0].json.response_html);
 const detailOpsHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'ops'}])[0].json.response_html;
 const detailOpsText = visibleText(detailOpsHtml);
@@ -176,7 +177,8 @@ const combinedDetailText = [detailOverviewText, detailBibleText, detailOutlineTe
 for (const expected of ['小说项目控制台', '修改项目目标', '暂停项目']) {
   assert(detailOverviewText.includes(expected), `project console overview visible text should include: ${expected}`);
 }
-assert(detailBibleText.includes('编辑设定集'), 'project console bible view should expose Bible edit form');
+assert(detailBibleHtml.includes('data-open-dialog="bible-edit-story-core"'), 'project console bible view should expose per-setting Bible edit buttons on cards');
+assert(detailBibleHtml.includes('class="side-dialog bible-field-edit-dialog"'), 'project console bible view should open per-setting Bible edit drawers');
 assert(detailOutlineText.includes('编辑本章大纲'), 'project console outline view should expose outline edit forms');
 for (const expected of ['项目操作记录', '设定集已编辑', '项目目标已修改']) {
   assert(detailOpsText.includes(expected), `project console ops view should include: ${expected}`);

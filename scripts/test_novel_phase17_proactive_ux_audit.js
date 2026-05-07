@@ -145,8 +145,8 @@ const detailHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [
 }])[0].json.response_html;
 const detailText = visibleText(detailHtml);
 assert(detailText.includes('正文工具条'), 'project detail visible text should expose the reading toolbar');
-assert(detailText.includes('展开全部正文'), 'project detail should allow expanding all chapter bodies');
-assert(detailText.includes('收起全部正文'), 'project detail should allow collapsing all chapter bodies');
+assert(detailText.includes('展开全部章节'), 'project detail should allow expanding all chapter panels');
+assert(detailText.includes('收起全部章节'), 'project detail should allow collapsing all chapter panels');
 assert(detailText.includes('最近模型调用'), 'project detail should show chapter-local model evidence');
 assert(detailText.includes('智能审稿：审稿总分 88'), 'project detail should show chapter-local review score evidence');
 assert(!/<details class="chapter-body"\s+open>/i.test(detailHtml), 'rendered chapter bodies should not be open by default');

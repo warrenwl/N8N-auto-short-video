@@ -54,12 +54,15 @@ assert.strictEqual(workflowNodes.get('Webhook - 小说工作台')?.parameters?.h
 assert.strictEqual(workflowNodes.get('Webhook - 小说项目列表')?.parameters?.httpMethod, 'GET', 'project list must stay GET');
 assert.strictEqual(workflowNodes.get('Webhook - 小说创建页面')?.parameters?.httpMethod, 'GET', 'project create page must be GET');
 assert.strictEqual(workflowNodes.get('Webhook - 小说创建页面')?.parameters?.path, 'novel-project-new', 'project create page path should be novel-project-new');
+assert.strictEqual(workflowNodes.get('Webhook - 小说创建页GLM助手')?.parameters?.httpMethod, 'POST', 'project create AI assist endpoint must be POST');
+assert.strictEqual(workflowNodes.get('Webhook - 小说创建页GLM助手')?.parameters?.path, 'novel-project-ai-assist', 'project create AI assist path should be novel-project-ai-assist');
 assert.strictEqual(workflowNodes.get('Webhook - 小说项目详情')?.parameters?.httpMethod, 'GET', 'project detail must be GET');
 assert.strictEqual(workflowNodes.get('Webhook - 小说项目详情')?.parameters?.path, 'novel-project-detail', 'project detail path should be novel-project-detail');
 assert.strictEqual(workflowNodes.get('Webhook - 创建小说项目')?.parameters?.httpMethod, 'POST', 'project create action must stay POST');
 
 const centerCode = read('n8n/code/novel_render_center_html.js');
 const createCode = read('n8n/code/novel_render_project_create_html.js');
+const createAssistBuildCode = read('n8n/code/novel_build_project_ai_assist_glm_request.js');
 const projectListCode = read('n8n/code/novel_render_project_list_html.js');
 const detailCode = read('n8n/code/novel_render_project_detail_html.js');
 const queueCode = read('n8n/code/novel_render_queue_status_html.js');
@@ -69,7 +72,7 @@ for (const [name, code, markers] of [
   ['center', centerCode, ['小说工作台', '创建项目', '/webhook/novel-project-new']],
   ['create', createCode, ['创建新小说项目', 'method="POST"', '/webhook/novel-project-create', '返回工作台']],
   ['projectList', projectListCode, ['打开项目', '/webhook/novel-project-detail?project_id=', 'th-help']],
-  ['detail', detailCode, ['小说项目控制台', '章节目录', '已写章节', '章节正文', '全部目录', '只看已写', 'data-chapter-filter', 'projectViewHref', 'view-tabs']],
+  ['detail', detailCode, ['小说项目控制台', '章节目录', '已写章节', '章节正文', '目录筛选', '未写', '导演台阻断', 'data-chapter-filter', 'projectViewHref', 'view-tabs', 'outline-workbench', 'catalog-panel', 'chapter-panel', 'chapter-drawer-panel']],
   ['queue', queueCode, ['创建项目', '项目列表']],
   ['review', reviewCode, ['创建项目', '项目列表']],
 ]) {
@@ -122,7 +125,11 @@ for (const expected of ['创建新小说项目', '小说标题', 'AI标题', '�
 assert(createHtml.includes('method="POST" action="/webhook/novel-project-create"'), 'create page should submit to POST action');
 assert(createHtml.includes('type="button" data-ai-title'), 'AI title helper should be a non-submit button');
 assert(createHtml.includes('type="button" data-ai-idea'), 'AI idea helper should be a non-submit button');
-assert(createHtml.includes('buildIdea()') && createHtml.includes('buildTitle()'), 'create page should include client-side AI idea/title helpers');
+assert(createHtml.includes('/webhook/novel-project-ai-assist') && createHtml.includes('fetch(assistUrl'), 'create page AI buttons should call the GLM assist webhook');
+assert(!createHtml.includes('buildIdea()') && !createHtml.includes('buildTitle()'), 'create page should not fake AI with local title/idea builders');
+assert(createHtml.includes('data-ai-feedback'), 'create page should show GLM assist request feedback');
+assert(createHtml.includes('assist_nonce') && createHtml.includes('previous_ai_title') && createHtml.includes('aiGenerated'), 'create page should vary GLM requests and avoid anchoring on previous AI output');
+assert(createAssistBuildCode.includes('genreInstruction') && createAssistBuildCode.includes('diversityBrief') && createAssistBuildCode.includes('top_p'), 'create-page GLM assist prompt should inject genre-specific diversity controls');
 for (const expected of [
   'select name="genre"',
   'select name="audience"',
@@ -181,15 +188,29 @@ assert(detailHtml.includes('/webhook/novel-project-detail?project_id=11111111-11
 
 const detailOutlineHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'outline'}])[0].json.response_html;
 const detailOutlineText = visibleText(detailOutlineHtml);
-for (const expected of ['大纲与目录', '全部目录', '只看已写', '第 1 章', '旧城灯火', '第 2 章', '待人工审核']) {
+for (const expected of ['大纲与目录', '目录筛选', '未写', '已写', '导演台阻断', '无导演台', '第 1 章', '旧城灯火', '第 2 章', '待人工审核']) {
   assert(detailOutlineText.includes(expected), `project detail outline visible text should include: ${expected}`);
 }
 assert(detailOutlineHtml.includes('data-chapter-filter="written"'), 'project detail outline view should expose written chapter filter');
+assert(detailOutlineHtml.includes('data-chapter-filter="unwritten"'), 'project detail outline view should expose unwritten chapter filter');
+assert(detailOutlineHtml.includes('data-chapter-filter="director-blocked"'), 'project detail outline view should expose director-blocked chapter filter');
+assert(detailOutlineHtml.includes('.filter-chip[aria-pressed="true"]'), 'project detail outline filters should have a visible selected state');
+assert(detailOutlineHtml.includes('class="catalog-item catalog-panel"'), 'project detail outline cards should render as collapsible panels');
+assert(detailOutlineHtml.includes('.catalog-grid, .chapter-grid { display: grid; grid-template-columns: minmax(0, 1fr);'), 'project detail outline and chapter views should use a one-column panel list');
+assert(detailOutlineHtml.includes('class="outline-dashboard"'), 'project detail outline view should show the outline status strip');
+assert(detailOutlineHtml.includes('data-catalog-action="expand-all"'), 'project detail outline view should expose expand-all for outline panels');
+assert(!/<details[^>]*data-chapter-values="all written current"[^>]* open/.test(detailOutlineHtml), 'outline panels should keep generated chapters collapsed by default');
 
 const detailChaptersHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'chapters'}])[0].json.response_html;
 const detailChaptersText = visibleText(detailChaptersHtml);
 for (const expected of ['章节正文与版本', '正文工具条', '第一章正文', '第二章候选正文', '去审核']) {
   assert(detailChaptersText.includes(expected), `project detail chapter visible text should include: ${expected}`);
+}
+assert(detailChaptersHtml.includes('class="chapter-card chapter-panel'), 'project detail chapter cards should render as collapsible panels');
+assert(!/<details id="chapter-1"[^>]* open/.test(detailChaptersHtml), 'approved current chapter panels should stay collapsed as one-row panels by default');
+assert(/<details id="chapter-2"[^>]* open/.test(detailChaptersHtml), 'pending review chapter panels should open by default');
+for (const expected of ['章节正文抽屉', '审稿报告抽屉', '人工审核记录抽屉', '章节模型调用抽屉', 'chapter-drawer-panel']) {
+  assert(detailChaptersHtml.includes(expected), `project detail chapter view should expose drawer marker: ${expected}`);
 }
 assert(detailChaptersHtml.includes('/webhook/novel-review-detail?chapter_id=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb&review_token=phase16-token'), 'project detail chapter view should link pending chapter to review detail');
 assert(detailHtml.includes('method="POST"'), 'project detail should contain safe project action POST forms');

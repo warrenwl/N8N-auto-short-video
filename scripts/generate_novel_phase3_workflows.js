@@ -9,6 +9,18 @@ function code(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
 }
 
+const excludeStaleNotifyReviewJobsSql = `AND NOT (
+      j.job_type = 'NOTIFY_REVIEW'
+      AND j.status IN ('PENDING', 'RUNNING')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM novel_chapters nc
+        WHERE nc.project_id = j.project_id
+          AND nc.chapter_no = j.chapter_no
+          AND nc.status = 'NEED_REVIEW'
+      )
+    )`;
+
 function postgresNode(id, name, position, query, queryReplacement = null) {
   return {
     parameters: {
@@ -32,8 +44,8 @@ function postgresNode(id, name, position, query, queryReplacement = null) {
   };
 }
 
-function codeNode(id, name, position, jsCode) {
-  return {
+function codeNode(id, name, position, jsCode, options = {}) {
+  const node = {
     parameters: {jsCode},
     id,
     name,
@@ -41,6 +53,10 @@ function codeNode(id, name, position, jsCode) {
     typeVersion: 2,
     position,
   };
+  if (options.continueErrorOutput) {
+    node.onError = 'continueErrorOutput';
+  }
+  return node;
 }
 
 function ifNode(id, name, position, leftValue, conditionId) {
@@ -137,8 +153,8 @@ function respondNode(id, name, position, responseBody, responseCode, contentType
   };
 }
 
-function httpGlmNode(id, name, position) {
-  return {
+function httpGlmNode(id, name, position, options = {}) {
+  const node = {
     parameters: {
       method: 'POST',
       url: '={{ $env.GLM_API_BASE_URL || "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions" }}',
@@ -174,6 +190,10 @@ function httpGlmNode(id, name, position) {
     typeVersion: 4.2,
     position,
   };
+  if (options.continueErrorOutput) {
+    node.onError = 'continueErrorOutput';
+  }
+  return node;
 }
 
 function sticky(id, name, position, content) {
@@ -272,6 +292,7 @@ WITH listed AS (
       COUNT(*) FILTER (WHERE j.status = 'CANCELLED')::integer AS cancelled_job_count
     FROM novel_generation_jobs j
     WHERE j.project_id = p.id
+      ${excludeStaleNotifyReviewJobsSql}
   ) job_stats ON true
   LEFT JOIN LATERAL (
     SELECT
@@ -285,7 +306,15 @@ WITH listed AS (
     SELECT j.*
     FROM novel_generation_jobs j
     WHERE j.project_id = p.id
-    ORDER BY j.updated_at DESC, j.created_at DESC
+      ${excludeStaleNotifyReviewJobsSql}
+    ORDER BY
+      CASE
+        WHEN j.status = 'RUNNING' THEN 0
+        WHEN j.status = 'PENDING' THEN 1
+        ELSE 2
+      END,
+      j.updated_at DESC,
+      j.created_at DESC
     LIMIT 1
   ) latest_job ON true
   LEFT JOIN LATERAL (
@@ -584,6 +613,7 @@ WITH input AS (
     SELECT *
     FROM novel_generation_jobs j
     WHERE j.project_id = (SELECT project_id FROM input)
+      ${excludeStaleNotifyReviewJobsSql}
     ORDER BY
       CASE j.status WHEN 'FAILED' THEN 0 WHEN 'RUNNING' THEN 1 WHEN 'PENDING' THEN 2 ELSE 3 END,
       j.updated_at DESC
@@ -678,8 +708,8 @@ WITH input AS (
   SELECT j.*
   FROM novel_generation_jobs j
   CROSS JOIN input i
-  WHERE i.project_id IS NULL
-    OR j.project_id = i.project_id
+  WHERE (i.project_id IS NULL OR j.project_id = i.project_id)
+    ${excludeStaleNotifyReviewJobsSql}
 ), stats AS (
   SELECT
     COUNT(*)::integer AS queue_total_count,
@@ -1562,6 +1592,11 @@ const context = $('代码 - 构建前端大纲 GLM请求').first().json;
 const response = $json;
 return [{json: {...context, llm_response: response}}];`;
 
+const mergeCreateAssistCode = `// n8n Code node: Merge create-page GLM assist response context
+const context = $('代码 - 构建创建页 GLM助手请求').first().json;
+const response = $json;
+return [{json: {...context, llm_response: response}}];`;
+
 const centerWorkflow = workflowBase(
   'novelCenterV1Workflow11',
   '11_小说工作台_项目列表_创建与目录',
@@ -1579,6 +1614,15 @@ const centerWorkflow = workflowBase(
     webhookNode('webhook-novel-project-new-11', 'Webhook - 小说创建页面', [-720, 80], 'GET', 'novel-project-new', 'novel-project-new-11'),
     codeNode('code-render-novel-project-new-11', '代码 - 生成小说创建页面', [-500, 80], code('n8n/code/novel_render_project_create_html.js')),
     respondNode('respond-novel-project-new-11', '响应Webhook - 返回小说创建页面', [-280, 80], '={{ $json.response_html }}', 200, 'text/html; charset=utf-8'),
+
+    webhookNode('webhook-novel-project-ai-assist-11', 'Webhook - 小说创建页GLM助手', [-720, 170], 'POST', 'novel-project-ai-assist', 'novel-project-ai-assist-11'),
+    codeNode('code-validate-project-ai-assist-11', '代码 - 校验创建页GLM助手', [-500, 170], code('n8n/code/novel_validate_project_ai_assist.js')),
+    codeNode('code-build-project-ai-assist-11', '代码 - 构建创建页 GLM助手请求', [-280, 170], code('n8n/code/novel_build_project_ai_assist_glm_request.js')),
+    httpGlmNode('http-glm-project-ai-assist-11', 'HTTP请求 - 调用GLM生成创建页灵感', [-60, 170], {continueErrorOutput: true}),
+    codeNode('code-merge-project-ai-assist-11', '代码 - 合并创建页GLM助手响应上下文', [160, 130], mergeCreateAssistCode),
+    codeNode('code-parse-project-ai-assist-11', '代码 - 解析创建页GLM助手响应', [380, 130], code('n8n/code/novel_parse_project_ai_assist_glm_response.js'), {continueErrorOutput: true}),
+    codeNode('code-render-project-ai-assist-error-11', '代码 - 生成创建页GLM助手错误响应', [380, 220], code('n8n/code/novel_render_project_ai_assist_error_json.js')),
+    respondNode('respond-project-ai-assist-11', '响应Webhook - 返回创建页GLM助手结果', [600, 170], '={{ $json.response_json }}', '={{ $json.response_status_code || 200 }}', 'application/json; charset=utf-8'),
 
     webhookNode('webhook-novel-project-detail-11', 'Webhook - 小说项目详情', [-720, 280], 'GET', 'novel-project-detail', 'novel-project-detail-11'),
     postgresNode(
@@ -1783,11 +1827,11 @@ const centerWorkflow = workflowBase(
 
     sticky('note-novel-center-11', '说明 - 小说工作台', [-720, -520], 'GET `/webhook/novel-center` 展示待办总览和需要处理的项目；创建表单已拆到独立页面。'),
     sticky('note-novel-project-list-11', '说明 - 小说项目列表', [-720, -140], 'GET `/webhook/novel-project-list` 只读展示完整项目列表，并提供去审核、查看目录、看队列、看日报和查看概览入口。'),
-    sticky('note-novel-project-new-11', '说明 - 小说创建页面', [-720, 80], 'GET `/webhook/novel-project-new` 只展示创建表单；真正创建仍提交到 POST `/webhook/novel-project-create`。'),
+    sticky('note-novel-project-new-11', '说明 - 小说创建页面', [-720, 80], 'GET `/webhook/novel-project-new` 只展示创建表单；真正创建仍提交到 POST `/webhook/novel-project-create`；标题/创意按钮会 POST `/webhook/novel-project-ai-assist` 即时调用 GLM 返回 JSON。'),
     sticky('note-novel-project-detail-11', '说明 - 小说项目详情', [-720, 280], 'GET `/webhook/novel-project-detail?project_id=...&view=overview|bible|outline|chapters|facts|ops|export`；默认总览，二级视图再展示设定、目录、正文、事实、运行和导出。'),
     sticky('note-novel-queue-status-11', '说明 - 小说队列状态', [-720, 480], 'GET `/webhook/novel-queue-status` 只读展示项目队列、最近任务和最近调用；带 project_id 时服务端统计和列表都按项目过滤。'),
     sticky('note-novel-daily-report-11', '说明 - 小说运行日报', [-720, 680], 'GET `/webhook/novel-daily-report` 只读展示今日任务、模型调用、失败摘要和调度策略。'),
-    sticky('note-project-create-11', '说明 - 创建项目动作', [-720, 980], '创建项目只写入 `novel_projects(CREATED)` 并创建 `GENERATE_BIBLE(PENDING)`，不直接调用 GLM；浏览器提交后返回中文结果页和下一步入口。'),
+    sticky('note-project-create-11', '说明 - 创建项目动作', [-720, 980], '创建项目只写入 `novel_projects(CREATED)` 并创建 `GENERATE_BIBLE(PENDING)`，不直接调用 GLM；创建页 AI 助手是独立即时 GLM webhook；浏览器提交后返回中文结果页和下一步入口。'),
     sticky('note-project-actions-11', '说明 - 项目控制台动作', [-720, 3540], '继续写作、设定集/大纲重新生成、正式章节重写申请、待执行重写启动、审核提醒重发、设定集编辑、大纲编辑、目标修改、暂停恢复、手动正文编辑、项目归档恢复、事实库人工维护、过期历史章节清理都只能走 POST；正式章节重写申请成功后会立即异步启动 17 号重写 worker，已有 PENDING 重写可从项目控制台恢复启动。'),
   ],
   {
@@ -1799,6 +1843,19 @@ const centerWorkflow = workflowBase(
     '代码 - 生成小说项目列表页面': {main: [[{node: '响应Webhook - 返回小说项目列表', type: 'main', index: 0}]]},
     'Webhook - 小说创建页面': {main: [[{node: '代码 - 生成小说创建页面', type: 'main', index: 0}]]},
     '代码 - 生成小说创建页面': {main: [[{node: '响应Webhook - 返回小说创建页面', type: 'main', index: 0}]]},
+    'Webhook - 小说创建页GLM助手': {main: [[{node: '代码 - 校验创建页GLM助手', type: 'main', index: 0}]]},
+    '代码 - 校验创建页GLM助手': {main: [[{node: '代码 - 构建创建页 GLM助手请求', type: 'main', index: 0}]]},
+    '代码 - 构建创建页 GLM助手请求': {main: [[{node: 'HTTP请求 - 调用GLM生成创建页灵感', type: 'main', index: 0}]]},
+    'HTTP请求 - 调用GLM生成创建页灵感': {main: [
+      [{node: '代码 - 合并创建页GLM助手响应上下文', type: 'main', index: 0}],
+      [{node: '代码 - 生成创建页GLM助手错误响应', type: 'main', index: 0}],
+    ]},
+    '代码 - 合并创建页GLM助手响应上下文': {main: [[{node: '代码 - 解析创建页GLM助手响应', type: 'main', index: 0}]]},
+    '代码 - 解析创建页GLM助手响应': {main: [
+      [{node: '响应Webhook - 返回创建页GLM助手结果', type: 'main', index: 0}],
+      [{node: '代码 - 生成创建页GLM助手错误响应', type: 'main', index: 0}],
+    ]},
+    '代码 - 生成创建页GLM助手错误响应': {main: [[{node: '响应Webhook - 返回创建页GLM助手结果', type: 'main', index: 0}]]},
     'Webhook - 小说项目详情': {main: [[{node: '数据库 - 查询小说项目详情', type: 'main', index: 0}]]},
     '数据库 - 查询小说项目详情': {main: [[{node: '代码 - 生成小说项目详情页面', type: 'main', index: 0}]]},
     '代码 - 生成小说项目详情页面': {main: [[{node: '响应Webhook - 返回小说项目详情', type: 'main', index: 0}]]},

@@ -281,6 +281,19 @@ function buildDirectorTransitionInstruction(runType, values) {
   ].join('\n');
 }
 
+function buildDirectorRepairInstruction(runType, values) {
+  if (runType !== 'PLAN_CHAPTER_DIRECTOR' || isBlankPromptValue(values.director_repair_context)) return '';
+  return [
+    '【导演台阻断修复】',
+    '这是一次针对当前章导演台阻断问题的修复重跑，不是普通重写规划。',
+    `人工备注：${values.director_request_comment || '无'}`,
+    `当前阻断上下文：${values.director_repair_context}`,
+    '必须逐条解决 current_blocking_issues / blocking_issues：能用已有 Bible、大纲、已通过章节、连续性事实或伏笔账本支持的才可保留；没有来源的宫宴名目、案名、罪名、身份、命令或制度性理由必须删除、泛化或改成已有来源支持的中性说法，不得编造新来源硬撑。',
+    `segment_plan 数量必须严格等于【正文分段数】${values.chapter_segment_total || ''}；如果上一版段数不足，本版必须补齐对应段计划。`,
+    '只有在上述阻断都已实质解决时，quality_gate.pass 才能为 true 且 blocking_issues 为空；如果仍有无法解决的前置事实缺口，保持 pass=false 并只列剩余阻断。',
+  ].join('\n');
+}
+
 function buildReviewTransitionInstruction(runType, values) {
   if (runType !== 'REVIEW_CHAPTER') return '';
   return [
@@ -295,6 +308,16 @@ function buildReviewTransitionInstruction(runType, values) {
     '如果是合理镜头转换，也要在分析中说明 mode、依据和过渡手法，但不要把“跨章断链”写进 issues；只有不合理断链才在 issues 加入 type="跨章断链" 的问题，并给出可操作修法。',
     'mode 只能是 direct_continuation、natural_scene_cut、pov_shift、time_skip、summary_bridge 之一；“直接转场”“时间流逝”“空间转换”不能写成 direct_continuation。',
     '输出 JSON 必须额外包含 cross_chapter_transition_review：{"mode":"","allowed":true,"evidence":"","risk":"","fix":"","should_block":false}。',
+  ].join('\n');
+}
+
+function buildReviewScoreInstruction(runType) {
+  if (runType !== 'REVIEW_CHAPTER') return '';
+  return [
+    '【评分硬规则】',
+    '所有评分字段 consistency_score、readability_score、plot_score、commercial_score、total_score 必须使用 0-100 分制整数。',
+    '禁止使用 0-10 分制或 1-10 分制；例如优秀章节应输出 90、92、95，不要输出 9、9.2、9.5。',
+    'total_score 必须是 0-100 的综合分，不是四项平均后的 0-10 小数。',
   ].join('\n');
 }
 
@@ -337,6 +360,8 @@ const baseValues = {
   relationship_map: stringifyForPrompt(source.relationship_map),
   selling_points: stringifyForPrompt(source.selling_points),
   continuity_facts: stringifyForPrompt(source.continuity_facts || source.facts),
+  director_repair_context: stringifyForPrompt(source.director_repair_context),
+  director_request_comment: String(source.director_request_comment || ''),
   director_card: directorCardText,
   director_card_payload: directorCardText,
   novel_bible: stringifyForPrompt(source.novel_bible || source.bible),
@@ -396,13 +421,22 @@ const userPromptWithDirectorTransition = appendInstructionOnce(
   buildDirectorTransitionInstruction(runType, values)
 );
 const userPromptWithReviewTransition = appendInstructionOnce(
-  userPromptWithDirectorTransition,
+  appendInstructionOnce(
+    userPromptWithDirectorTransition,
+    '【导演台阻断修复】',
+    buildDirectorRepairInstruction(runType, values)
+  ),
   '【跨章承接审稿】',
   buildReviewTransitionInstruction(runType, values)
 );
+const userPromptWithReviewScore = appendInstructionOnce(
+  userPromptWithReviewTransition,
+  '【评分硬规则】',
+  buildReviewScoreInstruction(runType)
+);
 const paragraphInstruction = buildParagraphInstruction(runType);
 const userPromptWithParagraph = appendInstructionOnce(
-  userPromptWithReviewTransition,
+  userPromptWithReviewScore,
   '【正文换行硬规则】',
   paragraphInstruction
 );

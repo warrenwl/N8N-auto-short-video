@@ -194,6 +194,21 @@ BEGIN
   WHERE id = v_candidate_chapter.id
   RETURNING review_token INTO v_token;
 
+  INSERT INTO novel_generation_jobs (
+    project_id,
+    chapter_id,
+    job_type,
+    chapter_no,
+    status
+  )
+  VALUES (
+    v_project_id,
+    v_candidate_chapter.id,
+    'NOTIFY_REVIEW',
+    v_candidate_chapter.chapter_no,
+    'PENDING'
+  );
+
   INSERT INTO novel_continuity_facts (
     project_id,
     chapter_id,
@@ -239,6 +254,16 @@ BEGIN
       AND is_current = TRUE
   ) THEN
     RAISE EXCEPTION 'approved candidate should become current';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM novel_generation_jobs
+    WHERE chapter_id = v_candidate_chapter.id
+      AND job_type = 'NOTIFY_REVIEW'
+      AND status IN ('PENDING', 'RUNNING')
+  ) THEN
+    RAISE EXCEPTION 'approve should cancel pending review notification job';
   END IF;
 
   IF EXISTS (
@@ -429,6 +454,25 @@ BEGIN
   WHERE id = v_second_candidate.id
   RETURNING review_token INTO v_token;
 
+  INSERT INTO novel_generation_jobs (
+    project_id,
+    chapter_id,
+    job_type,
+    chapter_no,
+    status
+  )
+  VALUES (
+    v_project_id,
+    v_second_candidate.id,
+    'NOTIFY_REVIEW',
+    v_second_candidate.chapter_no,
+    'PENDING'
+  );
+
+  UPDATE novel_projects
+  SET status = 'REVIEWING'
+  WHERE id = v_project_id;
+
   SELECT *
   INTO v_rewrite_result
   FROM request_novel_chapter_rewrite(
@@ -454,6 +498,25 @@ BEGIN
     RAISE EXCEPTION 'rewrite request should create REWRITE_CHAPTER job';
   END IF;
 
+  IF EXISTS (
+    SELECT 1
+    FROM novel_generation_jobs
+    WHERE chapter_id = v_second_candidate.id
+      AND job_type = 'NOTIFY_REVIEW'
+      AND status IN ('PENDING', 'RUNNING')
+  ) THEN
+    RAISE EXCEPTION 'rewrite request should cancel pending review notification job';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM novel_projects
+    WHERE id = v_project_id
+      AND status = 'REVIEWING'
+  ) THEN
+    RAISE EXCEPTION 'rewrite request should leave project out of human-review status when no pending review remains';
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1
     FROM novel_chapters
@@ -463,6 +526,13 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'rewrite request must not disturb approved current chapter';
   END IF;
+
+  UPDATE novel_generation_jobs
+  SET
+    status = 'CANCELLED',
+    finished_at = NOW(),
+    updated_at = NOW()
+  WHERE id = v_rewrite_result.rewrite_job_id;
 
   SELECT *
   INTO v_reject_candidate
@@ -484,6 +554,25 @@ BEGIN
   SET status = 'NEED_REVIEW'
   WHERE id = v_reject_candidate.id
   RETURNING review_token INTO v_token;
+
+  INSERT INTO novel_generation_jobs (
+    project_id,
+    chapter_id,
+    job_type,
+    chapter_no,
+    status
+  )
+  VALUES (
+    v_project_id,
+    v_reject_candidate.id,
+    'NOTIFY_REVIEW',
+    v_reject_candidate.chapter_no,
+    'PENDING'
+  );
+
+  UPDATE novel_projects
+  SET status = 'REVIEWING'
+  WHERE id = v_project_id;
 
   SELECT *
   INTO v_reject_result
@@ -516,6 +605,37 @@ BEGIN
       AND reviewer = 'phase1_tdd'
   ) THEN
     RAISE EXCEPTION 'missing human review REJECT record';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM novel_generation_jobs
+    WHERE chapter_id = v_reject_candidate.id
+      AND job_type = 'NOTIFY_REVIEW'
+      AND status IN ('PENDING', 'RUNNING')
+  ) THEN
+    RAISE EXCEPTION 'reject should cancel pending review notification job';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM novel_generation_jobs
+    WHERE project_id = v_project_id
+      AND chapter_no = v_reject_candidate.chapter_no
+      AND job_type = 'PLAN_CHAPTER_DIRECTOR'
+      AND status IN ('PENDING', 'RUNNING')
+      AND payload->>'trigger_source' = 'chapter_rejected_retry'
+  ) THEN
+    RAISE EXCEPTION 'reject should create same-chapter director retry job';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM novel_projects
+    WHERE id = v_project_id
+      AND status = 'REVIEWING'
+  ) THEN
+    RAISE EXCEPTION 'reject should leave project out of human-review status when no pending review remains';
   END IF;
 
   INSERT INTO phase1_tdd_evidence (
