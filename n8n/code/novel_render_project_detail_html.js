@@ -2190,6 +2190,13 @@ function executionLabel(info) {
   return '不会调用模型';
 }
 
+function commandExecutionHint(info) {
+  if (hasFrontStartJob || activeRewriteActionJob) return '启动后台任务';
+  if (activeQueueCount > 0) return '队列观察';
+  if (canShowContinueForm) return '排队下一步';
+  return executionLabel(info);
+}
+
 function riskItem(title, value, detail, tone = '') {
   return `
     <article class="risk-card ${escapeHtml(tone)}">
@@ -2271,6 +2278,98 @@ const markdownExport = latestChapters
   .sort((a, b) => Number(a.chapter_no || 0) - Number(b.chapter_no || 0))
   .map((chapter) => `## ${chapterHeading(chapter.chapter_no, chapter.title)}\n\n${chapter.body}`)
   .join('\n\n');
+
+function commandLink(href, labelText, subText = '', className = '') {
+  return `<a class="command-button ${escapeHtml(className)}" href="${escapeHtml(href)}"><span>${escapeHtml(labelText)}</span>${subText ? `<small>${escapeHtml(subText)}</small>` : ''}</a>`;
+}
+
+function commandDialogButton(dialogId, labelText, subText = '') {
+  return `<button class="command-button" type="button" data-open-dialog="${escapeHtml(dialogId)}"><span>${escapeHtml(labelText)}</span>${subText ? `<small>${escapeHtml(subText)}</small>` : ''}</button>`;
+}
+
+function commandAssetCard(labelText, value, detail, href, tone = '') {
+  return `
+    <a class="asset-status-card ${escapeHtml(tone)}" href="${escapeHtml(href)}">
+      <span>${escapeHtml(labelText)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <em>${escapeHtml(detail)}</em>
+    </a>`;
+}
+
+function projectPrimaryAction() {
+  if (pendingBibleJob) return generationRunForm(projectId, 'GENERATE_BIBLE');
+  if (pendingOutlineJob) return generationRunForm(projectId, 'GENERATE_OUTLINE');
+  if (pendingDirectorJob) return generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', pendingDirectorJob);
+  if (pendingChapterJob) return generationRunForm(projectId, 'GENERATE_CHAPTER', pendingChapterJob);
+  if (activeRewriteActionJob) return rewriteRunForm(projectId, activeRewriteActionJob);
+  if (needsReviewDirector) return commandLink(projectViewHref('director', `#director-${encodeURIComponent(needsReviewDirector.chapter_no || '')}`), '处理导演台', '查看阻断');
+  if (pendingChapterWithoutReadyDirectorJob) return commandLink(projectViewHref('director'), '查看导演台', '补齐规划');
+  if (failedJobs.length) return commandLink(projectViewHref('ops', '#ops-section'), '排查失败', '查看日志');
+  if (reviewCount) return commandLink('/webhook/novel-review-list', '处理审核', '人工决策');
+  if (activeQueueCount) return commandLink(`/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`, '查看队列', '观察后台');
+  if (canShowContinueForm) return continueForm(projectId, rejectedRetryContinueOptions || {});
+  if (row.status === 'PAUSED' || row.status === 'ARCHIVED') return commandDialogButton('project-actions-drawer', '项目操作', '恢复/管理');
+  if (row.status === 'COMPLETED') return commandLink(projectViewHref('export'), '打开导出', '整理成稿');
+  return commandLink(projectViewHref(activeView), '查看当前视图', '继续工作');
+}
+
+const queueSummary = failedJobs.length
+  ? `${failedJobs.length} 失败`
+  : (activeQueueCount ? `${activeQueueCount} 队列中` : '队列空闲');
+const queueTone = failedJobs.length ? 'bad' : (activeQueueCount ? 'warn' : 'good');
+const bibleAssetState = hasBibleAsset ? '已生成' : (runningBibleJob ? '生成中' : (pendingBibleJob ? '待启动' : '待生成'));
+const outlineAssetState = syntheticOutlines.length ? `${syntheticOutlines.length} 章` : (runningOutlineJob ? '生成中' : (pendingOutlineJob ? '待启动' : '待生成'));
+const directorAssetState = needsReviewDirectorCount ? `${needsReviewDirectorCount} 阻断` : `${readyDirectorCount}/${syntheticOutlines.length || 0}`;
+const directorTone = needsReviewDirectorCount ? 'warn' : (readyDirectorCount ? 'good' : '');
+const reviewTone = reviewCount ? 'warn' : 'good';
+const commandAssetHtml = [
+  commandAssetCard('设定集', bibleAssetState, hasBibleAsset ? '可查看/编辑' : '等待生成', projectViewHref('bible'), hasBibleAsset ? 'good' : 'warn'),
+  commandAssetCard('大纲', outlineAssetState, syntheticOutlines.length ? '章节规划' : '等待目录', projectViewHref('outline'), syntheticOutlines.length ? 'good' : 'warn'),
+  commandAssetCard('导演台', directorAssetState, needsReviewDirectorCount ? '需调整' : '质量闸门', projectViewHref('director'), directorTone),
+  commandAssetCard('章节', `${writtenCount}/${row.target_total_chapters || 0}`, `${currentCount} 正式`, projectViewHref('chapters'), writtenCount ? 'good' : ''),
+  commandAssetCard('审核', `${reviewCount} 待审`, reviewCount ? '先决策' : '无阻塞', '/webhook/novel-review-list', reviewTone),
+  commandAssetCard('事实', `${activeFacts}/${facts.length}`, '连续性记忆', projectViewHref('facts'), activeFacts ? 'good' : ''),
+  commandAssetCard('运行', queueSummary, failedJobs.length ? '需排查' : (activeQueueCount ? '观察中' : '可推进'), projectViewHref('ops'), queueTone),
+].join('');
+const projectCommandCenterHtml = `
+    <section class="project-command-center" aria-label="项目指挥台">
+      <div class="project-identity-bar">
+        <div class="project-identity-copy">
+          <div class="project-title-row">
+            <h2>${escapeHtml(row.title || '未命名项目')}</h2>
+            ${badge(liveProjectStatus.code, {}, liveProjectStatus.label)}
+          </div>
+          ${liveProjectStatus.note ? `<p class="status-explain">${escapeHtml(liveProjectStatus.note)}，标题优先显示当前队列实时状态。</p>` : ''}
+          <div class="project-meta-line" aria-label="项目基础信息">
+            <span>${escapeHtml(row.genre || '未设置类型')}</span>
+            <span>${escapeHtml(row.audience || '未设置读者')}</span>
+            <span>${escapeHtml(row.style || '未设置文风')}</span>
+            <span>进度 ${escapeHtml(row.current_chapter_no || 0)}/${escapeHtml(row.target_total_chapters || 0)}</span>
+            <span class="${escapeHtml(queueTone)}">${escapeHtml(queueSummary)}</span>
+          </div>
+          <p class="command-premise">${escapeHtml(row.premise || '暂无核心创意')}</p>
+        </div>
+        <div class="command-actions">
+          ${commandDialogButton('project-actions-drawer', '项目操作')}
+          ${commandLink(`/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`, '查看队列')}
+          ${commandLink(projectViewHref('export'), '导出')}
+        </div>
+      </div>
+      <div class="next-action-strip" aria-label="下一步动作区">
+        <div class="next-action-copy">
+          <p class="ops-kicker">当前建议操作 / 下一步动作区</p>
+          <h2>下一步动作区：${escapeHtml(recommendationInfo.title)}</h2>
+          <p>${escapeHtml(recommendationInfo.body)}</p>
+          <div class="command-mode-row">
+            <span class="mode-pill">${escapeHtml(recommendationInfo.mode)}</span>
+            <span class="action-mode">${escapeHtml(executionLabel(recommendationInfo))}</span>
+            <span class="action-mode">${escapeHtml(commandExecutionHint(recommendationInfo))}</span>
+          </div>
+        </div>
+        <div class="next-action-primary">${projectPrimaryAction()}</div>
+      </div>
+      <div class="asset-status-grid" aria-label="项目资产状态条">${commandAssetHtml}</div>
+    </section>`;
 
 function overviewCard(title, value, detail, href, cta = '打开') {
   return `
@@ -2626,36 +2725,41 @@ const html = `<!doctype html>
     .view-tab { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 0 12px; background: #fff; color: var(--ink); text-decoration: none; font-weight: 700; touch-action: manipulation; }
     .view-tab:hover, .view-tab.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
-    .summary { display: grid; grid-template-columns: minmax(0, .82fr) minmax(360px, 1.18fr); gap: 14px; background: transparent; border: 0; overflow: visible; }
-    .project-info, .metrics, .recommendation { padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-    .project-info { min-height: 360px; display: flex; flex-direction: column; border-color: #b9e3d4; background: var(--accent-soft); }
+    .project-command-center { display: grid; gap: 10px; padding: 12px; overflow: visible; border-color: #cbd6e2; background: #fff; box-shadow: 0 8px 18px rgba(16, 24, 40, .05); }
+    .project-identity-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    .project-identity-copy { min-width: 0; }
+    .project-title-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .project-title-row h2 { margin: 0; font-size: 22px; line-height: 1.25; }
     .status-explain { margin: 4px 0 10px; color: var(--muted); font-size: 13px; line-height: 1.5; }
-    .recommendation { background: #fff; }
-    .recommendation.command-panel { box-shadow: 0 8px 18px rgba(16, 24, 40, .06); }
-    .recommendation-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
-    .recommendation-kicker { margin: 0 0 6px; color: var(--muted); font-size: 13px; font-weight: 700; }
+    .project-meta-line { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .project-meta-line span { min-height: 26px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 0 9px; background: #f8fafb; color: #344054; font-size: 12px; font-weight: 750; white-space: nowrap; }
+    .project-meta-line span.good { border-color: #b9e3d4; color: var(--accent); background: var(--accent-soft); }
+    .project-meta-line span.warn { border-color: #f0c36a; color: var(--warn); background: var(--warn-soft); }
+    .project-meta-line span.bad { border-color: #f3b4ae; color: var(--danger); background: var(--danger-soft); }
+    .command-premise { max-width: 920px; margin: 8px 0 0; color: #3d4b5c; line-height: 1.55; }
+    .command-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+    .command-button, .next-action-primary .inline-form button { min-height: 42px; display: inline-flex; flex-direction: column; justify-content: center; align-items: flex-start; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 12px; background: #fff; color: var(--accent); text-decoration: none; font: inherit; font-weight: 800; cursor: pointer; touch-action: manipulation; }
+    .command-button:hover, .next-action-primary .inline-form button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .command-button small, .next-action-primary .inline-form button small { display: block; margin-top: 1px; font-size: 11px; line-height: 1.2; font-weight: 650; opacity: .78; }
+    .next-action-strip { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, auto); gap: 12px; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 12px; background: var(--accent-soft); }
+    .next-action-copy { min-width: 0; }
+    .next-action-copy h2 { margin-bottom: 4px; }
+    .next-action-copy p:not(.ops-kicker) { margin: 0; color: #3d4b5c; line-height: 1.55; }
+    .next-action-primary { display: flex; justify-content: flex-end; align-items: center; }
+    .next-action-primary .inline-form { width: 100%; max-width: 260px; }
+    .next-action-primary .inline-form button, .next-action-primary .command-button { width: 100%; min-height: 48px; }
+    .command-mode-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .mode-pill { display: inline-flex; align-items: center; min-height: 28px; border: 1px solid #b9e3d4; border-radius: 999px; padding: 0 10px; color: var(--accent); background: var(--accent-soft); font-size: 12px; font-weight: 750; white-space: nowrap; }
     .action-mode { display: inline-flex; align-items: center; min-height: 28px; border: 1px solid var(--line); border-radius: 999px; padding: 0 10px; color: #344054; background: #fff; font-size: 12px; font-weight: 750; white-space: nowrap; }
-    .decision-note { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8fafb; color: #3d4b5c; line-height: 1.6; }
-    .decision-note strong { display: block; margin-bottom: 3px; color: var(--ink); }
-    .recommendation-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
-    .recommendation-actions a { min-height: 44px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 12px; background: #fff; color: var(--accent); text-decoration: none; font-weight: 750; }
-    .recommendation-actions a:hover { border-color: var(--accent); background: var(--accent-soft); }
-    .status-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
-    .status-strip a { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; color: var(--ink); text-decoration: none; }
-    .status-strip strong { display: block; margin-top: 3px; font-size: 20px; }
-    .status-strip em { display: block; margin-top: 3px; color: var(--muted); font-style: normal; font-size: 12px; }
-    .action-guide { display: block; margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
-    .action-guide[open] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-    .action-guide summary { grid-column: 1 / -1; color: var(--muted); font-size: 13px; }
-    .action-guide div { border-top: 1px solid var(--line); padding-top: 10px; }
-    .action-guide strong { display: block; margin-bottom: 4px; font-size: 13px; }
-    .action-guide span { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
-    .summary-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
-    .summary-facts a, .summary-facts span { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; color: var(--ink); text-decoration: none; }
-    .summary-facts strong { display: block; margin-top: 3px; font-size: 20px; font-variant-numeric: tabular-nums; }
-    .summary-facts em { display: block; margin-top: 3px; color: var(--muted); font-style: normal; font-size: 12px; }
-    .project-info .action-bar { flex: 1; justify-content: center; align-content: center; align-items: center; margin: 18px auto 8px; padding: 20px 8px; max-width: 720px; }
+    .asset-status-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+    .asset-status-card { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: #fff; color: var(--ink); text-decoration: none; }
+    .asset-status-card:hover { border-color: var(--accent); background: #fbfffd; }
+    .asset-status-card span { display: block; color: var(--muted); font-size: 12px; font-weight: 800; }
+    .asset-status-card strong { display: block; margin-top: 3px; font-size: 18px; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .asset-status-card em { display: block; margin-top: 4px; color: var(--muted); font-style: normal; font-size: 12px; line-height: 1.3; }
+    .asset-status-card.good { border-color: #b9e3d4; background: #fbfffd; }
+    .asset-status-card.warn { border-color: #f0c36a; background: var(--warn-soft); }
+    .asset-status-card.bad { border-color: #f3b4ae; background: var(--danger-soft); }
     .drawer-button { min-height: 36px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 11px; background: #fff; color: var(--ink); font: inherit; font-weight: 750; cursor: pointer; }
     .drawer-button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .regenerate-trigger { border-color: #f2b8b5; color: var(--danger); background: #fff; }
@@ -2953,7 +3057,14 @@ const html = `<!doctype html>
       .view-shell-actions { justify-content: flex-start; margin-left: 0; }
       .view-shell-actions .drawer-button, .view-shell-actions .inline-form, .view-shell-actions .inline-form button { width: 100%; }
       nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
-      .metrics, .recommendation { margin-top: 14px; }
+      .project-command-center { padding: 10px; }
+      .project-identity-bar, .next-action-strip { grid-template-columns: 1fr; }
+      .project-title-row h2 { font-size: 20px; }
+      .command-actions { justify-content: stretch; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .command-actions .command-button { width: 100%; align-items: center; padding-left: 8px; padding-right: 8px; text-align: center; }
+      .next-action-primary { justify-content: stretch; }
+      .next-action-primary .inline-form { max-width: none; }
+      .asset-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .metric-grid, .catalog-grid, .chapter-grid, .fact-grid, .bible-grid, .bible-workspace-grid, .overview-grid, .form-grid, .risk-grid, .director-grid, .outline-dashboard { grid-template-columns: 1fr; padding: 0 12px 12px; }
       .director-card > .row-actions { padding: 0 12px 12px; }
       .director-chapter-summary { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; }
@@ -2973,7 +3084,7 @@ const html = `<!doctype html>
       .stale-cleanup-form button { width: 100%; }
       .fact-maintenance-actions { min-width: 0; }
       .fact-create-form, .fact-edit form { grid-template-columns: 1fr; }
-      .action-guide, .chapter-evidence, .status-strip, .summary-facts { grid-template-columns: 1fr; }
+      .chapter-evidence { grid-template-columns: 1fr; }
       .quick-nav, .section-title, .filters, .reader-toolbar, .export-box, .outline-toolbar { padding-left: 12px; padding-right: 12px; }
       .outline-toolbar { position: static; display: grid; }
       .outline-toolbar-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; }
@@ -2982,16 +3093,12 @@ const html = `<!doctype html>
       .item-head { display: block; }
       .badge-row { justify-content: flex-start; margin-top: 8px; }
       .quick-nav, .action-bar { display: grid; }
-      .recommendation-actions { display: grid; }
-      .project-info { min-height: 0; }
-      .project-info .action-bar { margin: 12px 0 0; padding: 12px 0 0; max-width: none; justify-content: stretch; align-content: stretch; }
       .reader-toolbar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .reader-toolbar > * { white-space: nowrap; }
       .view-tabs { flex-wrap: nowrap; overflow-x: auto; padding-left: 12px; padding-right: 12px; -webkit-overflow-scrolling: touch; }
       .written-section .reader-toolbar { top: 0; }
       .inline-form { display: grid; }
       .director-json { min-height: 460px; height: 62vh; }
-      .recommendation-top { display: block; }
       .mode-pill { margin-top: 8px; }
     }
   </style>
@@ -3005,77 +3112,12 @@ const html = `<!doctype html>
     <header>
       <div>
         <h1>小说项目控制台</h1>
-        <p class="muted">${escapeHtml(row.title || '未命名项目')} / ${escapeHtml(row.genre || '未设置类型')} / ${escapeHtml(row.audience || '未设置读者')}</p>
-      </div>
-      <div class="page-actions">
-        <button class="drawer-button" type="button" data-open-dialog="project-actions-drawer">项目操作</button>
-        <a href="/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}">查看队列</a>
+        <p class="muted">项目指挥台 / ${escapeHtml(viewConfig[activeView].label)}</p>
       </div>
     </header>
     </div>
 
-    <section class="summary" aria-label="项目总览">
-      <div class="project-info">
-        <h2>${escapeHtml(row.title || '未命名项目')} ${badge(liveProjectStatus.code, {}, liveProjectStatus.label)}</h2>
-        ${liveProjectStatus.note ? `<p class="status-explain">${escapeHtml(liveProjectStatus.note)}，标题优先显示当前队列实时状态。</p>` : ''}
-        <p>${escapeHtml(row.premise || '暂无核心创意')}</p>
-        <div class="summary-facts" aria-label="项目关键数字">
-          <a href="${escapeHtml(projectViewHref('chapters'))}"><span>进度</span><strong>${escapeHtml(row.current_chapter_no || 0)}/${escapeHtml(row.target_total_chapters || 0)}</strong><em>章节正文</em></a>
-          <a href="/webhook/novel-review-list"><span>待审核</span><strong>${escapeHtml(reviewCount)}</strong><em>人工决策</em></a>
-          <a href="${escapeHtml(projectViewHref('ops', '#ops-section'))}"><span>失败</span><strong>${escapeHtml(failedJobs.length)}</strong><em>运行排障</em></a>
-        </div>
-        <div class="action-bar">
-          ${pendingBibleJob ? generationRunForm(projectId, 'GENERATE_BIBLE') : ''}
-          ${pendingOutlineJob ? generationRunForm(projectId, 'GENERATE_OUTLINE') : ''}
-          ${pendingDirectorJob ? generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', pendingDirectorJob) : ''}
-          ${pendingChapterJob ? generationRunForm(projectId, 'GENERATE_CHAPTER', pendingChapterJob) : ''}
-          ${activeRewriteActionJob ? rewriteRunForm(projectId, activeRewriteActionJob) : ''}
-          ${canShowContinueForm ? continueForm(projectId, rejectedRetryContinueOptions || {}) : ''}
-          <button class="drawer-button" type="button" data-open-dialog="project-actions-drawer">项目操作抽屉</button>
-          <a href="/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}">查看队列</a>
-          <a href="${escapeHtml(projectViewHref('export'))}">导出全文</a>
-        </div>
-      </div>
-      <div>
-        <div class="recommendation command-panel" aria-label="下一步动作区">
-          <div class="recommendation-top">
-            <div>
-              <p class="recommendation-kicker">当前建议操作 / 下一步动作区</p>
-              <h2>下一步动作区：${escapeHtml(recommendationInfo.title)}</h2>
-            </div>
-            <div class="badge-row">
-              <span class="mode-pill">${escapeHtml(recommendationInfo.mode)}</span>
-              <span class="action-mode">${escapeHtml(executionLabel(recommendationInfo))}</span>
-            </div>
-          </div>
-          <p>${escapeHtml(recommendationInfo.body)}</p>
-          ${activeRewriteActionJob ? `<div class="recommendation-actions">${rewriteRunForm(projectId, activeRewriteActionJob)}<a href="/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}">查看队列</a></div>` : ''}
-          ${pendingChapterWithoutReadyDirectorJob ? `<div class="recommendation-actions"><a href="${escapeHtml(projectViewHref('director'))}">查看导演台</a><a href="/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}">查看队列</a></div>` : ''}
-          <div class="decision-note"><strong>操作含义</strong>${escapeHtml(executionLabel(recommendationInfo))}。编辑、暂停、归档和审核仍必须通过 POST 表单提交；查看入口不会写入数据。</div>
-          <details class="action-guide" aria-label="动作类型说明">
-            <summary>展开动作类型说明</summary>
-            <div><strong>启动后台任务</strong><span>提交后当前页会显示提交反馈并刷新，模型调用在后台继续执行。</span></div>
-            ${hasFrontStartJob
-              ? '<div><strong>队列观察</strong><span>启动后从队列页确认运行中、成功或失败；章节完成后去审核中心处理候选稿。</span></div>'
-              : activeQueueCount
-                ? '<div><strong>后台处理中</strong><span>已有任务在队列中等待或运行，先观察队列状态；不要重复排队下一步。</span></div>'
-              : '<div><strong>排队下一步</strong><span>只创建缺失任务；已有章节生成任务时，项目页会切换为“启动章节生成”。</span></div>'}
-          </details>
-        </div>
-        <details class="metrics metric-details" aria-label="章节统计">
-          <summary>展开项目资产统计</summary>
-          <div class="metric-grid">
-            <div class="metric"><span>当前进度</span><strong>${escapeHtml(row.current_chapter_no || 0)}</strong></div>
-            <div class="metric"><span>已写章节</span><strong>${escapeHtml(writtenCount)}</strong></div>
-            <div class="metric"><span>目标章节</span><strong>${escapeHtml(row.target_total_chapters || 0)}</strong></div>
-            <div class="metric"><span>待审核</span><strong>${escapeHtml(reviewCount)}</strong></div>
-            <div class="metric"><span>队列中</span><strong>${escapeHtml(activeQueueCount)}</strong></div>
-            <div class="metric"><span>失败任务</span><strong>${escapeHtml(failedJobs.length)}</strong></div>
-            <div class="metric"><span>激活事实</span><strong>${escapeHtml(activeFacts)}</strong></div>
-          </div>
-        </details>
-      </div>
-    </section>
+    ${projectCommandCenterHtml}
 
     <dialog class="side-dialog" id="project-actions-drawer" aria-label="项目操作抽屉">
       <div class="drawer-panel">

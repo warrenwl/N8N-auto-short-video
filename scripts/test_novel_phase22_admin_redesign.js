@@ -228,7 +228,7 @@ assertFullWidthShell(detailOverviewHtml, 'project detail');
 for (const expected of ['下一步动作区', '项目资产入口', '关键风险与资产完成度', '项目二级视图']) {
   assert(detailOverviewText.includes(expected), `project overview should include command marker: ${expected}`);
 }
-for (const expected of ['project-actions-drawer', '项目操作抽屉', '展开项目资产统计', 'data-open-dialog="project-actions-drawer"']) {
+for (const expected of ['project-actions-drawer', '项目操作抽屉', 'project-command-center', 'asset-status-grid', 'data-open-dialog="project-actions-drawer"']) {
   assert(detailOverviewHtml.includes(expected), `project overview should expose drawer/collapsed interaction: ${expected}`);
 }
 for (const expected of ['action="/webhook/novel-rewrite-start"', '启动第 2 章重写', '恢复/重试模型调用', 'name="job_id"']) {
@@ -248,9 +248,10 @@ for (const expected of ['第 2 章重写中', '检查并恢复第 2 章重写', 
 for (const expected of ['select name="target_words_per_chapter"', '深度长章 4000 字', '只影响后续章节生成和重写']) {
   assert(detailOverviewHtml.includes(expected), `project operation drawer should keep target word controls consistent with create page: ${expected}`);
 }
-for (const expected of ['.project-info { min-height: 360px; display: flex; flex-direction: column;', '.project-info .action-bar { flex: 1; justify-content: center;', 'margin: 18px auto 8px; padding: 20px 8px;']) {
-  assert(detailOverviewHtml.includes(expected), `project overview left action buttons should be centered in empty space: ${expected}`);
+for (const expected of ['.project-command-center { display: grid; gap: 10px;', '.project-identity-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto;', '.next-action-strip { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, auto);', '.asset-status-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));']) {
+  assert(detailOverviewHtml.includes(expected), `project overview should use compact command center layout: ${expected}`);
 }
+assert(!detailOverviewHtml.includes('class="project-info"'), 'project overview should no longer render the old tall left project card');
 assert(!detailOverviewText.includes('第一章正文不应出现在默认总览'), 'project overview should not render long body text');
 assertNoGetWriteLinks(detailOverviewHtml, 'project overview');
 
