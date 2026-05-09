@@ -357,9 +357,9 @@ function paragraphReader(row, id) {
 	    </div>
 	    <div class="selection-toolbar" data-selection-toolbar hidden>
 	      <span class="selection-summary" data-selection-summary>已选片段</span>
-	      ${Object.entries(blockActionLabel).filter(([key]) => key !== 'custom').map(([key, value]) => `
-	        <button type="button" data-selection-action="${escapeHtml(key)}">${escapeHtml(value)}</button>
-	      `).join('')}
+	      <button type="button" data-selection-assistant>问助手</button>
+	      <button type="button" data-selection-action="modify">局部修订</button>
+	      <button type="button" data-selection-manual-edit>人工改稿</button>
     </div>`;
 }
 
@@ -376,8 +376,21 @@ function blockRevisionCard(revision, row) {
   const replacementText = revision.replacement_text || '';
   const summary = revision.change_summary || '';
   const error = localizeError(revision.error_message);
+  const riskAssistantButton = `
+    <button
+      type="button"
+      data-block-risk-assistant
+      data-selected-text="${escapeHtml(selectedText)}"
+      data-instruction="${escapeHtml(revision.instruction || '')}"
+      data-paragraph-start="${escapeHtml(revision.paragraph_start || '')}"
+      data-paragraph-end="${escapeHtml(revision.paragraph_end || revision.paragraph_start || '')}"
+      data-selection-start="${escapeHtml(revision.selection_start_offset ?? '')}"
+      data-selection-end="${escapeHtml(revision.selection_end_offset ?? '')}"
+      data-anchor-prefix="${escapeHtml(revision.anchor_prefix || '')}"
+      data-anchor-suffix="${escapeHtml(revision.anchor_suffix || '')}"
+    >问助手检查影响</button>`;
   const affectedWarning = revision.affects_later_text === true || revision.affects_later_text === 'true'
-    ? '<p class="block-risk">这条建议可能影响后文连续性，建议本章全部局部修改完成后再重新审稿。</p>'
+    ? `<div class="block-risk"><span>这条建议可能影响后文连续性，建议本章全部局部修改完成后再重新审稿。</span>${riskAssistantButton}</div>`
     : '';
   const liveNote = isLive
     ? '<div class="block-live" data-block-live><strong>建议生成中</strong><span data-block-refresh-countdown>页面会自动刷新建议状态。</span></div>'
@@ -393,19 +406,28 @@ function blockRevisionCard(revision, row) {
           <span>建议文本</span>
           <textarea name="replacement_text" rows="5" readonly data-block-replacement data-original-replacement="${escapeHtml(replacementText)}">${escapeHtml(replacementText)}</textarea>
         </label>
-        <div class="block-apply-row">
+        <div class="block-step-label block-confirm-step"><span>4</span><strong>确认应用</strong></div>
+        <div class="block-apply-primary">
           <button type="submit" name="action" value="apply" data-apply-original>应用建议</button>
-          <button class="secondary" type="button" data-enable-block-edit>修改后应用</button>
-          <button class="secondary" type="submit" name="action" value="apply_edited" data-apply-edited hidden>确认应用修改</button>
-          <button class="secondary" type="button" data-reset-block-edit hidden>还原 AI 建议</button>
-          <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
-          <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
-          <button class="warn-button" type="submit" name="action" value="request_rewrite">转为整章重写意见</button>
         </div>` : `
-        <div class="block-apply-row">
+        <div class="block-apply-primary">
           <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
-          <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
         </div>`}
+      <details class="block-secondary-actions">
+        <summary>更多处理</summary>
+        <div class="block-apply-row">
+          ${isSuggested ? `
+            <button class="secondary" type="button" data-enable-block-edit>修改后应用</button>
+            <button class="secondary" type="submit" name="action" value="apply_edited" data-apply-edited hidden>确认应用修改</button>
+            <button class="secondary" type="button" data-reset-block-edit hidden>还原 AI 建议</button>
+            <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
+            <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
+            <button class="warn-button" type="submit" name="action" value="request_rewrite">转为整章重写意见</button>
+          ` : `
+            <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
+          `}
+        </div>
+      </details>
     </form>` : '';
 
   return `
@@ -427,6 +449,38 @@ function blockRevisionCard(revision, row) {
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
       ${form}
     </article>`;
+}
+
+function blockRevisionGroupKey(revision) {
+  const status = String(revision.status || '').toUpperCase();
+  if (status === 'PENDING' || status === 'RUNNING') return 'running';
+  if (status === 'SUGGESTED' || status === 'FAILED') return 'todo';
+  return 'history';
+}
+
+function blockRevisionGroupedList(revisions, row) {
+  if (!revisions.length) return '<p class="muted">暂无局部修订记录</p>';
+  const groups = [
+    {key: 'todo', title: '待确认', empty: '暂无待确认建议', open: true},
+    {key: 'running', title: '生成中', empty: '暂无生成中任务', open: true},
+    {key: 'history', title: '已处理', empty: '暂无历史记录', open: false},
+  ].map((group) => ({
+    ...group,
+    items: revisions.filter((revision) => blockRevisionGroupKey(revision) === group.key),
+  })).filter((group) => group.items.length || group.key !== 'history');
+
+  return groups.map((group) => `
+    <details class="block-revision-group" data-block-revision-group="${escapeHtml(group.key)}" ${group.open ? 'open' : ''}>
+      <summary>
+        <strong>${escapeHtml(group.title)}</strong>
+        <span>${escapeHtml(group.items.length)}</span>
+      </summary>
+      <div class="block-revision-group-body">
+        ${group.items.length
+          ? group.items.map((revision) => blockRevisionCard(revision, row)).join('')
+          : `<p class="muted">${escapeHtml(group.empty)}</p>`}
+      </div>
+    </details>`).join('');
 }
 
 function blockRevisionPanel(row, id) {
@@ -455,6 +509,12 @@ function blockRevisionPanel(row, id) {
         </div>
       </div>
       <div class="block-panel-body">
+        <div class="block-flow-steps" aria-label="局部修订流程">
+          <span><strong>1</strong> 选区</span>
+          <span><strong>2</strong> 要求</span>
+          <span><strong>3</strong> 建议</span>
+          <span><strong>4</strong> 确认</span>
+        </div>
         <form class="block-revision-form" method="POST" action="/webhook/novel-review-block-revise" data-block-revision-form>
           <input type="hidden" name="chapter_id" value="${chapterId}" />
           <input type="hidden" name="review_token" value="${token}" />
@@ -490,14 +550,16 @@ function blockRevisionPanel(row, id) {
             <textarea name="instruction" rows="3" placeholder="写清楚你希望这一块怎么改。"></textarea>
           </label>
           <p class="form-hint" data-block-revision-feedback aria-live="polite">提交后只生成局部建议，确认应用时才会生成新候选稿。</p>
-          <button type="submit">生成局部建议</button>
+          <div class="block-form-actions">
+            <button type="submit">生成局部建议</button>
+            <button class="secondary" type="button" data-polish-block-instruction>让助手整理要求</button>
+          </div>
         </form>
         <div class="block-revision-results">
-          <div class="block-step-label"><span>3</span><strong>AI 建议与确认</strong></div>
+          <div class="block-step-label"><span>3</span><strong>AI 建议</strong></div>
+          <p class="form-hint">在建议卡片中查看 diff；只有点“应用建议”才会生成新的候选稿。</p>
           <div class="block-revision-list" data-block-revision-list>
-            ${revisions.length
-              ? revisions.map((revision) => blockRevisionCard(revision, row)).join('')
-              : '<p class="muted">暂无局部修订记录</p>'}
+            ${blockRevisionGroupedList(revisions, row)}
           </div>
         </div>
       </div>
@@ -731,6 +793,84 @@ function manualReviewEditDrawer(row, drawerId) {
     </dialog>`;
 }
 
+function reviewDecisionDrawer(row, drawerId) {
+  const rec = recommendation(row);
+  return `
+    <dialog class="side-drawer review-decision-drawer" id="${escapeHtml(drawerId)}" data-review-decision-drawer aria-label="人工审核抽屉">
+      <div class="drawer-shell">
+        <header class="drawer-header">
+          <div>
+            <p class="ops-kicker">人工审核</p>
+            <h2>${escapeHtml(rec)}</h2>
+            <p>${hasAiReview(row) ? '阅读正文后提交最终判断；通过、重写和拒绝都需要人工确认。' : '这一稿暂未重新智能审稿；可以继续改稿，也可以重新审稿后再判断。'}</p>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog aria-label="关闭人工审核">×</button>
+        </header>
+        <section class="drawer-section decision-drawer-section">
+          ${actionForm(row, 'drawer-actions')}
+        </section>
+      </div>
+    </dialog>`;
+}
+
+function reviewAssistantPanel(row, id) {
+  const token = escapeHtml(row.review_token || '');
+  const chapterId = escapeHtml(row.chapter_id || row.id || '');
+  const panelId = `review-assistant-${id}`;
+  const modes = [
+    ['continuity', '连续性'],
+    ['selection_advice', '选区建议'],
+    ['design_reference', '参考设计'],
+  ];
+  const quickPrompts = [
+    ['continuity', '这段剧情的因果链、人物动机和前后章连续性有没有问题？'],
+    ['selection_advice', '请针对当前选区给我局部修改建议，不要重写整章。'],
+    ['design_reference', '基于正文、大纲和导演台，给我三个可执行的桥段或伏笔设计。'],
+  ];
+  return `
+    <aside class="review-assistant-panel" id="${escapeHtml(panelId)}" data-review-assistant-panel data-workbench-id="${escapeHtml(id)}" aria-label="剧情助手">
+      <div class="assistant-head">
+        <p class="ops-kicker">剧情助手</p>
+        <strong>边审边问</strong>
+        <span>读取正文、Bible、大纲、导演台、事实库和审稿报告；建议只预填动作，不直接改稿。</span>
+      </div>
+      <form class="assistant-form" method="POST" action="/webhook/novel-review-assistant" data-review-assistant-form>
+        <input type="hidden" name="chapter_id" value="${chapterId}" />
+        <input type="hidden" name="review_token" value="${token}" />
+        <input type="hidden" name="reviewer" value="local_user" />
+        <input type="hidden" name="thread_id" data-assistant-thread-id />
+        <input type="hidden" name="selected_text" data-assistant-selected-text />
+        <input type="hidden" name="paragraph_start" data-assistant-paragraph-start />
+        <input type="hidden" name="paragraph_end" data-assistant-paragraph-end />
+        <input type="hidden" name="selection_start_offset" data-assistant-selection-start />
+        <input type="hidden" name="selection_end_offset" data-assistant-selection-end />
+        <input type="hidden" name="anchor_prefix" data-assistant-anchor-prefix />
+        <input type="hidden" name="anchor_suffix" data-assistant-anchor-suffix />
+        <div class="assistant-mode" role="radiogroup" aria-label="助手模式">
+          ${modes.map(([value, labelText], index) => `
+            <label>
+              <input type="radio" name="mode" value="${escapeHtml(value)}" ${index === 0 ? 'checked' : ''} />
+              <span>${escapeHtml(labelText)}</span>
+            </label>
+          `).join('')}
+        </div>
+        <div class="assistant-selection" data-assistant-selection-preview>未绑定选区；可直接问整章问题。</div>
+        <div class="assistant-quick">
+          ${quickPrompts.map(([mode, prompt]) => `<button type="button" data-assistant-quick="${escapeHtml(mode)}" data-question="${escapeHtml(prompt)}">${escapeHtml(label({continuity: '查连续性', selection_advice: '问选区', design_reference: '要设计'}, mode, '提问'))}</button>`).join('')}
+        </div>
+        <label>
+          <span>你的问题</span>
+          <textarea name="question" rows="4" placeholder="例如：这里许青为什么突然交出文件？会不会和前文事实冲突？"></textarea>
+        </label>
+        <p class="form-hint" data-assistant-feedback aria-live="polite">建议会在下方返回；需要改稿时再转为局部修订。</p>
+        <button type="submit">询问助手</button>
+      </form>
+      <div class="assistant-result" data-assistant-result aria-live="polite">
+        <p class="muted">选中正文片段后点“问助手”，或直接输入整章问题。</p>
+      </div>
+    </aside>`;
+}
+
 function actionForm(row, className) {
   const token = escapeHtml(row.review_token || '');
   const chapterId = escapeHtml(row.chapter_id || row.id || '');
@@ -751,14 +891,25 @@ function actionForm(row, className) {
         <span>${decisionHint}</span>
       </div>
       <label>
-        <textarea name="comment" rows="3" aria-label="审核意见" placeholder="${hasReview ? '通过可留空；要求重写即使留空，也会按智能审稿的问题与建议改稿；拒绝建议填写原因。' : '重新审稿可留空；也可以备注这轮局部修改的重点，方便后续追踪。'}"></textarea>
+        <textarea name="comment" rows="3" aria-label="审核意见" placeholder="${hasReview ? '通过可留空；要求重写即使留空，也会按智能审稿的问题与建议改稿；拒绝建议填写原因。' : '通过可留空；要求重写或拒绝建议填写原因，方便后续追踪。'}"></textarea>
       </label>
       <div class="button-row" data-recommendation="${escapeHtml(recClass)}">
-        <button class="secondary" name="action" value="rerun_review" type="submit">重新审稿</button>
         <button class="${recClass === 'approve' ? 'recommended-button' : ''}" name="action" value="approve" type="submit">通过</button>
         <button class="warn-button ${recClass === 'rewrite' ? 'recommended-button' : ''}" name="action" value="request_rewrite" type="submit">要求重写</button>
         <button class="secondary danger-secondary ${recClass === 'reject' ? 'recommended-button' : ''}" name="action" value="reject" type="submit">拒绝</button>
       </div>
+    </form>`;
+}
+
+function rerunReviewForm(row) {
+  const token = escapeHtml(row.review_token || '');
+  const chapterId = escapeHtml(row.chapter_id || row.id || '');
+  return `
+    <form class="launcher-rerun-form actions" method="POST" action="/webhook/novel-review-action" aria-label="重新审稿">
+      <input type="hidden" name="chapter_id" value="${chapterId}" />
+      <input type="hidden" name="review_token" value="${token}" />
+      <input type="hidden" name="reviewer" value="local_user" />
+      <button class="rerun-review-button" name="action" value="rerun_review" type="submit">重新审稿</button>
     </form>`;
 }
 
@@ -953,6 +1104,7 @@ function renderDetailCard(row) {
   const commentAnchor = `review-comment-${id}`;
   const opsAnchor = `review-ops-${id}`;
   const drawerId = `ai-review-drawer-${id}`;
+  const decisionDrawerId = `review-decision-drawer-${id}`;
   const manualDrawerId = `manual-edit-drawer-${id}`;
   const rec = recommendation(row);
   return `
@@ -965,37 +1117,38 @@ function renderDetailCard(row) {
         <div class="score ${escapeHtml(scoreTone(row))}">${escapeHtml(scoreText(row))}</div>
       </header>
       <span id="${escapeHtml(commentAnchor)}" class="anchor-target"></span>
-      ${actionForm(row, 'mobile-actions')}
+      <div class="review-decision-launcher" aria-label="人工审核入口">
+        <div>
+          <p class="ops-kicker">人工审核</p>
+          <strong>${escapeHtml(rec)}</strong>
+          <span>${hasAiReview(row) ? '决策表单已收进抽屉，右侧留给剧情助手。' : '可以先继续微调，完成后从抽屉重新审稿或直接通过。'}</span>
+        </div>
+        <div class="launcher-actions">
+          <button type="button" data-open-dialog="${escapeHtml(decisionDrawerId)}">打开人工审核</button>
+          <button class="secondary" type="button" data-open-dialog="${escapeHtml(manualDrawerId)}">人工改稿</button>
+          <button class="secondary" type="button" data-open-dialog="${escapeHtml(drawerId)}">智能审稿</button>
+          ${rerunReviewForm(row)}
+        </div>
+      </div>
       <section class="review-detail-workspace" id="reader-section-${escapeHtml(id)}">
         <div class="review-reader-panel">
           <div class="reader-head">
             <div>
               <p class="ops-kicker">审核内容</p>
               <h3>先读正文，再提交人工判断</h3>
-              <p class="muted">${hasAiReview(row) ? `推荐动作：${escapeHtml(rec)}。智能审稿已收进右侧抽屉，避免干扰正文阅读。` : '这是局部修订后的可继续编辑稿；先批量微调，最后再从右侧重新审稿或直接通过。'}</p>
+              <p class="muted">${hasAiReview(row) ? `推荐动作：${escapeHtml(rec)}。人工审核和智能审稿都在抽屉里，阅读区保持干净。` : '这是局部修订后的可继续编辑稿；先批量微调，最后再从人工审核抽屉重新审稿或直接通过。'}</p>
             </div>
             ${reviewScoreBrief(row)}
           </div>
           ${paragraphReader(row, id)}
         </div>
-        <aside class="decision-dock" aria-label="审核决策侧栏">
-          <div class="decision-dock-head">
-            <p class="ops-kicker">人工决策</p>
-            <strong>${escapeHtml(rec)}</strong>
-            <span>${hasAiReview(row) ? '阅读正文后提交；通过会成为正式版本，重写会继承你的意见。' : '局部修改可以连续做；完成后点重新审稿，或确认无误后直接通过。'}</span>
-          </div>
-          ${actionForm(row, 'desktop-actions')}
-          <div class="decision-links">
-            <button type="button" data-open-dialog="${escapeHtml(manualDrawerId)}">人工改稿</button>
-            <button type="button" data-open-dialog="${escapeHtml(drawerId)}">打开智能审稿</button>
-            <button type="button" data-open-dialog="${escapeHtml(drawerId)}">查看运行依据</button>
-            <a href="/webhook/novel-review-list">返回审核列表</a>
-            <a href="${escapeHtml(projectDetailHref(row))}">返回项目</a>
-            <a href="${escapeHtml(chapterDetailHref(row))}">返回章节</a>
-            <a href="${escapeHtml(projectQueueHref(row))}">查看队列</a>
-          </div>
-        </aside>
+        ${reviewAssistantPanel(row, id)}
       </section>
+      <nav class="mobile-workbench-switcher" aria-label="移动端审稿工具">
+        <button type="button" data-mobile-open-assistant="review-assistant-${escapeHtml(id)}">助手</button>
+        <button type="button" data-mobile-open-revision="block-revision-panel-${escapeHtml(id)}">修订</button>
+      </nav>
+      ${reviewDecisionDrawer(row, decisionDrawerId)}
       ${aiReviewDrawer(row, drawerId, opsAnchor)}
       ${manualReviewEditDrawer(row, manualDrawerId)}
     </article>
@@ -1120,17 +1273,6 @@ const html = `<!doctype html>
     .detail-link, .small-link { display: inline-block; margin-top: 8px; color: var(--accent); text-decoration: none; font-weight: 650; }
     .context-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .context-actions .detail-link { min-height: 32px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: #fff; margin-top: 0; }
-    .drawer-trigger, .decision-links button {
-      color: var(--accent);
-      border: 1px solid var(--line);
-      background: #fff;
-      padding: 0 10px;
-      min-height: 32px;
-      font: inherit;
-      font-weight: 650;
-      border-radius: 8px;
-      cursor: pointer;
-    }
     h3, h4 { margin: 0 0 10px; }
     .meta, .muted { margin: 0; color: var(--muted); font-size: 13px; }
     .score { min-width: 64px; border-radius: 8px; padding: 10px 12px; text-align: center; font-size: 24px; font-weight: 700; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
@@ -1153,7 +1295,15 @@ const html = `<!doctype html>
     .decision-rail .actions { position: sticky; top: 16px; margin-top: 0; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
     .detail-link:hover, .small-link:hover { border-color: var(--accent); background: var(--accent-soft); }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; padding-top: 16px; }
-    .review-detail-workspace { --review-panel-height: min(760px, calc(100vh - 150px)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); gap: 18px; align-items: stretch; padding-top: 16px; }
+    .review-decision-launcher { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-top: 14px; border: 1px solid #b9e3d4; border-radius: 8px; padding: 12px 14px; background: var(--accent-soft); }
+    .review-decision-launcher strong { display: block; margin-bottom: 3px; font-size: 18px; color: #225447; }
+    .review-decision-launcher span { display: block; color: #225447; line-height: 1.5; font-size: 13px; }
+    .launcher-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .launcher-actions button { min-height: 36px; padding: 0 12px; white-space: nowrap; }
+    .launcher-actions .launcher-rerun-form { margin: 0; display: flex; gap: 0; }
+    .launcher-actions .launcher-rerun-form button { min-height: 36px; padding: 0 12px; white-space: nowrap; }
+    .review-detail-workspace { --review-panel-height: min(760px, calc(100vh - 150px)); display: grid; grid-template-columns: minmax(520px, 1fr) minmax(320px, 380px); gap: 18px; align-items: stretch; padding-top: 16px; }
+    .mobile-workbench-switcher { display: none; }
     .review-reader-panel { min-width: 0; min-height: 520px; height: var(--review-panel-height); display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
     .reader-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 16px 18px; border-bottom: 1px solid var(--line); background: #fbfcfd; }
     .reader-head h3 { margin-bottom: 6px; font-size: 20px; }
@@ -1183,14 +1333,34 @@ const html = `<!doctype html>
     .selection-summary { min-height: 32px; display: inline-flex; align-items: center; border-right: 1px solid var(--line); padding: 0 10px 0 2px; color: var(--muted); font-size: 12px; font-weight: 850; white-space: nowrap; }
     .selection-toolbar button { min-height: 32px; padding: 0 10px; background: var(--accent); font-size: 13px; }
     aside { border-left: 1px solid var(--line); padding-left: 18px; }
-    .decision-dock { position: sticky; top: 86px; align-self: start; max-height: var(--review-panel-height); display: flex; flex-direction: column; overflow: auto; border: 1px solid #b9e3d4; border-radius: 8px; background: var(--accent-soft); padding: 14px; }
-    .decision-dock-head { display: grid; gap: 4px; margin-bottom: 12px; }
-    .decision-dock-head strong { font-size: 20px; }
-    .decision-dock-head span { color: #225447; line-height: 1.55; font-size: 13px; }
-    .decision-dock .actions { margin-top: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 12px; }
-    .decision-links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #b9e3d4; }
-    .decision-links a, .decision-links button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: #fff; color: var(--accent); text-decoration: none; font: inherit; font-weight: 750; cursor: pointer; }
-    .decision-links button:first-child { grid-column: 1 / -1; background: var(--accent); color: #fff; border-color: var(--accent); }
+    .review-assistant-panel { position: sticky; top: 86px; align-self: start; max-height: var(--review-panel-height); display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 12px; overflow: auto; border: 1px solid #ccd6e0; border-radius: 8px; background: #fff; padding: 14px; }
+    .assistant-head { display: grid; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .assistant-head strong { font-size: 20px; }
+    .assistant-head span { color: var(--muted); line-height: 1.55; font-size: 13px; }
+    .assistant-form { display: grid; gap: 10px; }
+    .assistant-mode { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf9; }
+    .assistant-mode label { min-width: 0; display: block; }
+    .assistant-mode input { position: absolute; opacity: 0; pointer-events: none; }
+    .assistant-mode span { min-height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 7px; padding: 0 8px; color: #344054; font-size: 13px; font-weight: 800; white-space: nowrap; }
+    .assistant-mode input:checked + span { background: var(--accent); color: #fff; }
+    .assistant-selection { min-height: 42px; max-height: 118px; overflow: auto; border: 1px dashed var(--line); border-radius: 8px; padding: 9px 10px; color: var(--muted); background: #fbfcfd; font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+    .assistant-selection.has-selection { border-color: #b9e3d4; background: var(--accent-soft); color: #225447; }
+    .assistant-quick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .assistant-quick button { min-height: 34px; padding: 0 8px; border: 1px solid var(--line); background: #fff; color: var(--accent); font-size: 12px; white-space: nowrap; }
+    .assistant-form label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 750; }
+    .assistant-form textarea { width: 100%; min-height: 100px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 10px; color: var(--ink); font: inherit; line-height: 1.65; }
+    .assistant-form > button { min-height: 40px; }
+    .assistant-result { min-height: 0; display: grid; align-content: start; gap: 10px; overflow: auto; border-top: 1px solid var(--line); padding-top: 12px; }
+    .assistant-answer { display: grid; gap: 8px; border: 1px solid #b9e3d4; border-radius: 8px; padding: 12px; background: #f7fcf9; }
+    .assistant-answer strong { color: #225447; }
+    .assistant-answer p { margin: 0; line-height: 1.65; white-space: pre-wrap; }
+    .assistant-section { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }
+    .assistant-section h4 { margin-bottom: 8px; font-size: 14px; }
+    .assistant-section ul { margin-bottom: 0; padding-left: 18px; }
+    .assistant-section li { margin-bottom: 5px; line-height: 1.55; }
+    .assistant-action-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .assistant-action-row button { min-height: 34px; border: 1px solid #b9e3d4; background: #fff; color: var(--accent); padding: 0 10px; font-size: 13px; }
+    .assistant-action-row button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
     .block-revision-panel { position: fixed; left: 50%; bottom: 14px; z-index: 92; width: min(1120px, calc(100vw - 32px)); max-height: min(78vh, 720px); display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid #a8d8c7; border-radius: 8px; background: #fff; box-shadow: 0 22px 70px rgba(16, 24, 40, .24); transform: translate(-50%, calc(100% - 58px)); transition: transform .18s ease, box-shadow .18s ease; overflow: hidden; }
     .block-revision-panel.is-open { transform: translate(-50%, 0); }
     .block-panel-head { min-height: 58px; display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #f5fbf8; cursor: pointer; }
@@ -1200,17 +1370,27 @@ const html = `<!doctype html>
     .block-panel-close { min-height: 30px; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: #fff; color: var(--accent); font-size: 12px; }
     .block-revision-panel:not(.is-open) .block-panel-body { display: none; }
     .block-panel-body { min-height: 0; display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 14px; padding: 14px; overflow: auto; }
+    .block-flow-steps { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .block-flow-steps span { min-height: 34px; display: flex; align-items: center; gap: 6px; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: #f7fcf9; color: #225447; font-size: 13px; font-weight: 800; white-space: nowrap; }
+    .block-flow-steps strong { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-variant-numeric: tabular-nums; }
     .block-revision-form { display: grid; gap: 10px; align-self: start; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
     .block-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .block-revision-form label, .block-apply-form label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 750; }
     .block-revision-form select, .block-revision-form textarea, .block-apply-form textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; color: var(--ink); background: #fff; font: inherit; }
     .block-revision-form button { min-height: 40px; }
+    .block-form-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .block-form-actions button.secondary { min-width: 128px; padding: 0 12px; background: #fff; color: var(--accent); border: 1px solid #b9e3d4; }
     .block-step-label { display: flex; align-items: center; gap: 8px; color: #344054; font-size: 13px; font-weight: 850; }
     .block-step-label span { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
     .block-revision-results { min-width: 0; display: grid; align-self: start; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf9; }
     .selected-preview { max-height: 156px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8faf9; color: #344054; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
     .selected-preview.has-selection { border-color: #b9e3d4; background: var(--accent-soft); color: #225447; }
     .block-revision-list { min-width: 0; display: grid; gap: 10px; }
+    .block-revision-group { border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+    .block-revision-group summary { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; cursor: pointer; list-style: none; }
+    .block-revision-group summary::-webkit-details-marker { display: none; }
+    .block-revision-group summary span { min-width: 28px; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 850; font-variant-numeric: tabular-nums; }
+    .block-revision-group-body { display: grid; gap: 10px; padding: 0 10px 10px; }
     .block-revision-card { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; }
     .block-revision-card.warn { border-color: #f1ce96; background: #fffaf0; }
     .block-revision-card.good { border-color: #b9e3d4; background: #f7fcf9; }
@@ -1227,7 +1407,8 @@ const html = `<!doctype html>
     .block-diff p { margin: 0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
     .block-diff del { padding: 1px 3px; border-radius: 4px; background: #fff0ee; color: var(--bad); text-decoration: line-through; }
     .block-diff ins { padding: 1px 3px; border-radius: 4px; background: #dcfae6; color: #067647; text-decoration: none; }
-    .block-risk { margin: 8px 0; padding: 8px; border-radius: 8px; background: #fff7e8; color: var(--warn); line-height: 1.55; font-size: 13px; }
+    .block-risk { display: grid; gap: 8px; margin: 8px 0; padding: 8px; border-radius: 8px; background: #fff7e8; color: var(--warn); line-height: 1.55; font-size: 13px; }
+    .block-risk button { width: max-content; min-height: 30px; border: 1px solid #f1ce96; background: #fff; color: var(--warn); padding: 0 10px; font-size: 12px; }
     .block-live { display: grid; gap: 3px; margin: 8px 0; padding: 9px; border: 1px dashed #f1ce96; border-radius: 8px; background: #fffaf0; color: var(--warn); font-size: 13px; line-height: 1.5; }
     .block-live span { color: #8a5204; }
     .block-checklist { margin: 8px 0; padding-left: 18px; font-size: 13px; }
@@ -1235,8 +1416,12 @@ const html = `<!doctype html>
     .block-checklist strong { margin-right: 6px; color: var(--accent); }
     .block-checklist span { display: block; color: var(--muted); }
     .block-apply-form { display: grid; gap: 8px; margin-top: 8px; }
+    .block-apply-primary { display: grid; }
     .block-apply-row { display: flex; flex-wrap: wrap; gap: 8px; }
     .block-apply-row button { min-height: 36px; padding: 9px 12px; }
+    .block-secondary-actions { border-top: 1px dashed var(--line); padding-top: 8px; }
+    .block-secondary-actions summary { width: max-content; color: var(--accent); cursor: pointer; font-size: 13px; font-weight: 800; }
+    .block-secondary-actions .block-apply-row { margin-top: 8px; }
     .block-apply-form textarea[readonly] { background: #f8faf9; color: #344054; cursor: default; }
     .block-apply-form.is-editing textarea { background: #fff; box-shadow: 0 0 0 3px rgba(31, 122, 92, .1); }
     dl { display: grid; grid-template-columns: 70px 1fr; gap: 6px 10px; margin: 0 0 16px; }
@@ -1268,19 +1453,19 @@ const html = `<!doctype html>
     .actions label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
     .actions em { font-style: normal; line-height: 1.45; }
     .actions textarea { min-height: 48px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; color: var(--ink); }
-    .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .button-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     button { border: 0; border-radius: 8px; padding: 12px 18px; font: inherit; font-weight: 650; background: var(--accent); color: white; cursor: pointer; touch-action: manipulation; }
     button:hover { filter: brightness(.95); }
     button:disabled { opacity: .68; cursor: progress; }
     button.warn-button { background: var(--warn); }
     button.secondary { background: #4b5563; }
     button.danger-secondary { background: #6b7280; }
+    button.rerun-review-button { border: 1px solid #f2b8b5; background: var(--bad-soft); color: var(--bad); }
     button.recommended-button { box-shadow: 0 0 0 3px rgba(31, 122, 92, .18); transform: translateY(-1px); }
     .action-toast { position: fixed; right: 18px; bottom: 18px; z-index: 90; max-width: min(420px, calc(100vw - 36px)); border: 1px solid #b9e3d4; border-radius: 8px; padding: 12px 14px; background: #fff; color: var(--ink); box-shadow: 0 18px 44px rgba(16, 24, 40, .18); line-height: 1.55; }
     .action-toast strong { display: block; margin-bottom: 2px; }
     .action-toast.is-error { border-color: #f2b8b5; background: var(--bad-soft); color: var(--bad); }
     .action-toast[hidden] { display: none !important; }
-    .mobile-actions { display: none; }
     .side-drawer {
       width: min(520px, calc(100vw - 24px));
       max-width: none;
@@ -1307,6 +1492,10 @@ const html = `<!doctype html>
     .side-drawer .review-evidence, .side-drawer .observability { margin: 0; padding: 16px 18px; border-width: 0 0 1px; border-radius: 0; }
     .side-drawer .ops-grid { grid-template-columns: 1fr; }
     .side-drawer .ops-grid > div { background: #fff; }
+    .review-decision-drawer { width: min(560px, calc(100vw - 24px)); }
+    .review-decision-drawer .drawer-shell { grid-template-rows: auto minmax(0, 1fr); }
+    .decision-drawer-section { background: var(--accent-soft); }
+    .drawer-actions { margin-top: 0; border: 1px solid #b9e3d4; border-radius: 8px; background: #fff; padding: 12px; }
     .manual-edit-drawer { width: min(720px, calc(100vw - 24px)); }
     .manual-edit-drawer .drawer-shell { grid-template-rows: auto minmax(0, 1fr); }
     .manual-edit-form { min-height: 0; display: grid; grid-template-rows: auto auto minmax(260px, 1fr) auto auto auto; gap: 12px; padding: 16px 18px 18px; overflow: auto; }
@@ -1336,6 +1525,11 @@ const html = `<!doctype html>
       .pager { display: grid; grid-template-columns: 1fr; }
       .return-strip { flex-wrap: nowrap; overflow-x: auto; }
       .grid, .ops-grid, .compact-review, .decision-rail, .review-detail-workspace { grid-template-columns: 1fr; }
+      .review-decision-launcher { display: grid; grid-template-columns: 1fr; align-items: stretch; }
+      .launcher-actions { justify-content: stretch; display: grid; grid-template-columns: 1fr; }
+      .launcher-actions .launcher-rerun-form { display: grid; }
+      .mobile-workbench-switcher { position: fixed; left: 12px; right: 12px; bottom: calc(10px + env(safe-area-inset-bottom)); z-index: 91; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .96); box-shadow: 0 14px 38px rgba(16, 24, 40, .2); backdrop-filter: blur(10px); }
+      .mobile-workbench-switcher button { min-height: 40px; padding: 0 12px; }
       .reader-head { display: grid; grid-template-columns: 1fr; }
       .review-brief { justify-content: flex-start; max-width: none; }
       .review-reader-panel { height: auto; min-height: 0; }
@@ -1344,25 +1538,16 @@ const html = `<!doctype html>
       .paragraph-label { left: 12px; top: 14px; opacity: .5; }
       .paragraph-revise-button { left: 42px; right: auto; top: auto; bottom: 10px; width: max-content; opacity: 1; pointer-events: auto; transform: none; box-shadow: none; }
       aside { border-left: 0; padding-left: 0; }
-      .decision-dock { position: static; height: auto; min-height: 0; }
-      .decision-links { margin-top: 10px; }
+      .review-assistant-panel { position: static; height: auto; min-height: 0; max-height: none; }
+      .assistant-mode, .assistant-quick { grid-template-columns: 1fr; }
       .decision-rail .actions { position: static; }
       .block-revision-panel { width: calc(100vw - 16px); bottom: 8px; max-height: min(84vh, 680px); transform: translate(-50%, calc(100% - 58px)); }
       .block-panel-head { align-items: flex-start; }
       .block-panel-head-actions { align-items: flex-end; flex-direction: column; gap: 6px; }
       .block-panel-body { grid-template-columns: 1fr; padding: 10px; }
+      .block-flow-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .block-revision-form, .block-revision-results { padding: 10px; }
-      .desktop-actions { display: none; }
-      .mobile-actions {
-        display: grid;
-        grid-template-columns: 1fr;
-        position: static;
-        margin: 12px 0;
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 12px;
-      }
+      .block-form-actions { grid-template-columns: 1fr; }
       .button-row { display: grid; grid-template-columns: 1fr; }
       .block-form-grid, .block-apply-row { grid-template-columns: 1fr; }
       .block-apply-row button { flex: 1 1 100%; }
@@ -1457,6 +1642,8 @@ const html = `<!doctype html>
         button.addEventListener('click', () => {
           const dialog = document.getElementById(button.dataset.openDialog || '');
           if (!dialog) return;
+          const currentDialog = button.closest('dialog.side-drawer');
+          if (currentDialog && currentDialog !== dialog && typeof currentDialog.close === 'function') currentDialog.close();
           if (typeof dialog.showModal === 'function') dialog.showModal();
           else dialog.setAttribute('open', '');
         });
@@ -1895,7 +2082,12 @@ const html = `<!doctype html>
           .find((panel) => panel.dataset.workbenchId === workbenchId);
       };
 
-      const fillBlockRevisionForm = (reader, payload) => {
+      const readerForWorkbench = (workbenchId) => (
+        Array.from(document.querySelectorAll('[data-block-reader]'))
+          .find((reader) => reader.dataset.workbenchId === workbenchId)
+      );
+
+      const fillBlockRevisionForm = (reader, payload, options = {}) => {
         const panel = blockPanelForReader(reader);
         if (!panel) return;
         const form = panel.querySelector('[data-block-revision-form]');
@@ -1921,7 +2113,7 @@ const html = `<!doctype html>
           preview.textContent = selectedText ? actionName + ' / ' + scope + '\\n' + selectedText : '未选择片段';
           preview.classList.toggle('has-selection', Boolean(selectedText));
         }
-        if (feedback) {
+        if (feedback && !options.silent) {
           feedback.textContent = '已锁定选区，填写要求后即可生成局部建议。';
           feedback.classList.remove('is-error');
           feedback.classList.add('is-success');
@@ -1930,9 +2122,168 @@ const html = `<!doctype html>
           const actionName = blockActionNames[payload.actionType || 'modify'] || '局部修订';
           state.textContent = actionName;
         }
-        openBlockPanel(panel);
+        if (options.open !== false) openBlockPanel(panel);
         const instruction = form.querySelector('textarea[name="instruction"]');
-        if (instruction) window.setTimeout(() => instruction.focus(), 120);
+        if (instruction && options.focus !== false) window.setTimeout(() => instruction.focus(), 120);
+      };
+
+      const assistantPanelForReader = (reader) => {
+        const workbenchId = reader?.dataset?.workbenchId || '';
+        return Array.from(document.querySelectorAll('[data-review-assistant-panel]'))
+          .find((panel) => panel.dataset.workbenchId === workbenchId);
+      };
+
+      const setAssistantMode = (form, mode) => {
+        const radio = form?.querySelector('input[name="mode"][value="' + mode + '"]');
+        if (radio) radio.checked = true;
+      };
+
+      const fillAssistantFromSelection = (reader, payload, mode = 'selection_advice', options = {}) => {
+        const panel = assistantPanelForReader(reader);
+        const form = panel?.querySelector('[data-review-assistant-form]');
+        if (!panel || !form) return;
+        const selectedText = String(payload.selectedText || '').trim();
+        form.querySelector('[data-assistant-selected-text]').value = selectedText;
+        form.querySelector('[data-assistant-paragraph-start]').value = payload.paragraphStart || '';
+        form.querySelector('[data-assistant-paragraph-end]').value = payload.paragraphEnd || payload.paragraphStart || '';
+        form.querySelector('[data-assistant-selection-start]').value = payload.selectionStartOffset ?? '';
+        form.querySelector('[data-assistant-selection-end]').value = payload.selectionEndOffset ?? '';
+        form.querySelector('[data-assistant-anchor-prefix]').value = payload.anchorPrefix || '';
+        form.querySelector('[data-assistant-anchor-suffix]').value = payload.anchorSuffix || '';
+        setAssistantMode(form, mode);
+        const preview = form.querySelector('[data-assistant-selection-preview]');
+        if (preview) {
+          const scope = payload.paragraphStart ? 'P' + payload.paragraphStart + (payload.paragraphEnd && payload.paragraphEnd !== payload.paragraphStart ? '-P' + payload.paragraphEnd : '') : '选区';
+          preview.textContent = selectedText ? scope + '\\n' + selectedText : '未绑定选区；可直接问整章问题。';
+          preview.classList.toggle('has-selection', Boolean(selectedText));
+        }
+        const question = form.querySelector('textarea[name="question"]');
+        if (question && options.updateQuestion !== false && !question.value.trim()) {
+          question.value = mode === 'selection_advice'
+            ? '请针对当前选区给我局部修改建议，不要重写整章。'
+            : '请检查当前选区与前后文是否存在连续性或动机问题。';
+        }
+        if (options.scroll !== false) panel.scrollIntoView({block: 'nearest'});
+        if (question && options.focus !== false) window.setTimeout(() => question.focus(), 80);
+      };
+
+      const syncSelectionContext = (reader, payload) => {
+        if (!reader || !payload) return;
+        fillBlockRevisionForm(reader, payload, {open: false, focus: false, silent: true});
+        fillAssistantFromSelection(reader, payload, 'selection_advice', {
+          focus: false,
+          scroll: false,
+          updateQuestion: false,
+        });
+      };
+
+      const textFromAssistantAction = (action) => (
+        String(action?.instruction || action?.label || action?.detail || '').trim()
+      );
+
+      const renderAssistantResult = (container, payload, form) => {
+        if (!container) return;
+        container.replaceChildren();
+        const answer = document.createElement('div');
+        answer.className = 'assistant-answer';
+        const answerTitle = document.createElement('strong');
+        answerTitle.textContent = payload.ok === false ? '助手未完成' : '助手回答';
+        const answerText = document.createElement('p');
+        answerText.textContent = payload.answer || '没有返回可用回答。';
+        answer.append(answerTitle, answerText);
+        container.appendChild(answer);
+
+        const appendList = (title, items, formatter) => {
+          if (!Array.isArray(items) || !items.length) return;
+          const section = document.createElement('section');
+          section.className = 'assistant-section';
+          const h4 = document.createElement('h4');
+          h4.textContent = title;
+          const ul = document.createElement('ul');
+          items.forEach((item) => {
+            const li = document.createElement('li');
+            li.textContent = formatter(item);
+            ul.appendChild(li);
+          });
+          section.append(h4, ul);
+          container.appendChild(section);
+        };
+
+        appendList('发现', payload.findings, (item) => [item.severity, item.type, item.description, item.evidence].filter(Boolean).join(' / '));
+        appendList('建议', payload.suggestions, (item) => [item.title, item.detail].filter(Boolean).join('：'));
+        appendList('依据', payload.source_refs, (item) => [item.source_type, item.label, item.quote].filter(Boolean).join(' / '));
+
+        const bridgeLabels = {
+          create_block_revision: '转为局部修订',
+          record_human_note: '记录为人工意见',
+          create_fact_draft: '复制事实草稿',
+        };
+        const actions = Array.isArray(payload.suggested_actions)
+          ? payload.suggested_actions
+            .filter((item) => bridgeLabels[item.action_type])
+            .slice(0, 3)
+          : [];
+        if (actions.length) {
+          const row = document.createElement('div');
+          row.className = 'assistant-action-row';
+          actions.forEach((action) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = bridgeLabels[action.action_type] || action.label || '使用建议';
+            if (action.action_type === 'create_block_revision') button.className = 'primary';
+            button.addEventListener('click', async () => {
+              const selectedText = form.querySelector('[data-assistant-selected-text]')?.value || '';
+              const instruction = textFromAssistantAction(action) || payload.answer || '';
+              if (action.action_type === 'create_block_revision') {
+                const reader = document.querySelector('[data-block-reader]');
+                if (!reader || !selectedText.trim()) {
+                  showToast('无法转为局部修订', '请先在正文中选择一个片段，再询问助手。', true);
+                  return;
+                }
+                fillBlockRevisionForm(reader, {
+                  selectedText,
+                  paragraphStart: form.querySelector('[data-assistant-paragraph-start]')?.value || '',
+                  paragraphEnd: form.querySelector('[data-assistant-paragraph-end]')?.value || '',
+                  selectionStartOffset: form.querySelector('[data-assistant-selection-start]')?.value || '',
+                  selectionEndOffset: form.querySelector('[data-assistant-selection-end]')?.value || '',
+                  anchorPrefix: form.querySelector('[data-assistant-anchor-prefix]')?.value || '',
+                  anchorSuffix: form.querySelector('[data-assistant-anchor-suffix]')?.value || '',
+                  beforeContext: '',
+                  afterContext: '',
+                  actionType: 'modify',
+                });
+                const blockForm = blockPanelForReader(reader)?.querySelector('[data-block-revision-form]');
+                const textarea = blockForm?.querySelector('textarea[name="instruction"]');
+                if (textarea) textarea.value = instruction;
+                showToast('已预填局部修订', '确认提交后才会生成局部修订建议。');
+                return;
+              }
+              if (action.action_type === 'record_human_note') {
+                document.querySelectorAll('form.actions textarea[name="comment"]').forEach((textarea) => {
+                  textarea.value = instruction || payload.answer || '';
+                });
+                const drawer = document.querySelector('[data-review-decision-drawer]');
+                if (drawer && !drawer.open) {
+                  if (typeof drawer.showModal === 'function') drawer.showModal();
+                  else drawer.setAttribute('open', '');
+                }
+                showToast('已填入人工意见', '提交审核决策前仍可继续编辑。');
+                return;
+              }
+              if (action.action_type === 'create_fact_draft') {
+                const value = instruction || JSON.stringify(action.payload || {});
+                try {
+                  await navigator.clipboard.writeText(value);
+                  showToast('事实建议已复制', '到项目事实库表单中粘贴确认后再保存。');
+                } catch (error) {
+                  showToast('事实建议', value, false);
+                }
+              }
+            });
+            row.appendChild(button);
+          });
+          container.appendChild(row);
+        }
       };
 
       const hideSelectionToolbar = () => {
@@ -1999,6 +2350,7 @@ const html = `<!doctype html>
           return;
         }
         activeBlockSelection = selectionPayload;
+        syncSelectionContext(selectionPayload.reader, selectionPayload);
         const toolbar = selectionPayload.reader.parentElement?.querySelector('[data-selection-toolbar]');
         if (!toolbar) return;
         const summary = toolbar.querySelector('[data-selection-summary]');
@@ -2058,6 +2410,168 @@ const html = `<!doctype html>
             ...activeBlockSelection,
             actionType: button.dataset.selectionAction || 'modify',
           });
+        });
+      });
+
+      document.querySelectorAll('[data-selection-assistant]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (!activeBlockSelection) return;
+          hideSelectionToolbar();
+          fillAssistantFromSelection(activeBlockSelection.reader, activeBlockSelection, 'selection_advice');
+        });
+      });
+
+      document.querySelectorAll('[data-selection-manual-edit]').forEach((button) => {
+        button.addEventListener('click', () => {
+          hideSelectionToolbar();
+          const drawer = document.querySelector('.manual-edit-drawer');
+          if (!drawer) return;
+          if (typeof drawer.showModal === 'function') drawer.showModal();
+          else drawer.setAttribute('open', '');
+        });
+      });
+
+      document.querySelectorAll('[data-mobile-open-assistant]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const target = document.getElementById(button.dataset.mobileOpenAssistant || '');
+          if (target) target.scrollIntoView({block: 'start'});
+        });
+      });
+
+      document.querySelectorAll('[data-mobile-open-revision]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const panel = document.getElementById(button.dataset.mobileOpenRevision || '');
+          if (!panel) return;
+          openBlockPanel(panel);
+          panel.scrollIntoView({block: 'nearest'});
+        });
+      });
+
+      document.querySelectorAll('[data-assistant-quick]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const form = button.closest('[data-review-assistant-form]');
+          if (!form) return;
+          setAssistantMode(form, button.dataset.assistantQuick || 'continuity');
+          const question = form.querySelector('textarea[name="question"]');
+          if (question) {
+            question.value = button.dataset.question || '';
+            question.focus();
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-polish-block-instruction]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const form = button.closest('[data-block-revision-form]');
+          const panel = button.closest('[data-block-revision-panel]');
+          const reader = readerForWorkbench(panel?.dataset?.workbenchId || '') || document.querySelector('[data-block-reader]');
+          if (!form || !reader) return;
+          const selectedText = String(form.querySelector('[data-block-selected-text]')?.value || '').trim();
+          const instruction = String(form.querySelector('textarea[name="instruction"]')?.value || '').trim();
+          if (!selectedText) {
+            showToast('还没有选区', '请先在正文里选中一段，再让助手整理要求。', true);
+            return;
+          }
+          fillAssistantFromSelection(reader, {
+            selectedText,
+            paragraphStart: form.querySelector('[data-block-paragraph-start]')?.value || '',
+            paragraphEnd: form.querySelector('[data-block-paragraph-end]')?.value || '',
+            selectionStartOffset: form.querySelector('[data-block-selection-start]')?.value || '',
+            selectionEndOffset: form.querySelector('[data-block-selection-end]')?.value || '',
+            anchorPrefix: form.querySelector('[data-block-anchor-prefix]')?.value || '',
+            anchorSuffix: form.querySelector('[data-block-anchor-suffix]')?.value || '',
+          }, 'selection_advice');
+          const assistantForm = assistantPanelForReader(reader)?.querySelector('[data-review-assistant-form]');
+          const question = assistantForm?.querySelector('textarea[name="question"]');
+          if (question) {
+            question.value = '请把下面这条局部修订要求整理成更清楚、可执行的改稿指令，只输出指令要点，不直接改正文。\\n\\n原要求：' + (instruction || '我还没写清楚，请根据选区帮我提出一个清晰改法。');
+            question.focus();
+          }
+          showToast('已切到剧情助手', '确认问题后再询问助手，整理结果可转回局部修订。');
+        });
+      });
+
+      document.querySelectorAll('[data-block-risk-assistant]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const reader = document.querySelector('[data-block-reader]');
+          if (!reader) return;
+          const selectedText = button.dataset.selectedText || '';
+          fillAssistantFromSelection(reader, {
+            selectedText,
+            paragraphStart: button.dataset.paragraphStart || '',
+            paragraphEnd: button.dataset.paragraphEnd || button.dataset.paragraphStart || '',
+            selectionStartOffset: button.dataset.selectionStart || '',
+            selectionEndOffset: button.dataset.selectionEnd || '',
+            anchorPrefix: button.dataset.anchorPrefix || '',
+            anchorSuffix: button.dataset.anchorSuffix || '',
+          }, 'continuity');
+          const assistantForm = assistantPanelForReader(reader)?.querySelector('[data-review-assistant-form]');
+          const question = assistantForm?.querySelector('textarea[name="question"]');
+          if (question) {
+            question.value = '请检查这条局部修订如果应用，是否会影响后文连续性、伏笔、人物动机或事实库。请列出风险和需要补救的动作。\\n\\n局部修订要求：' + (button.dataset.instruction || '未记录');
+            question.focus();
+          }
+          showToast('已切到剧情助手', '可以让助手先做影响检查，再决定是否应用建议。');
+        });
+      });
+
+      document.querySelectorAll('[data-review-assistant-form]').forEach((form) => {
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const question = String(form.querySelector('textarea[name="question"]')?.value || '').trim();
+          const feedback = form.querySelector('[data-assistant-feedback]');
+          const result = form.closest('[data-review-assistant-panel]')?.querySelector('[data-assistant-result]');
+          const button = event.submitter || form.querySelector('button[type="submit"]');
+          if (!question) {
+            if (feedback) {
+              feedback.textContent = '请先填写要问助手的问题。';
+              feedback.classList.add('is-error');
+            }
+            return;
+          }
+          const originalText = button?.textContent || '询问助手';
+          if (feedback) {
+            feedback.textContent = '正在询问助手...';
+            feedback.classList.remove('is-error', 'is-success');
+          }
+          if (button) {
+            button.disabled = true;
+            button.textContent = '询问中...';
+          }
+          try {
+            const requestBody = new FormData(form);
+            const response = await fetch(formPostUrl(form), {
+              method: 'POST',
+              body: requestBody,
+              credentials: 'same-origin',
+              headers: {'X-Requested-With': 'fetch'},
+            });
+            const payload = await response.json().catch(() => null);
+            if (!payload) throw new Error('审稿助手返回了不可解析的响应。');
+            if (payload.thread_id) {
+              const threadInput = form.querySelector('[data-assistant-thread-id]');
+              if (threadInput) threadInput.value = payload.thread_id;
+            }
+            renderAssistantResult(result, payload, form);
+            if (!response.ok || payload.ok === false) {
+              throw new Error(payload.answer || '审稿助手调用失败。');
+            }
+            if (feedback) {
+              feedback.textContent = '助手已返回；建议动作只会预填，不会直接改稿。';
+              feedback.classList.add('is-success');
+            }
+          } catch (error) {
+            if (feedback) {
+              feedback.textContent = error.message || '审稿助手暂时不可用。';
+              feedback.classList.add('is-error');
+            }
+            showToast('审稿助手未完成', error.message || '请稍后重试。', true);
+          } finally {
+            if (button) {
+              button.disabled = false;
+              button.textContent = originalText;
+            }
+          }
         });
       });
 

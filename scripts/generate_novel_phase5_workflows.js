@@ -135,6 +135,49 @@ function respondNode(id, name, position, responseBody, responseCode, contentType
   };
 }
 
+function httpGlmNode(id, name, position, options = {}) {
+  const node = {
+    parameters: {
+      method: 'POST',
+      url: '={{ $env.GLM_API_BASE_URL || "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions" }}',
+      sendHeaders: true,
+      headerParameters: {
+        parameters: [
+          {
+            name: 'Authorization',
+            value: '={{ "Bearer " + $env.GLM_API_KEY }}',
+          },
+          {
+            name: 'Content-Type',
+            value: 'application/json',
+          },
+        ],
+      },
+      sendBody: true,
+      contentType: 'json',
+      jsonBody: '={{ { ...$json.llm_request_body, model: $env.GLM_MODEL || $json.llm_request_body.model } }}',
+      options: {
+        response: {
+          response: {
+            responseFormat: 'json',
+          },
+        },
+        timeout: 300000,
+      },
+      specifyBody: 'json',
+    },
+    id,
+    name,
+    type: 'n8n-nodes-base.httpRequest',
+    typeVersion: 4.2,
+    position,
+  };
+  if (options.continueErrorOutput) {
+    node.onError = 'continueErrorOutput';
+  }
+  return node;
+}
+
 function sticky(id, name, position, content) {
   return {
     parameters: {
@@ -517,6 +560,87 @@ FROM apply_novel_chapter_block_revision(
   COALESCE(NULLIF($5, ''), 'local_user')
 ) r;`;
 
+const startReviewAssistantQuery = `-- Validate and prepare one review assistant chat turn.
+SELECT *
+FROM start_novel_review_assistant_message(
+  $1::uuid,
+  $2,
+  NULLIF($3, '')::uuid,
+  $4,
+  $5,
+  NULLIF($6, ''),
+  COALESCE(NULLIF($7::text, '')::integer, NULL),
+  COALESCE(NULLIF($8::text, '')::integer, NULL),
+  COALESCE(NULLIF($9::text, '')::integer, NULL),
+  COALESCE(NULLIF($10::text, '')::integer, NULL),
+  NULLIF($11, ''),
+  NULLIF($12, ''),
+  COALESCE(NULLIF($13, ''), 'local_user')
+);`;
+
+const finishReviewAssistantQuery = `-- Record one review assistant AI run and assistant response.
+SELECT *
+FROM finish_novel_review_assistant_message(
+  $1::uuid,
+  $2::uuid,
+  $3::uuid,
+  $4::uuid,
+  $5,
+  NULLIF($6, ''),
+  NULLIF($7, ''),
+  COALESCE(NULLIF($8, '')::jsonb, '{}'::jsonb),
+  COALESCE(NULLIF($9, '')::jsonb, '{}'::jsonb),
+  COALESCE(NULLIF($10, '')::jsonb, '{}'::jsonb),
+  COALESCE(NULLIF($11::text, '')::boolean, FALSE),
+  NULLIF($12, ''),
+  NULLIF($13, '')::timestamptz,
+  NULLIF($14, '')::timestamptz,
+  COALESCE(NULLIF($15, ''), 'local_user')
+);`;
+
+const mergeReviewAssistantResponseCode = `// n8n Code node: Merge review assistant GLM response context.
+const context = $('代码 - 构建审稿助手 GLM请求').first().json;
+const response = $json;
+return [{json: {...context, llm_response: response, llm_response_json: JSON.stringify(response)}}];`;
+
+const mergeReviewAssistantErrorCode = `// n8n Code node: Merge review assistant GLM error context.
+const context = $('代码 - 构建审稿助手 GLM请求').first().json;
+const errorText = $json?.message || $json?.error?.message || $json?.error || '审稿助手模型调用失败';
+const errorPayload = {error: errorText, raw_error: $json};
+return [{
+  json: {
+    ...context,
+    llm_response: errorPayload,
+    llm_response_json: JSON.stringify(errorPayload),
+    error_message: String(errorText),
+  },
+}];`;
+
+const guardReviewAssistantContextCode = `// n8n Code node: Guard review assistant context before calling GLM.
+const row = $json || {};
+const success = row.success === true || row.success === 'true';
+if (success) {
+  return [{json: {...row, assistant_should_call_model: true}}];
+}
+const payload = {
+  ok: false,
+  thread_id: row.thread_id || '',
+  mode: row.mode || 'continuity',
+  answer: row.message || '审稿助手上下文不可用，请刷新页面后重试。',
+  findings: [],
+  suggestions: [],
+  source_refs: [],
+  suggested_actions: [],
+};
+return [{
+  json: {
+    ...row,
+    assistant_should_call_model: false,
+    response_status_code: row.result_code === 'NO_MATCH_OR_INVALID_STATE' ? 403 : 400,
+    response_json: JSON.stringify(payload),
+  },
+}];`;
+
 const prepareRewriteLaunchCode = `// n8n Code node: Prepare async rewrite launch after a human review action.
 const row = $json || {};
 const success = row.success === true || row.success === 'true';
@@ -586,6 +710,31 @@ const reviewWorkflow = workflowBase(
     codeNode('code-render-review-detail-16', '代码 - 生成小说审核详情页面', [-480, 0], code('n8n/code/novel_render_review_html.js')),
     respondNode('respond-review-detail-16', '响应Webhook - 返回小说审核详情', [-260, 0], '={{ $json.html }}', 200, 'text/html; charset=utf-8'),
 
+    webhookNode('webhook-novel-review-assistant-16', 'Webhook - 小说审稿助手', [-920, 180], 'POST', 'novel-review-assistant', 'novel-review-assistant-16'),
+    codeNode('code-validate-review-assistant-16', '代码 - 校验小说审稿助手', [-700, 180], code('n8n/code/novel_validate_review_assistant_request.js')),
+    postgresNode(
+      'postgres-start-review-assistant-16',
+      '数据库 - 准备审稿助手上下文',
+      [-480, 180],
+      startReviewAssistantQuery,
+      '={{ [ $json.chapter_id, $json.review_token, $json.thread_id, $json.mode, $json.question, $json.selected_text, $json.paragraph_start, $json.paragraph_end, $json.selection_start_offset, $json.selection_end_offset, $json.anchor_prefix, $json.anchor_suffix, $json.reviewer ] }}'
+    ),
+    codeNode('code-guard-review-assistant-context-16', '代码 - 审稿助手上下文闸门', [-260, 180], guardReviewAssistantContextCode),
+    ifNode('if-review-assistant-call-model-16', '条件判断 - 审稿助手需要调用模型', [-40, 180], '={{ $json.assistant_should_call_model }}', 'review-assistant-call-model'),
+    codeNode('code-build-review-assistant-request-16', '代码 - 构建审稿助手 GLM请求', [180, 120], code('n8n/code/novel_build_review_assistant_glm_request.js')),
+    httpGlmNode('http-glm-review-assistant-16', 'HTTP请求 - 调用GLM审稿助手', [400, 120], {continueErrorOutput: true}),
+    codeNode('code-merge-review-assistant-response-16', '代码 - 合并审稿助手 GLM响应上下文', [620, 60], mergeReviewAssistantResponseCode),
+    codeNode('code-merge-review-assistant-error-16', '代码 - 合并审稿助手 GLM错误上下文', [620, 180], mergeReviewAssistantErrorCode),
+    codeNode('code-parse-review-assistant-response-16', '代码 - 解析审稿助手响应', [840, 120], code('n8n/code/novel_parse_review_assistant_json.js')),
+    postgresNode(
+      'postgres-finish-review-assistant-16',
+      '数据库 - 记录审稿助手回答',
+      [1060, 120],
+      finishReviewAssistantQuery,
+      '={{ [ $json.thread_id, $json.user_message_id, $json.project_id, $json.chapter_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify($json.llm_request_body), $json.llm_response_json, $json.parsed_payload_json, $json.assistant_success, $json.error_message, $json.ai_run_started_at, $json.ai_run_finished_at, $json.reviewer ] }}'
+    ),
+    respondNode('respond-review-assistant-16', '响应Webhook - 返回审稿助手结果', [1280, 180], '={{ $json.response_json }}', '={{ $json.response_status_code || 200 }}', 'application/json; charset=utf-8'),
+
     webhookNode('webhook-novel-review-action-16', 'Webhook - 小说审核动作', [-920, 340], 'POST', 'novel-review-action', 'novel-review-action-16'),
     codeNode('code-validate-review-action-16', '代码 - 校验小说审核动作', [-700, 340], code('n8n/code/novel_validate_review_action.js')),
     postgresNode(
@@ -650,6 +799,7 @@ const reviewWorkflow = workflowBase(
 
     sticky('note-review-list-16', '说明 - 审核列表', [-920, -560], 'GET `/webhook/novel-review-list` 只展示 `NEED_REVIEW` 候选章节，不修改数据库。'),
     sticky('note-review-detail-16', '说明 - 审核详情', [-920, -160], 'GET `/webhook/novel-review-detail?chapter_id=...&review_token=...` 只展示详情，用于通知链接落点。'),
+    sticky('note-review-assistant-16', '说明 - 审稿助手', [620, -40], 'POST `/webhook/novel-review-assistant` 接收章节、token、模式、问题和可选选区；读取 Bible/大纲/导演台/facts/审稿报告后即时返回 JSON 建议，只预填动作，不直接改正文。'),
     sticky('note-review-action-16', '说明 - 审核动作', [-920, 580], 'POST `/webhook/novel-review-action` 支持通过、要求重写、拒绝和手动重新审稿；要求重写会异步启动 17 号重写 worker，重新审稿会异步启动 15 号审稿 worker。'),
     sticky('note-review-block-revision-16', '说明 - 局部修订', [-920, 1340], 'POST `/webhook/novel-review-block-revise` 创建局部修订建议任务；POST `/webhook/novel-review-block-apply` 应用、修改后应用、重新生成、放弃或转为整章重写。应用后只保存新的待审候选稿，不自动审稿，方便一章多处连续修改。'),
   ],
@@ -661,6 +811,21 @@ const reviewWorkflow = workflowBase(
     'Webhook - 小说审核详情': {main: [[{node: '数据库 - 查询待审章节详情', type: 'main', index: 0}]]},
     '数据库 - 查询待审章节详情': {main: [[{node: '代码 - 生成小说审核详情页面', type: 'main', index: 0}]]},
     '代码 - 生成小说审核详情页面': {main: [[{node: '响应Webhook - 返回小说审核详情', type: 'main', index: 0}]]},
+
+    'Webhook - 小说审稿助手': {main: [[{node: '代码 - 校验小说审稿助手', type: 'main', index: 0}]]},
+    '代码 - 校验小说审稿助手': {main: [[{node: '数据库 - 准备审稿助手上下文', type: 'main', index: 0}]]},
+    '数据库 - 准备审稿助手上下文': {main: [[{node: '代码 - 审稿助手上下文闸门', type: 'main', index: 0}]]},
+    '代码 - 审稿助手上下文闸门': {main: [[{node: '条件判断 - 审稿助手需要调用模型', type: 'main', index: 0}]]},
+    '条件判断 - 审稿助手需要调用模型': {main: [[{node: '代码 - 构建审稿助手 GLM请求', type: 'main', index: 0}], [{node: '响应Webhook - 返回审稿助手结果', type: 'main', index: 0}]]},
+    '代码 - 构建审稿助手 GLM请求': {main: [[{node: 'HTTP请求 - 调用GLM审稿助手', type: 'main', index: 0}]]},
+    'HTTP请求 - 调用GLM审稿助手': {main: [
+      [{node: '代码 - 合并审稿助手 GLM响应上下文', type: 'main', index: 0}],
+      [{node: '代码 - 合并审稿助手 GLM错误上下文', type: 'main', index: 0}],
+    ]},
+    '代码 - 合并审稿助手 GLM响应上下文': {main: [[{node: '代码 - 解析审稿助手响应', type: 'main', index: 0}]]},
+    '代码 - 合并审稿助手 GLM错误上下文': {main: [[{node: '代码 - 解析审稿助手响应', type: 'main', index: 0}]]},
+    '代码 - 解析审稿助手响应': {main: [[{node: '数据库 - 记录审稿助手回答', type: 'main', index: 0}]]},
+    '数据库 - 记录审稿助手回答': {main: [[{node: '响应Webhook - 返回审稿助手结果', type: 'main', index: 0}]]},
 
     'Webhook - 小说审核动作': {main: [[{node: '代码 - 校验小说审核动作', type: 'main', index: 0}]]},
     '代码 - 校验小说审核动作': {main: [[{node: '数据库 - 执行小说审核动作', type: 'main', index: 0}]]},

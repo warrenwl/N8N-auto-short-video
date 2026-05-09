@@ -9,7 +9,8 @@
     "chapter": 6000,
     "chapter_segment": 2200,
     "chapter_segment_1": 2400,
-    "chapter_segment_2": 1800
+    "chapter_segment_2": 1800,
+    "review_assistant": 1800
   },
   "thinking": {
     "type": "disabled"
@@ -97,7 +98,8 @@
     "director": "你是一名商业网文导演、连续性编辑和伏笔管理者。必须只输出严格 JSON，不写正文。",
     "chapter": "你是一名成熟的商业网文作者。必须只输出严格 JSON。",
     "review": "你是一名严格的商业网文编辑。必须只输出严格 JSON。",
-    "rewrite": "你是一名商业网文改稿编辑。必须只输出严格 JSON。"
+    "rewrite": "你是一名商业网文改稿编辑。必须只输出严格 JSON。",
+    "review_assistant": "你是一名商业网文审稿副驾驶、连续性编辑和剧情顾问。必须只输出严格 JSON。"
   },
 
   "user_prompt_templates": {

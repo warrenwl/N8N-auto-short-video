@@ -354,7 +354,8 @@ CREATE TABLE IF NOT EXISTS novel_ai_runs (
     'GENERATE_CHAPTER',
     'REVIEW_CHAPTER',
     'REWRITE_CHAPTER',
-    'REVISE_CHAPTER_BLOCK'
+    'REVISE_CHAPTER_BLOCK',
+    'REVIEW_ASSISTANT'
   )),
   model TEXT,
   prompt_version TEXT,
@@ -425,6 +426,73 @@ CREATE INDEX IF NOT EXISTS idx_novel_human_reviews_chapter_created_at
 
 CREATE INDEX IF NOT EXISTS idx_novel_human_reviews_project_created_at
   ON novel_human_reviews(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS novel_review_assistant_threads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
+  chapter_id UUID NOT NULL REFERENCES novel_chapters(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN (
+    'ACTIVE',
+    'ARCHIVED'
+  )),
+  title TEXT,
+  created_by TEXT NOT NULL DEFAULT 'local_user',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_novel_review_assistant_threads_chapter
+  ON novel_review_assistant_threads(chapter_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_novel_review_assistant_threads_project
+  ON novel_review_assistant_threads(project_id, updated_at DESC);
+
+DROP TRIGGER IF EXISTS trg_novel_review_assistant_threads_updated_at ON novel_review_assistant_threads;
+CREATE TRIGGER trg_novel_review_assistant_threads_updated_at
+BEFORE UPDATE ON novel_review_assistant_threads
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS novel_review_assistant_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  thread_id UUID NOT NULL REFERENCES novel_review_assistant_threads(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
+  chapter_id UUID NOT NULL REFERENCES novel_chapters(id) ON DELETE CASCADE,
+  ai_run_id UUID REFERENCES novel_ai_runs(id) ON DELETE SET NULL,
+  role TEXT NOT NULL CHECK (role IN (
+    'user',
+    'assistant',
+    'system'
+  )),
+  mode TEXT NOT NULL CHECK (mode IN (
+    'continuity',
+    'selection_advice',
+    'design_reference'
+  )),
+  content TEXT NOT NULL,
+  selected_text TEXT,
+  paragraph_start INTEGER CHECK (paragraph_start IS NULL OR paragraph_start > 0),
+  paragraph_end INTEGER CHECK (paragraph_end IS NULL OR paragraph_end > 0),
+  selection_start_offset INTEGER CHECK (selection_start_offset IS NULL OR selection_start_offset >= 0),
+  selection_end_offset INTEGER CHECK (selection_end_offset IS NULL OR selection_end_offset >= 0),
+  anchor_prefix TEXT,
+  anchor_suffix TEXT,
+  request_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  response_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  suggested_actions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_by TEXT NOT NULL DEFAULT 'local_user',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_novel_review_assistant_messages_thread
+  ON novel_review_assistant_messages(thread_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_novel_review_assistant_messages_chapter
+  ON novel_review_assistant_messages(chapter_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_novel_review_assistant_messages_ai_run
+  ON novel_review_assistant_messages(ai_run_id);
 
 CREATE TABLE IF NOT EXISTS novel_chapter_block_revisions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -660,7 +728,8 @@ ALTER TABLE novel_ai_runs
     'GENERATE_CHAPTER',
     'REVIEW_CHAPTER',
     'REWRITE_CHAPTER',
-    'REVISE_CHAPTER_BLOCK'
+    'REVISE_CHAPTER_BLOCK',
+    'REVIEW_ASSISTANT'
   ));
 
 ALTER TABLE novel_human_reviews

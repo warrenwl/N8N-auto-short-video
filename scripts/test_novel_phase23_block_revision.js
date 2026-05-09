@@ -64,12 +64,20 @@ assert(blockNodes.get('数据库 - 领取指定局部修订任务').parameters.q
 
 assert(reviewHtml.includes('data-block-reader'), 'review page should render selectable paragraph reader');
 assert(reviewHtml.includes('data-selection-toolbar'), 'review page should render selection toolbar');
+assert(reviewHtml.includes('data-selection-manual-edit'), 'selection toolbar should keep only high-frequency assistant/revision/manual edit actions');
+assert(reviewHtml.includes('syncSelectionContext'), 'review page should share the current selection between assistant and block revision');
 assert(reviewHtml.includes('data-block-selection-start') && reviewHtml.includes('data-block-anchor-prefix'), 'review page should submit precise selection anchors');
 assert(reviewHtml.includes('anchorAroundSelection(reader, selectionStartOffset, selectionEndOffset)'), 'review page should build anchors from full chapter body offsets');
 assert(reviewHtml.includes('block-diff'), 'review page should render local revision diff');
 assert(reviewHtml.includes('block-panel-body'), 'review page should render block revision in a wide bottom workbench');
-assert(reviewHtml.includes('</article>\n    ${blockRevisionPanel(row, id)}'), 'block revision workbench should live outside the right decision dock');
-assert(!reviewHtml.includes('${blockRevisionPanel(row, id)}\n          ${actionForm(row, \'desktop-actions\')}'), 'block revision workbench should not crowd the right decision dock');
+assert(reviewHtml.includes('block-flow-steps'), 'block revision workbench should show the four-step flow');
+assert(reviewHtml.includes('block-revision-group'), 'block revision results should be grouped by status');
+assert(reviewHtml.includes('data-polish-block-instruction'), 'block revision form should offer assistant instruction polishing');
+assert(reviewHtml.includes('data-block-risk-assistant'), 'block risk warnings should bridge to assistant impact checks');
+assert(reviewHtml.includes('block-secondary-actions'), 'block revision cards should tuck secondary actions behind details');
+assert(reviewHtml.includes('mobile-workbench-switcher'), 'mobile detail page should expose assistant/revision workbench switcher');
+assert(reviewHtml.includes('</article>\n    ${blockRevisionPanel(row, id)}'), 'block revision workbench should live outside the review decision drawer');
+assert(!reviewHtml.includes('decision-dock'), 'review actions should live in the drawer, not a right-side dock');
 assert(reviewHtml.includes('/webhook/novel-review-block-revise'), 'review page should post block revise requests');
 assert(!reviewHtml.includes('确认提交这条局部修订要求'), 'creating a block suggestion should not show a second confirm dialog');
 assert(reviewHtml.includes('/webhook/novel-review-block-apply'), 'review page should post block apply actions');

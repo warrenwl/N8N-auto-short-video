@@ -63,7 +63,7 @@ for (const [name, code, markers] of [
   ['projectList', projectListCode, ['小说项目列表', 'project-card', 'mobile-cards', 'th-help', '打开项目', '去审核', '看队列', '看日报']],
   ['queue', queueCode, ['需要关注', '最近完成', 'task-card', '待处理表示等待调度执行', '工作台', '项目列表', '审核中心', '运行日报']],
   ['daily', dailyCode, ['如何使用日报', '看失败摘要', '看较慢调用', '看快照历史', '快照记录', '工作台', '项目列表', '审核中心', '队列状态']],
-  ['review', reviewCode, ['审核结论摘要', '推荐人工动作', 'mobile-actions', 'position: sticky', 'env(safe-area-inset-bottom)', 'focus-visible', 'window.confirm', '通过后会成为当前正式版本', '通过可留空', 'aria-label="审核意见"']],
+  ['review', reviewCode, ['审核结论摘要', '推荐人工动作', 'review-decision-launcher', 'position: sticky', 'env(safe-area-inset-bottom)', 'focus-visible', 'window.confirm', '通过后会成为当前正式版本', '通过可留空', 'aria-label="审核意见"']],
 ]) {
   for (const marker of markers) {
     assert(code.includes(marker), `${name} renderer should include Phase 13 marker: ${marker}`);
@@ -231,7 +231,7 @@ assert(!rawVisibleEnums.test(reviewText), `review visible text should not expose
 assert(reviewHtml.includes('method="POST"'), 'review actions must keep POST forms');
 assert(!/href=["'][^"']*novel-review-action/i.test(reviewHtml), 'rendered review actions must not be GET links');
 assert(reviewHtml.includes('window.confirm'), 'review page should include confirmation popup logic');
-assert(reviewHtml.includes('mobile-actions'), 'review page should include mobile sticky actions');
+assert(reviewHtml.includes('review-decision-launcher'), 'review page should include a drawer launcher for review actions');
 
 console.log(JSON.stringify({
   result: 'phase13_frontend_usability_tdd_passed',

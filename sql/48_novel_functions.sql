@@ -3777,6 +3777,689 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS start_novel_review_assistant_message(
+  UUID,
+  TEXT,
+  UUID,
+  TEXT,
+  TEXT,
+  TEXT,
+  INTEGER,
+  INTEGER,
+  INTEGER,
+  INTEGER,
+  TEXT,
+  TEXT,
+  TEXT
+);
+
+CREATE OR REPLACE FUNCTION start_novel_review_assistant_message(
+  p_chapter_id UUID,
+  p_review_token TEXT,
+  p_thread_id UUID DEFAULT NULL,
+  p_mode TEXT DEFAULT 'continuity',
+  p_question TEXT DEFAULT '',
+  p_selected_text TEXT DEFAULT NULL,
+  p_paragraph_start INTEGER DEFAULT NULL,
+  p_paragraph_end INTEGER DEFAULT NULL,
+  p_selection_start_offset INTEGER DEFAULT NULL,
+  p_selection_end_offset INTEGER DEFAULT NULL,
+  p_anchor_prefix TEXT DEFAULT NULL,
+  p_anchor_suffix TEXT DEFAULT NULL,
+  p_reviewer TEXT DEFAULT 'local_user'
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  message TEXT,
+  thread_id UUID,
+  user_message_id UUID,
+  project_id UUID,
+  chapter_id UUID,
+  review_token TEXT,
+  chapter_no INTEGER,
+  chapter_title TEXT,
+  chapter_body TEXT,
+  chapter_summary TEXT,
+  novel_title TEXT,
+  genre TEXT,
+  audience TEXT,
+  style TEXT,
+  target_words_per_chapter INTEGER,
+  mode TEXT,
+  question TEXT,
+  selected_text TEXT,
+  paragraph_start INTEGER,
+  paragraph_end INTEGER,
+  selection_start_offset INTEGER,
+  selection_end_offset INTEGER,
+  anchor_prefix TEXT,
+  anchor_suffix TEXT,
+  reviewer TEXT,
+  novel_bible JSONB,
+  outline_context JSONB,
+  director_card JSONB,
+  continuity_facts JSONB,
+  previous_chapters JSONB,
+  future_outlines JSONB,
+  review_report JSONB,
+  block_revisions JSONB,
+  conversation_history JSONB
+) AS $$
+DECLARE
+  v_chapter novel_chapters%ROWTYPE;
+  v_project novel_projects%ROWTYPE;
+  v_thread novel_review_assistant_threads%ROWTYPE;
+  v_user_message_id UUID;
+  v_mode TEXT := lower(trim(COALESCE(p_mode, 'continuity')));
+  v_question TEXT := trim(COALESCE(p_question, ''));
+  v_selected_text TEXT := NULLIF(trim(COALESCE(p_selected_text, '')), '');
+  v_reviewer TEXT := COALESCE(NULLIF(trim(COALESCE(p_reviewer, '')), ''), 'local_user');
+  v_novel_bible JSONB := '{}'::jsonb;
+  v_outline_context JSONB := '{}'::jsonb;
+  v_director_card JSONB := '{}'::jsonb;
+  v_continuity_facts JSONB := '[]'::jsonb;
+  v_previous_chapters JSONB := '[]'::jsonb;
+  v_future_outlines JSONB := '[]'::jsonb;
+  v_review_report JSONB := '{}'::jsonb;
+  v_block_revisions JSONB := '[]'::jsonb;
+  v_conversation_history JSONB := '[]'::jsonb;
+BEGIN
+  IF v_mode NOT IN ('continuity', 'selection_advice', 'design_reference') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'INVALID_ASSISTANT_MODE'::text,
+      '审稿助手模式无效。'::text,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      p_review_token,
+      NULL::integer,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::integer,
+      v_mode,
+      v_question,
+      v_selected_text,
+      p_paragraph_start,
+      p_paragraph_end,
+      p_selection_start_offset,
+      p_selection_end_offset,
+      p_anchor_prefix,
+      p_anchor_suffix,
+      v_reviewer,
+      '{}'::jsonb,
+      '{}'::jsonb,
+      '{}'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb,
+      '{}'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb;
+    RETURN;
+  END IF;
+
+  IF v_question = '' THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'EMPTY_ASSISTANT_QUESTION'::text,
+      '请先填写要问审稿助手的问题。'::text,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      p_review_token,
+      NULL::integer,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::integer,
+      v_mode,
+      v_question,
+      v_selected_text,
+      p_paragraph_start,
+      p_paragraph_end,
+      p_selection_start_offset,
+      p_selection_end_offset,
+      p_anchor_prefix,
+      p_anchor_suffix,
+      v_reviewer,
+      '{}'::jsonb,
+      '{}'::jsonb,
+      '{}'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb,
+      '{}'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_chapter
+  FROM novel_chapters c
+  WHERE c.id = p_chapter_id
+    AND c.review_token = p_review_token
+    AND c.status = 'NEED_REVIEW'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM novel_chapter_outlines o
+      WHERE o.id = c.outline_id
+        AND c.created_at < o.updated_at
+    );
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'NO_MATCH_OR_INVALID_STATE'::text,
+      '只能向当前仍处于待人工审核状态的候选稿提问。'::text,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      p_review_token,
+      NULL::integer,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::text,
+      NULL::integer,
+      v_mode,
+      v_question,
+      v_selected_text,
+      p_paragraph_start,
+      p_paragraph_end,
+      p_selection_start_offset,
+      p_selection_end_offset,
+      p_anchor_prefix,
+      p_anchor_suffix,
+      v_reviewer,
+      '{}'::jsonb,
+      '{}'::jsonb,
+      '{}'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb,
+      '{}'::jsonb,
+      '[]'::jsonb,
+      '[]'::jsonb;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_project
+  FROM novel_projects p
+  WHERE p.id = v_chapter.project_id;
+
+  IF p_thread_id IS NOT NULL THEN
+    SELECT *
+    INTO v_thread
+    FROM novel_review_assistant_threads t
+    WHERE t.id = p_thread_id
+      AND t.project_id = v_chapter.project_id
+      AND t.chapter_id = v_chapter.id
+      AND t.status = 'ACTIVE';
+  END IF;
+
+  IF v_thread.id IS NULL THEN
+    INSERT INTO novel_review_assistant_threads (
+      project_id,
+      chapter_id,
+      title,
+      created_by
+    )
+    VALUES (
+      v_chapter.project_id,
+      v_chapter.id,
+      format('第 %s 章审稿助手', v_chapter.chapter_no),
+      v_reviewer
+    )
+    RETURNING * INTO v_thread;
+  END IF;
+
+  SELECT COALESCE(jsonb_build_object(
+    'world_setting', b.world_setting,
+    'story_core', b.story_core,
+    'main_character', b.main_character,
+    'supporting_characters', b.supporting_characters,
+    'villain_setting', b.villain_setting,
+    'power_system', b.power_system,
+    'relationship_map', b.relationship_map,
+    'tone_rules', b.tone_rules,
+    'forbidden_rules', b.forbidden_rules,
+    'selling_points', b.selling_points
+  ), '{}'::jsonb)
+  INTO v_novel_bible
+  FROM novel_bibles b
+  WHERE b.project_id = v_chapter.project_id;
+
+  SELECT COALESCE(jsonb_build_object(
+    'chapter_no', o.chapter_no,
+    'title', o.title,
+    'summary', o.summary,
+    'chapter_goal', o.chapter_goal,
+    'conflict_point', o.conflict_point,
+    'emotional_point', o.emotional_point,
+    'hook', o.hook
+  ), '{}'::jsonb)
+  INTO v_outline_context
+  FROM novel_chapter_outlines o
+  WHERE o.id = v_chapter.outline_id;
+
+  SELECT COALESCE(d.card_payload, '{}'::jsonb)
+  INTO v_director_card
+  FROM novel_chapter_director_cards d
+  WHERE d.project_id = v_chapter.project_id
+    AND d.chapter_no = v_chapter.chapter_no
+    AND d.is_current = TRUE
+    AND d.status = 'READY'
+  ORDER BY d.version DESC
+  LIMIT 1;
+
+  v_director_card := COALESCE(v_director_card, '{}'::jsonb);
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'fact_type', picked.fact_type,
+    'fact_key', picked.fact_key,
+    'fact_value', picked.fact_value,
+    'chapter_no', picked.chapter_no,
+    'source', picked.source,
+    'confidence', picked.confidence
+  ) ORDER BY picked.created_at DESC), '[]'::jsonb)
+  INTO v_continuity_facts
+  FROM (
+    SELECT f.*
+    FROM novel_continuity_facts f
+    WHERE f.project_id = v_chapter.project_id
+      AND f.status = 'ACTIVE'
+      AND (
+        f.chapter_no IS NULL
+        OR f.chapter_no <= v_chapter.chapter_no
+        OR f.source = 'human'
+      )
+    ORDER BY f.created_at DESC
+    LIMIT 80
+  ) picked;
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'chapter_no', picked.chapter_no,
+    'title', picked.title,
+    'summary', picked.summary
+  ) ORDER BY picked.chapter_no ASC), '[]'::jsonb)
+  INTO v_previous_chapters
+  FROM (
+    SELECT c.chapter_no, c.title, c.summary
+    FROM novel_chapters c
+    WHERE c.project_id = v_chapter.project_id
+      AND c.chapter_no < v_chapter.chapter_no
+      AND c.is_current = TRUE
+      AND c.status IN ('APPROVED', 'PUBLISHED')
+    ORDER BY c.chapter_no DESC
+    LIMIT 3
+  ) picked;
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'chapter_no', picked.chapter_no,
+    'title', picked.title,
+    'summary', picked.summary,
+    'chapter_goal', picked.chapter_goal,
+    'hook', picked.hook
+  ) ORDER BY picked.chapter_no ASC), '[]'::jsonb)
+  INTO v_future_outlines
+  FROM (
+    SELECT o.*
+    FROM novel_chapter_outlines o
+    WHERE o.project_id = v_chapter.project_id
+      AND o.chapter_no > v_chapter.chapter_no
+      AND o.status = 'READY'
+    ORDER BY o.chapter_no ASC
+    LIMIT 3
+  ) picked;
+
+  SELECT COALESCE(jsonb_build_object(
+    'consistency_score', r.consistency_score,
+    'readability_score', r.readability_score,
+    'plot_score', r.plot_score,
+    'commercial_score', r.commercial_score,
+    'total_score', r.total_score,
+    'issues', r.issues,
+    'suggestions', r.suggestions,
+    'verdict', r.verdict,
+    'created_at', r.created_at
+  ), '{}'::jsonb)
+  INTO v_review_report
+  FROM novel_review_reports r
+  WHERE r.chapter_id = v_chapter.id
+  ORDER BY r.created_at DESC
+  LIMIT 1;
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'id', picked.id,
+    'status', picked.status,
+    'action_type', picked.action_type,
+    'selected_text', picked.selected_text,
+    'instruction', picked.instruction,
+    'replacement_text', picked.replacement_text,
+    'change_summary', picked.change_summary,
+    'affects_later_text', picked.affects_later_text,
+    'created_at', picked.created_at
+  ) ORDER BY picked.created_at DESC), '[]'::jsonb)
+  INTO v_block_revisions
+  FROM (
+    SELECT br.*
+    FROM novel_chapter_block_revisions br
+    WHERE br.chapter_id = v_chapter.id
+    ORDER BY br.created_at DESC
+    LIMIT 8
+  ) picked;
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'role', picked.role,
+    'mode', picked.mode,
+    'content', picked.content,
+    'response_payload', picked.response_payload,
+    'created_at', picked.created_at
+  ) ORDER BY picked.created_at ASC), '[]'::jsonb)
+  INTO v_conversation_history
+  FROM (
+    SELECT m.role, m.mode, m.content, m.response_payload, m.created_at
+    FROM novel_review_assistant_messages m
+    WHERE m.thread_id = v_thread.id
+    ORDER BY m.created_at DESC
+    LIMIT 10
+  ) picked;
+
+  INSERT INTO novel_review_assistant_messages (
+    thread_id,
+    project_id,
+    chapter_id,
+    role,
+    mode,
+    content,
+    selected_text,
+    paragraph_start,
+    paragraph_end,
+    selection_start_offset,
+    selection_end_offset,
+    anchor_prefix,
+    anchor_suffix,
+    request_payload,
+    created_by
+  )
+  VALUES (
+    v_thread.id,
+    v_chapter.project_id,
+    v_chapter.id,
+    'user',
+    v_mode,
+    v_question,
+    v_selected_text,
+    p_paragraph_start,
+    p_paragraph_end,
+    p_selection_start_offset,
+    p_selection_end_offset,
+    NULLIF(p_anchor_prefix, ''),
+    NULLIF(p_anchor_suffix, ''),
+    jsonb_build_object(
+      'mode', v_mode,
+      'question', v_question,
+      'selected_text', v_selected_text,
+      'paragraph_start', p_paragraph_start,
+      'paragraph_end', p_paragraph_end,
+      'selection_start_offset', p_selection_start_offset,
+      'selection_end_offset', p_selection_end_offset
+    ),
+    v_reviewer
+  )
+  RETURNING id INTO v_user_message_id;
+
+  RETURN QUERY SELECT
+    TRUE,
+    'ASSISTANT_CONTEXT_READY'::text,
+    '审稿助手上下文已准备。'::text,
+    v_thread.id,
+    v_user_message_id,
+    v_chapter.project_id,
+    v_chapter.id,
+    v_chapter.review_token,
+    v_chapter.chapter_no,
+    v_chapter.title,
+    v_chapter.body,
+    v_chapter.summary,
+    v_project.title,
+    v_project.genre,
+    v_project.audience,
+    v_project.style,
+    v_project.target_words_per_chapter,
+    v_mode,
+    v_question,
+    v_selected_text,
+    p_paragraph_start,
+    p_paragraph_end,
+    p_selection_start_offset,
+    p_selection_end_offset,
+    p_anchor_prefix,
+    p_anchor_suffix,
+    v_reviewer,
+    COALESCE(v_novel_bible, '{}'::jsonb),
+    COALESCE(v_outline_context, '{}'::jsonb),
+    COALESCE(v_director_card, '{}'::jsonb),
+    COALESCE(v_continuity_facts, '[]'::jsonb),
+    COALESCE(v_previous_chapters, '[]'::jsonb),
+    COALESCE(v_future_outlines, '[]'::jsonb),
+    COALESCE(v_review_report, '{}'::jsonb),
+    COALESCE(v_block_revisions, '[]'::jsonb),
+    COALESCE(v_conversation_history, '[]'::jsonb);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS finish_novel_review_assistant_message(
+  UUID,
+  UUID,
+  UUID,
+  UUID,
+  TEXT,
+  TEXT,
+  TEXT,
+  JSONB,
+  JSONB,
+  JSONB,
+  BOOLEAN,
+  TEXT,
+  TIMESTAMPTZ,
+  TIMESTAMPTZ,
+  TEXT
+);
+
+CREATE OR REPLACE FUNCTION finish_novel_review_assistant_message(
+  p_thread_id UUID,
+  p_user_message_id UUID,
+  p_project_id UUID,
+  p_chapter_id UUID,
+  p_run_type TEXT,
+  p_model TEXT,
+  p_prompt_version TEXT,
+  p_request_payload JSONB,
+  p_response_payload JSONB,
+  p_parsed_payload JSONB,
+  p_success BOOLEAN,
+  p_error_message TEXT,
+  p_started_at TIMESTAMPTZ,
+  p_finished_at TIMESTAMPTZ,
+  p_reviewer TEXT DEFAULT 'local_user'
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  thread_id UUID,
+  ai_run_id UUID,
+  assistant_message_id UUID,
+  response_status_code INTEGER,
+  response_json TEXT
+) AS $$
+DECLARE
+  v_user_message novel_review_assistant_messages%ROWTYPE;
+  v_ai_run novel_ai_runs%ROWTYPE;
+  v_assistant_message_id UUID;
+  v_payload JSONB := COALESCE(p_parsed_payload, '{}'::jsonb);
+  v_mode TEXT := COALESCE(NULLIF(p_parsed_payload->>'mode', ''), 'continuity');
+  v_answer TEXT := COALESCE(NULLIF(p_parsed_payload->>'answer', ''), NULLIF(p_error_message, ''), '审稿助手没有返回可用回答。');
+  v_success BOOLEAN := COALESCE(p_success, FALSE);
+  v_reviewer TEXT := COALESCE(NULLIF(trim(COALESCE(p_reviewer, '')), ''), 'local_user');
+  v_finished_at TIMESTAMPTZ := COALESCE(p_finished_at, NOW());
+BEGIN
+  SELECT *
+  INTO v_user_message
+  FROM novel_review_assistant_messages m
+  WHERE m.id = p_user_message_id
+    AND m.thread_id = p_thread_id
+    AND m.project_id = p_project_id
+    AND m.chapter_id = p_chapter_id
+    AND m.role = 'user';
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'ASSISTANT_MESSAGE_NOT_FOUND'::text,
+      p_thread_id,
+      NULL::uuid,
+      NULL::uuid,
+      409,
+      jsonb_build_object(
+        'ok', false,
+        'thread_id', p_thread_id,
+        'answer', '审稿助手上下文已失效，请刷新页面后重试。',
+        'findings', '[]'::jsonb,
+        'suggestions', '[]'::jsonb,
+        'source_refs', '[]'::jsonb,
+        'suggested_actions', '[]'::jsonb
+      )::text;
+    RETURN;
+  END IF;
+
+  INSERT INTO novel_ai_runs (
+    project_id,
+    chapter_id,
+    job_id,
+    run_type,
+    model,
+    prompt_version,
+    request_payload,
+    response_payload,
+    parsed_payload,
+    success,
+    error_message,
+    started_at,
+    finished_at,
+    duration_ms
+  )
+  VALUES (
+    p_project_id,
+    p_chapter_id,
+    NULL,
+    COALESCE(NULLIF(p_run_type, ''), 'REVIEW_ASSISTANT'),
+    NULLIF(p_model, ''),
+    NULLIF(p_prompt_version, ''),
+    COALESCE(p_request_payload, '{}'::jsonb),
+    COALESCE(p_response_payload, '{}'::jsonb),
+    v_payload,
+    v_success,
+    NULLIF(p_error_message, ''),
+    p_started_at,
+    v_finished_at,
+    CASE
+      WHEN p_started_at IS NOT NULL
+        THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (v_finished_at - p_started_at)) * 1000)::integer)
+      ELSE NULL
+    END
+  )
+  RETURNING * INTO v_ai_run;
+
+  v_payload := COALESCE(v_payload, '{}'::jsonb)
+    || jsonb_build_object(
+      'ok', v_success,
+      'thread_id', p_thread_id,
+      'ai_run_id', v_ai_run.id
+    );
+
+  INSERT INTO novel_review_assistant_messages (
+    thread_id,
+    project_id,
+    chapter_id,
+    ai_run_id,
+    role,
+    mode,
+    content,
+    selected_text,
+    paragraph_start,
+    paragraph_end,
+    selection_start_offset,
+    selection_end_offset,
+    anchor_prefix,
+    anchor_suffix,
+    request_payload,
+    response_payload,
+    source_refs,
+    suggested_actions,
+    created_by
+  )
+  VALUES (
+    p_thread_id,
+    p_project_id,
+    p_chapter_id,
+    v_ai_run.id,
+    'assistant',
+    v_mode,
+    v_answer,
+    v_user_message.selected_text,
+    v_user_message.paragraph_start,
+    v_user_message.paragraph_end,
+    v_user_message.selection_start_offset,
+    v_user_message.selection_end_offset,
+    v_user_message.anchor_prefix,
+    v_user_message.anchor_suffix,
+    COALESCE(p_request_payload, '{}'::jsonb),
+    v_payload,
+    COALESCE(v_payload->'source_refs', '[]'::jsonb),
+    COALESCE(v_payload->'suggested_actions', '[]'::jsonb),
+    v_reviewer
+  )
+  RETURNING id INTO v_assistant_message_id;
+
+  UPDATE novel_review_assistant_threads t
+  SET updated_at = NOW()
+  WHERE t.id = p_thread_id;
+
+  UPDATE novel_review_assistant_messages m
+  SET ai_run_id = v_ai_run.id
+  WHERE m.id = p_user_message_id;
+
+  RETURN QUERY SELECT
+    TRUE,
+    CASE WHEN v_success THEN 'ASSISTANT_RESPONSE_RECORDED' ELSE 'ASSISTANT_RESPONSE_FAILED' END::text,
+    p_thread_id,
+    v_ai_run.id,
+    v_assistant_message_id,
+    CASE WHEN v_success THEN 200 ELSE 502 END,
+    v_payload::text;
+END;
+$$ LANGUAGE plpgsql;
+
 DROP FUNCTION IF EXISTS request_novel_chapter_block_revision(
   UUID,
   TEXT,

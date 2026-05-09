@@ -79,13 +79,15 @@ function assertWebhook(name, method, webhookPath) {
   assert.strictEqual(node.parameters.responseMode, 'responseNode', `${name} should respond through response node`);
 }
 
-assert.strictEqual(webhooks.length, 6, '16 should expose list, detail, action, manual edit, and block revision webhooks');
+assert.strictEqual(webhooks.length, 7, '16 should expose list, detail, assistant, action, manual edit, and block revision webhooks');
 assertWebhook('Webhook - 小说审核列表', 'GET', 'novel-review-list');
 assertWebhook('Webhook - 小说审核详情', 'GET', 'novel-review-detail');
+assertWebhook('Webhook - 小说审稿助手', 'POST', 'novel-review-assistant');
 assertWebhook('Webhook - 小说审核动作', 'POST', 'novel-review-action');
 assertWebhook('Webhook - 小说审核人工改稿', 'POST', 'novel-review-manual-edit');
 assertWebhook('Webhook - 小说审核局部修订', 'POST', 'novel-review-block-revise');
 assertWebhook('Webhook - 小说审核局部修订确认', 'POST', 'novel-review-block-apply');
+assert(!webhooks.some((node) => node.parameters.path === 'novel-review-assistant' && node.parameters.httpMethod === 'GET'), 'novel-review-assistant must not be reachable by GET');
 assert(!webhooks.some((node) => node.parameters.path === 'novel-review-action' && node.parameters.httpMethod === 'GET'), 'novel-review-action must not be reachable by GET');
 assert(!webhooks.some((node) => node.parameters.path === 'novel-review-manual-edit' && node.parameters.httpMethod === 'GET'), 'novel-review-manual-edit must not be reachable by GET');
 assert(!webhooks.some((node) => node.parameters.path === 'novel-review-block-revise' && node.parameters.httpMethod === 'GET'), 'novel-review-block-revise must not be reachable by GET');
@@ -128,6 +130,7 @@ assert(
 const renderCode = nodes.get('代码 - 生成小说审核页面').parameters.jsCode;
 assert(renderCode.includes('method="POST"'), 'review forms must use POST');
 assert(renderCode.includes('/webhook/novel-review-action'), 'review action target missing');
+assert(renderCode.includes('/webhook/novel-review-assistant'), 'review assistant target missing');
 assert(renderCode.includes('/webhook/novel-review-manual-edit'), 'review manual edit target missing');
 assert(renderCode.includes('/webhook/novel-review-block-revise'), 'review block revision request target missing');
 assert(renderCode.includes('/webhook/novel-review-block-apply'), 'review block revision apply target missing');
@@ -136,6 +139,12 @@ assert(renderCode.includes('data-block-reader'), 'review detail should render pa
 assert(renderCode.includes('data-selection-toolbar'), 'review detail should expose selection toolbar for block revision');
 assert(renderCode.includes('跨章承接分析'), 'review detail should show cross-chapter transition analysis');
 assert(renderCode.includes('data-review-manual-edit'), 'review detail should submit manual edit through inline drawer form');
+assert(renderCode.includes('review-assistant-panel') && renderCode.includes('data-selection-assistant'), 'review detail should expose the assistant side panel and selection ask action');
+assert(renderCode.includes('syncSelectionContext') && renderCode.includes('data-selection-manual-edit'), 'review detail should share selection across assistant/revision and keep a compact selection toolbar');
+assert(renderCode.includes('block-flow-steps') && renderCode.includes('block-revision-group'), 'block revision workbench should use grouped four-step layout');
+assert(renderCode.includes('data-polish-block-instruction') && renderCode.includes('data-block-risk-assistant'), 'block revision workbench should bridge instruction polishing and continuity risk checks to assistant');
+assert(renderCode.includes('launcher-rerun-form') && renderCode.includes('rerun-review-button'), 'review detail should expose rerun review as a top-level launcher action');
+assert(!renderCode.includes('改稿与依据'), 'review decision drawer should not keep duplicate support actions');
 assert(renderCode.includes('保存继续修改'), 'review detail should allow saving manual edits without smart review');
 assert(renderCode.includes('data-inline-edit-form'), 'review detail should support double-click inline paragraph editing');
 assert(renderCode.includes("decision', 'save_only"), 'inline paragraph edits should save without smart review');
@@ -277,6 +286,7 @@ console.log(JSON.stringify({
   workflowCount: workflowFiles.length,
   listWebhook: 'GET /webhook/novel-review-list',
   detailWebhook: 'GET /webhook/novel-review-detail',
+  assistantWebhook: 'POST /webhook/novel-review-assistant',
   actionWebhook: 'POST /webhook/novel-review-action',
   manualEditWebhook: 'POST /webhook/novel-review-manual-edit',
   blockRevisionWebhook: 'POST /webhook/novel-review-block-revise',

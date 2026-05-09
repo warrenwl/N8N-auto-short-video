@@ -506,22 +506,24 @@ assertNoGetWriteLinks(reviewListHtml, 'review list');
 
 const reviewDetailHtml = runCodeNode('n8n/code/novel_render_review_html.js', [{...reviewRows[0], page_mode: 'DETAIL', body: '审核详情正文。'}])[0].json.html;
 const reviewDetailText = visibleText(reviewDetailHtml);
-for (const expected of ['审核决策侧栏', '返回项目', '返回章节', '查看队列', '查看运行依据', 'method="POST"']) {
+const reviewDetailBodyHtml = reviewDetailHtml.slice(reviewDetailHtml.indexOf('<body'));
+for (const expected of ['人工审核抽屉', '返回项目', '返回章节', '查看队列', '重新审稿', 'method="POST"']) {
   assert(reviewDetailText.includes(expected) || reviewDetailHtml.includes(expected), `review detail should include decision marker: ${expected}`);
 }
-for (const expected of ['review-detail-workspace', '审核内容', 'ai-review-drawer', '智能审稿抽屉', 'data-open-dialog']) {
+for (const expected of ['review-detail-workspace', '审核内容', 'review-decision-launcher', 'review-decision-drawer', 'ai-review-drawer', '智能审稿抽屉', 'data-open-dialog']) {
   assert(reviewDetailText.includes(expected) || reviewDetailHtml.includes(expected), `review detail should prioritize reader and drawer interaction: ${expected}`);
 }
+assert(!reviewDetailText.includes('改稿与依据'), 'review decision drawer should only keep final decision controls');
 for (const expected of ['manual-edit-drawer', '人工改稿抽屉', '/webhook/novel-review-manual-edit', 'data-review-manual-edit', '保存并重新审稿', '改稿并直接通过']) {
   assert(reviewDetailText.includes(expected) || reviewDetailHtml.includes(expected), `review detail should support manual text editing in a drawer: ${expected}`);
 }
 assert(
-  reviewDetailHtml.indexOf('class="review-reader-panel"') < reviewDetailHtml.indexOf('class="decision-dock"'),
-  'review detail should place the review text before the decision dock'
+  reviewDetailBodyHtml.indexOf('class="review-reader-panel"') < reviewDetailBodyHtml.indexOf('class="side-drawer review-decision-drawer"'),
+  'review detail should place the review text before the decision drawer'
 );
 assert(
-  reviewDetailHtml.indexOf('class="decision-dock"') < reviewDetailHtml.indexOf('class="side-drawer"'),
-  'review detail should move AI review into the right drawer after the decision surface'
+  reviewDetailBodyHtml.indexOf('class="side-drawer review-decision-drawer"') < reviewDetailBodyHtml.indexOf('id="ai-review-drawer'),
+  'review detail should keep the decision drawer before the AI review drawer'
 );
 assert(
   !reviewDetailHtml.includes('aria-label="审核快捷入口"'),
@@ -652,7 +654,7 @@ console.log(JSON.stringify({
     '工作台任务驱动',
     '项目列表按下一步扫描',
     '项目详情默认指挥台',
-    '审核列表分组与详情决策侧栏',
+    '审核列表分组与详情决策抽屉',
     '队列和日报运营反馈',
     '结果页统一返回上下文',
   ],

@@ -63,7 +63,7 @@ for (const [name, code, markers] of [
   ['projectList', projectListCode, ['小说项目列表', 'filter-chip', 'data-project-filter', 'URLSearchParams', 'content-visibility: auto', 'focus-visible', 'th-help', 'data-tooltip', '打开项目', '去审核', '看队列', '看日报']],
   ['queue', queueCode, ['queue-filter', 'data-queue-filter', '查看错误详情', '错误详情', 'URLSearchParams', '@media (max-width: 1024px)', 'font-variant-numeric: tabular-nums']],
   ['daily', dailyCode, ['页内目录', '今日是否需要处理', '今日概览', '失败摘要', '较慢调用', '快照历史']],
-  ['review', reviewCode, ['review-list-summary', 'review-detail-workspace', 'reader-body', 'decision-dock', 'side-drawer', 'manual-edit-drawer', 'data-review-manual-edit']],
+  ['review', reviewCode, ['review-list-summary', 'review-detail-workspace', 'reader-body', 'review-decision-drawer', 'side-drawer', 'manual-edit-drawer', 'data-review-manual-edit']],
 ]) {
   for (const marker of markers) {
     assert(code.includes(marker), `${name} renderer should include Phase 14 marker: ${marker}`);
@@ -275,9 +275,10 @@ assert(!/href=["'][^"']*novel-review-action/i.test(reviewListHtml), 'review list
 
 const reviewDetailHtml = runCodeNode('n8n/code/novel_render_review_html.js', [{...reviewBaseRow, page_mode: 'DETAIL'}])[0].json.html;
 const reviewDetailText = visibleText(reviewDetailHtml);
-for (const expected of ['审核内容', '人工决策', '审核依据', '连续性事实', '提交审核决策', '人工改稿', '打开智能审稿', '查看运行依据']) {
+for (const expected of ['审核内容', '人工审核', '审核依据', '连续性事实', '提交审核决策', '人工改稿', '智能审稿', '重新审稿']) {
   assert(reviewDetailText.includes(expected), `review detail visible text should include: ${expected}`);
 }
+assert(!reviewDetailText.includes('改稿与依据'), 'review decision drawer should not keep a separate support section');
 assert(reviewDetailHtml.includes('placeholder="通过可留空；要求重写即使留空，也会按智能审稿的问题与建议改稿；拒绝建议填写原因。"'), 'review detail should explain that rewrite uses AI review guidance by default');
 assert(!reviewDetailHtml.includes('data-reader-action="expand"'), 'review detail should not keep the removed reader toolbar expand action');
 assert(!reviewDetailHtml.includes('data-reader-action="collapse"'), 'review detail should not keep the removed reader toolbar collapse action');
@@ -286,7 +287,7 @@ assert(reviewDetailHtml.includes('method="POST"'), 'review detail should keep PO
 assert(reviewDetailHtml.includes('window.confirm'), 'review detail should keep confirmation popup logic');
 assert(reviewDetailHtml.includes('未填写人工补充意见，将按智能审稿的问题与建议重写'), 'rewrite empty comment warning should explain AI review guidance will be used');
 assert(reviewDetailHtml.includes('你还没有填写审核意见'), 'reject empty comment warning should remain strong');
-assert(reviewDetailHtml.includes('mobile-actions'), 'review detail should keep mobile review actions without exposing GET writes');
+assert(reviewDetailHtml.includes('review-decision-launcher'), 'review detail should expose drawer launcher without GET writes');
 assert(reviewDetailHtml.includes('decision-banner'), 'review detail should highlight the recommended human action');
 assert(reviewDetailHtml.includes('recommended-button'), 'review action buttons should visually mark the recommended action');
 assert(!/href=["'][^"']*novel-review-action/i.test(reviewDetailHtml), 'review detail must not expose GET action links');
