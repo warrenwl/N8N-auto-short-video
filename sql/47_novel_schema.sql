@@ -290,6 +290,7 @@ CREATE TABLE IF NOT EXISTS novel_generation_jobs (
     'GENERATE_CHAPTER',
     'REVIEW_CHAPTER',
     'REWRITE_CHAPTER',
+    'REVISE_CHAPTER_BLOCK',
     'NOTIFY_REVIEW'
   )),
   chapter_no INTEGER CHECK (chapter_no IS NULL OR chapter_no > 0),
@@ -352,7 +353,8 @@ CREATE TABLE IF NOT EXISTS novel_ai_runs (
     'PLAN_CHAPTER_DIRECTOR',
     'GENERATE_CHAPTER',
     'REVIEW_CHAPTER',
-    'REWRITE_CHAPTER'
+    'REWRITE_CHAPTER',
+    'REVISE_CHAPTER_BLOCK'
   )),
   model TEXT,
   prompt_version TEXT,
@@ -424,6 +426,116 @@ CREATE INDEX IF NOT EXISTS idx_novel_human_reviews_chapter_created_at
 CREATE INDEX IF NOT EXISTS idx_novel_human_reviews_project_created_at
   ON novel_human_reviews(project_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS novel_chapter_block_revisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
+  chapter_id UUID NOT NULL REFERENCES novel_chapters(id) ON DELETE CASCADE,
+  job_id UUID REFERENCES novel_generation_jobs(id) ON DELETE SET NULL,
+  applied_chapter_id UUID REFERENCES novel_chapters(id) ON DELETE SET NULL,
+  source_generation_version INTEGER NOT NULL CHECK (source_generation_version > 0),
+  action_type TEXT NOT NULL CHECK (action_type IN (
+    'modify',
+    'expand',
+    'condense',
+    'polish',
+    'continue',
+    'logic_fix',
+    'custom'
+  )),
+  range_lock TEXT NOT NULL DEFAULT 'selection_only' CHECK (range_lock IN (
+    'selection_only',
+    'adjacent_one',
+    'flag_later'
+  )),
+  paragraph_start INTEGER CHECK (paragraph_start IS NULL OR paragraph_start > 0),
+  paragraph_end INTEGER CHECK (paragraph_end IS NULL OR paragraph_end > 0),
+  selection_start_offset INTEGER CHECK (selection_start_offset IS NULL OR selection_start_offset >= 0),
+  selection_end_offset INTEGER CHECK (selection_end_offset IS NULL OR selection_end_offset >= 0),
+  anchor_prefix TEXT,
+  anchor_suffix TEXT,
+  selected_text TEXT NOT NULL,
+  selected_text_hash TEXT,
+  before_context TEXT,
+  after_context TEXT,
+  instruction TEXT NOT NULL,
+  replacement_text TEXT,
+  change_summary TEXT,
+  instruction_checklist JSONB NOT NULL DEFAULT '[]'::jsonb,
+  affects_later_text BOOLEAN NOT NULL DEFAULT FALSE,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN (
+    'PENDING',
+    'RUNNING',
+    'SUGGESTED',
+    'APPLIED',
+    'REJECTED',
+    'FAILED',
+    'SUPERSEDED'
+  )),
+  error_message TEXT,
+  created_by TEXT NOT NULL DEFAULT 'local_user',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (
+    paragraph_start IS NULL
+    OR paragraph_end IS NULL
+    OR paragraph_end >= paragraph_start
+  ),
+  CHECK (
+    selection_start_offset IS NULL
+    OR selection_end_offset IS NULL
+    OR selection_end_offset >= selection_start_offset
+  )
+);
+
+ALTER TABLE novel_chapter_block_revisions
+  ADD COLUMN IF NOT EXISTS selection_start_offset INTEGER;
+
+ALTER TABLE novel_chapter_block_revisions
+  ADD COLUMN IF NOT EXISTS selection_end_offset INTEGER;
+
+ALTER TABLE novel_chapter_block_revisions
+  ADD COLUMN IF NOT EXISTS anchor_prefix TEXT;
+
+ALTER TABLE novel_chapter_block_revisions
+  ADD COLUMN IF NOT EXISTS anchor_suffix TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'novel_block_revision_selection_offsets_check'
+  ) THEN
+    ALTER TABLE novel_chapter_block_revisions
+      ADD CONSTRAINT novel_block_revision_selection_offsets_check
+      CHECK (
+        (selection_start_offset IS NULL OR selection_start_offset >= 0)
+        AND (selection_end_offset IS NULL OR selection_end_offset >= 0)
+        AND (
+          selection_start_offset IS NULL
+          OR selection_end_offset IS NULL
+          OR selection_end_offset >= selection_start_offset
+        )
+      );
+  END IF;
+END;
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_novel_block_revisions_chapter_created_at
+  ON novel_chapter_block_revisions(chapter_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_novel_block_revisions_job_id
+  ON novel_chapter_block_revisions(job_id);
+
+CREATE INDEX IF NOT EXISTS idx_novel_block_revisions_status_created_at
+  ON novel_chapter_block_revisions(status, created_at DESC);
+
+DROP TRIGGER IF EXISTS trg_novel_chapter_block_revisions_updated_at ON novel_chapter_block_revisions;
+CREATE TRIGGER trg_novel_chapter_block_revisions_updated_at
+BEFORE UPDATE ON novel_chapter_block_revisions
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 CREATE TABLE IF NOT EXISTS novel_project_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
@@ -439,6 +551,7 @@ CREATE TABLE IF NOT EXISTS novel_project_events (
     'PROJECT_TARGET_UPDATED',
     'PROJECT_PAUSED',
     'PROJECT_RESUMED',
+    'CHAPTER_BLOCK_REVISION_SUGGESTED',
     'CHAPTER_MANUAL_EDIT_CREATED',
     'CHAPTER_MANUAL_EDIT_SAVED',
     'BIBLE_REGENERATE_REQUESTED',
@@ -532,6 +645,7 @@ ALTER TABLE novel_generation_jobs
     'GENERATE_CHAPTER',
     'REVIEW_CHAPTER',
     'REWRITE_CHAPTER',
+    'REVISE_CHAPTER_BLOCK',
     'NOTIFY_REVIEW'
   ));
 
@@ -545,7 +659,8 @@ ALTER TABLE novel_ai_runs
     'PLAN_CHAPTER_DIRECTOR',
     'GENERATE_CHAPTER',
     'REVIEW_CHAPTER',
-    'REWRITE_CHAPTER'
+    'REWRITE_CHAPTER',
+    'REVISE_CHAPTER_BLOCK'
   ));
 
 ALTER TABLE novel_human_reviews
@@ -573,6 +688,7 @@ ALTER TABLE novel_project_events
     'PROJECT_TARGET_UPDATED',
     'PROJECT_PAUSED',
     'PROJECT_RESUMED',
+    'CHAPTER_BLOCK_REVISION_SUGGESTED',
     'CHAPTER_MANUAL_EDIT_CREATED',
     'CHAPTER_MANUAL_EDIT_SAVED',
     'BIBLE_REGENERATE_REQUESTED',

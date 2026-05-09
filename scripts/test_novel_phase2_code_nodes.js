@@ -253,9 +253,11 @@ const builtDirector = runCodeNode('n8n/code/novel_build_glm_request.js', {
 const directorPrompt = builtDirector.llm_request_body.messages[1].content;
 assert.strictEqual(builtDirector.run_type, 'PLAN_CHAPTER_DIRECTOR');
 assert.strictEqual(builtDirector.prompt_key, 'director');
-assert.strictEqual(builtDirector.llm_request_body.max_tokens, 2200, 'director card should stay short to avoid long GLM calls');
+assert.strictEqual(builtDirector.llm_request_body.max_tokens, 3200, 'four-segment director cards should get enough room to avoid truncating segment_plan');
 assert(
   directorPrompt.includes('【正文分段数】4') &&
+    directorPrompt.includes('【segment_plan 数量硬规则】') &&
+    directorPrompt.includes('segment_no 必须从 1 连续编号到 4') &&
     directorPrompt.includes('segment_plan 数量必须严格等于') &&
     directorPrompt.includes('第10章身份揭露') &&
     directorPrompt.includes('最近审稿问题') &&
@@ -1234,6 +1236,18 @@ const reviewManualEdit = runCodeNode('n8n/code/novel_validate_review_manual_edit
 assert.strictEqual(reviewManualEdit.action, 'MANUAL_EDIT_REVIEW_CHAPTER');
 assert.strictEqual(reviewManualEdit.decision, 'APPROVE');
 assert.strictEqual(reviewManualEdit.body, '人工改稿正文');
+
+const reviewManualEditDefault = runCodeNode('n8n/code/novel_validate_review_manual_edit.js', {
+  json: {
+    body: {
+      chapter_id: '22222222-2222-2222-2222-222222222222',
+      review_token: 'review-token-phase2',
+      title: '人工改稿标题',
+      body: '人工改稿正文',
+    },
+  },
+})[0].json;
+assert.strictEqual(reviewManualEditDefault.decision, 'SAVE_ONLY');
 
 assertThrowsMessage(() => {
   runCodeNode('n8n/code/novel_validate_review_action.js', {

@@ -1,0 +1,646 @@
+{
+  "id": "novelBlockRevisionV1Workflow19",
+  "name": "19_小说审核局部修订Worker",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "execute-trigger-block-revision-19",
+      "name": "触发器 - 后台执行局部修订",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1040,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Claim a specific REVISE_CHAPTER_BLOCK job passed by Execute Workflow.\nWITH input AS (\n  SELECT\n    NULLIF($1::text, '') AS raw_job_id\n), claimed AS (\n  SELECT j.id\n  FROM novel_generation_jobs j\n  JOIN input ON true\n  JOIN novel_projects p ON p.id = j.project_id\n  JOIN novel_chapters c ON c.id = j.chapter_id\n  JOIN novel_chapter_block_revisions br ON br.job_id = j.id\n  WHERE j.job_type = 'REVISE_CHAPTER_BLOCK'\n    AND j.status = 'PENDING'\n    AND j.attempt_count < j.max_attempts\n    AND c.status = 'NEED_REVIEW'\n    AND br.status IN ('PENDING', 'FAILED')\n    AND p.status NOT IN ('PAUSED', 'ARCHIVED')\n    AND (\n      input.raw_job_id IS NULL\n      OR (\n        input.raw_job_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'\n        AND j.id = input.raw_job_id::uuid\n      )\n    )\n  ORDER BY j.created_at ASC\n  FOR UPDATE SKIP LOCKED\n  LIMIT 1\n), updated_job AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'RUNNING',\n    started_at = NOW(),\n    attempt_count = attempt_count + 1,\n    error_message = NULL,\n    updated_at = NOW()\n  FROM claimed\n  WHERE j.id = claimed.id\n  RETURNING j.*\n), updated_revision AS (\n  UPDATE novel_chapter_block_revisions br\n  SET\n    status = 'RUNNING',\n    error_message = NULL,\n    updated_at = NOW()\n  FROM updated_job j\n  WHERE br.job_id = j.id\n  RETURNING br.id AS revision_id\n)\nSELECT\n  updated_job.*,\n  (SELECT revision_id FROM updated_revision LIMIT 1) AS revision_id\nFROM updated_job;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id || \"\" ] }}"
+        }
+      },
+      "id": "postgres-claim-input-block-revision-19",
+      "name": "数据库 - 领取指定局部修订任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -820,
+        -460
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "manual-block-revision-19",
+      "name": "手动触发 - 局部修订",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1040,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Claim one pending REVISE_CHAPTER_BLOCK job.\nWITH claimed AS (\n  SELECT j.id\n  FROM novel_generation_jobs j\n  JOIN novel_projects p ON p.id = j.project_id\n  JOIN novel_chapters c ON c.id = j.chapter_id\n  JOIN novel_chapter_block_revisions br ON br.job_id = j.id\n  WHERE j.job_type = 'REVISE_CHAPTER_BLOCK'\n    AND j.status = 'PENDING'\n    AND j.attempt_count < j.max_attempts\n    AND c.status = 'NEED_REVIEW'\n    AND br.status IN ('PENDING', 'FAILED')\n    AND p.status NOT IN ('PAUSED', 'ARCHIVED')\n  ORDER BY j.created_at ASC\n  FOR UPDATE SKIP LOCKED\n  LIMIT 1\n), updated_job AS (\n  UPDATE novel_generation_jobs j\n  SET\n    status = 'RUNNING',\n    started_at = NOW(),\n    attempt_count = attempt_count + 1,\n    error_message = NULL,\n    updated_at = NOW()\n  FROM claimed\n  WHERE j.id = claimed.id\n  RETURNING j.*\n), updated_revision AS (\n  UPDATE novel_chapter_block_revisions br\n  SET\n    status = 'RUNNING',\n    error_message = NULL,\n    updated_at = NOW()\n  FROM updated_job j\n  WHERE br.job_id = j.id\n  RETURNING br.id AS revision_id\n)\nSELECT\n  updated_job.*,\n  (SELECT revision_id FROM updated_revision LIMIT 1) AS revision_id\nFROM updated_job;",
+        "options": {}
+      },
+      "id": "postgres-claim-block-revision-19",
+      "name": "数据库 - 领取局部修订任务",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -820,
+        -280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Read context for one block revision.\nSELECT\n  p.id AS project_id,\n  p.title AS novel_title,\n  p.genre,\n  p.audience,\n  p.style,\n  p.target_words_per_chapter,\n  j.id AS job_id,\n  'REVISE_CHAPTER_BLOCK'::text AS run_type,\n  original.id AS chapter_id,\n  original.id AS original_chapter_id,\n  original.chapter_no,\n  original.title AS chapter_title,\n  original.body AS chapter_body,\n  original.summary AS chapter_summary,\n  original.generation_version AS original_generation_version,\n  br.id AS revision_id,\n  br.action_type,\n  br.range_lock,\n  br.paragraph_start,\n  br.paragraph_end,\n  br.selection_start_offset,\n  br.selection_end_offset,\n  br.anchor_prefix,\n  br.anchor_suffix,\n  br.selected_text,\n  br.before_context,\n  br.after_context,\n  br.instruction,\n  o.id AS outline_id,\n  o.title AS outline_title,\n  o.summary AS outline_summary,\n  o.chapter_goal,\n  o.conflict_point,\n  o.emotional_point,\n  o.hook,\n  director.id AS director_card_id,\n  director.version AS director_card_version,\n  director.card_payload AS director_card,\n  jsonb_build_object(\n    'world_setting', b.world_setting,\n    'story_core', b.story_core,\n    'main_character', b.main_character,\n    'supporting_characters', b.supporting_characters,\n    'villain_setting', b.villain_setting,\n    'power_system', b.power_system,\n    'tone_rules', b.tone_rules,\n    'forbidden_rules', b.forbidden_rules,\n    'selling_points', b.selling_points\n  ) AS novel_bible,\n  COALESCE(facts.continuity_facts, '[]'::jsonb) AS continuity_facts\nFROM novel_generation_jobs j\nJOIN novel_chapter_block_revisions br ON br.job_id = j.id\nJOIN novel_chapters original ON original.id = br.chapter_id\nJOIN novel_projects p ON p.id = original.project_id\nJOIN novel_bibles b ON b.project_id = p.id\nLEFT JOIN novel_chapter_outlines o ON o.project_id = p.id AND o.chapter_no = original.chapter_no\nLEFT JOIN LATERAL (\n  SELECT d.*\n  FROM novel_chapter_director_cards d\n  WHERE d.project_id = p.id\n    AND d.chapter_no = original.chapter_no\n    AND d.is_current = TRUE\n    AND d.status = 'READY'\n  ORDER BY d.version DESC\n  LIMIT 1\n) director ON true\nLEFT JOIN LATERAL (\n  SELECT jsonb_agg(jsonb_build_object(\n    'fact_type', fact_type,\n    'fact_key', fact_key,\n    'fact_value', fact_value\n  ) ORDER BY created_at DESC) AS continuity_facts\n  FROM (\n    SELECT fact_type, fact_key, fact_value, created_at\n    FROM novel_continuity_facts\n    WHERE project_id = p.id\n      AND status = 'ACTIVE'\n      AND (\n        chapter_no IS NULL\n        OR chapter_no <= original.chapter_no\n        OR source = 'human'\n      )\n    ORDER BY created_at DESC\n    LIMIT 80\n  ) picked\n) facts ON true\nWHERE j.id = $1::uuid\n  AND j.project_id = $2::uuid\n  AND j.chapter_id = $3::uuid\n  AND br.id = $4::uuid\n  AND j.job_type = 'REVISE_CHAPTER_BLOCK'\n  AND j.status = 'RUNNING'\n  AND br.status = 'RUNNING'\n  AND original.status = 'NEED_REVIEW';",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id || $json.id, $json.project_id, $json.chapter_id, $json.revision_id ] }}"
+        }
+      },
+      "id": "postgres-read-block-revision-context-19",
+      "name": "数据库 - 读取局部修订上下文",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -600,
+        -280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Build Novel Block Revision GLM Request\n// Reads /config/novel_generation_config.jsonc and asks the model for a local replacement only.\n\nconst fs = require('fs');\n\nconst source = $json || {};\nconst configPath = $env.NOVEL_GENERATION_CONFIG_PATH || '/config/novel_generation_config.jsonc';\n\nconst fallbackConfig = {\n  model: 'glm-5.1',\n  temperature: 0.55,\n  max_tokens: 2200,\n  max_tokens_by_prompt: {\n    block_revision: 2200,\n  },\n  thinking: {\n    type: 'disabled',\n  },\n  prompt_version: 'novel-v1-20260504',\n  defaults: {\n    genre: '都市逆袭',\n    audience: '男频爽文读者',\n    style: '节奏快、冲突强、章末留钩子',\n    target_words_per_chapter: 2000,\n  },\n  system_prompts: {\n    block_revision: '你是一名商业网文局部改稿编辑。必须只输出严格 JSON。',\n  },\n};\n\nfunction stripJsonComments(text) {\n  return String(text || '')\n    .replace(/\\/\\*[\\s\\S]*?\\*\\//g, '')\n    .replace(/(^|[^:])\\/\\/.*$/gm, '$1');\n}\n\nfunction readConfig() {\n  try {\n    if (!fs.existsSync(configPath)) return fallbackConfig;\n    const data = JSON.parse(stripJsonComments(fs.readFileSync(configPath, 'utf8')));\n    return {\n      ...fallbackConfig,\n      ...data,\n      defaults: {\n        ...fallbackConfig.defaults,\n        ...(data.defaults || {}),\n      },\n      max_tokens_by_prompt: {\n        ...fallbackConfig.max_tokens_by_prompt,\n        ...(data.max_tokens_by_prompt || {}),\n      },\n      system_prompts: {\n        ...fallbackConfig.system_prompts,\n        ...(data.system_prompts || {}),\n      },\n    };\n  } catch (error) {\n    throw new Error(`读取小说生成配置失败：${configPath}；${error.message}`);\n  }\n}\n\nfunction stringifyForPrompt(value) {\n  if (value === undefined || value === null) return '';\n  if (typeof value === 'string') return value;\n  return JSON.stringify(value, null, 2);\n}\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nconst actionLabel = {\n  modify: '定向修改',\n  expand: '扩写',\n  condense: '压缩',\n  polish: '润色',\n  continue: '续写',\n  logic_fix: '逻辑修补',\n  custom: '自定义',\n};\n\nconst rangeLockLabel = {\n  selection_only: '只改选中内容',\n  adjacent_one: '允许连带前后一小句',\n  flag_later: '允许标记影响后文',\n};\n\nconst config = readConfig();\nconst defaults = config.defaults || {};\nconst startedAt = new Date().toISOString();\nconst runType = 'REVISE_CHAPTER_BLOCK';\nconst promptKey = 'block_revision';\nconst maxTokens = source.max_tokens ?? (config.max_tokens_by_prompt || {})[promptKey] ?? config.max_tokens ?? 2200;\nconst selectedText = text(source.selected_text);\nconst instruction = text(source.instruction);\nconst systemPrompt = config.system_prompts?.block_revision || fallbackConfig.system_prompts.block_revision;\n\nconst userPrompt = [\n  '请对小说待审稿的一个局部片段给出修订建议。',\n  '',\n  '【硬规则】',\n  '1. 只输出局部结果，禁止输出整章正文。',\n  '2. replacement_text 只能是用于替换或插入的文本，不要包含解释、Markdown、JSON 外壳以外的内容。',\n  '3. action_type 为 continue 时，replacement_text 是插入到选中原文之后的新内容；其他类型默认替换选中原文。',\n  '4. 不要改变未选中部分的事实、角色称呼和事件顺序。',\n  '5. 如果人工要求会牵动后文连续性，请把 affects_later_text 设为 true，并在 change_summary 中说明风险。',\n  '6. 必须落实人工要求；human_instruction_checklist 用数组逐条说明是否落实。',\n  '7. 必须只输出严格 JSON，字段只能是 replacement_text、change_summary、human_instruction_checklist、affects_later_text。',\n  '',\n  '【输出 JSON Schema】',\n  '{',\n  '  \"replacement_text\": \"\",',\n  '  \"change_summary\": \"\",',\n  '  \"human_instruction_checklist\": [],',\n  '  \"affects_later_text\": false',\n  '}',\n  '',\n  '【项目约束】',\n  `类型：${source.genre || defaults.genre || '未设置'}`,\n  `目标读者：${source.audience || defaults.audience || '未设置'}`,\n  `文风：${source.style || defaults.style || '未设置'}`,\n  `目标章字数：${source.target_words_per_chapter || defaults.target_words_per_chapter || '未设置'}`,\n  '',\n  '【章节信息】',\n  `项目：${source.novel_title || source.project_title || '未命名项目'}`,\n  `章节：第 ${source.chapter_no || ''} 章 ${source.chapter_title || ''}`,\n  `处理方式：${actionLabel[source.action_type] || source.action_type || '定向修改'}`,\n  `修改范围锁：${rangeLockLabel[source.range_lock] || source.range_lock || '只改选中内容'}`,\n  `段落范围：P${source.paragraph_start || '?'}${source.paragraph_end && source.paragraph_end !== source.paragraph_start ? `-P${source.paragraph_end}` : ''}`,\n  '',\n  '【选中原文】',\n  selectedText,\n  '',\n  '【前文上下文】',\n  text(source.before_context) || '无',\n  '',\n  '【后文上下文】',\n  text(source.after_context) || '无',\n  '',\n  '【人工要求】',\n  instruction,\n  '',\n  '【Bible / 关键设定】',\n  stringifyForPrompt(source.novel_bible || source.bible),\n  '',\n  '【导演台】',\n  stringifyForPrompt(source.director_card || source.director_card_payload || source.card_payload),\n  '',\n  '【关键事实】',\n  stringifyForPrompt(source.continuity_facts || source.facts),\n].join('\\n');\n\nconst messages = [\n  {role: 'system', content: systemPrompt},\n  {role: 'user', content: userPrompt},\n];\n\nreturn [{\n  json: {\n    ...source,\n    run_type: runType,\n    prompt_key: promptKey,\n    prompt_version: `${config.prompt_version || 'novel-v1'}-block-revision`,\n    prompt_config_path: configPath,\n    prompt_messages_json: JSON.stringify(messages),\n    ai_run_started_at: startedAt,\n    llm_request_body: {\n      model: source.model || config.model || 'glm-5.1',\n      temperature: source.temperature ?? config.temperature ?? 0.55,\n      max_tokens: maxTokens,\n      thinking: config.thinking || {type: 'disabled'},\n      response_format: {type: 'json_object'},\n      messages,\n    },\n  },\n}];\n"
+      },
+      "id": "code-build-block-revision-request-19",
+      "name": "代码 - 构建局部修订 GLM请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -380,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GLM_API_BASE_URL || \"https://open.bigmodel.cn/api/coding/paas/v4/chat/completions\" }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ \"Bearer \" + $env.GLM_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ { ...$json.llm_request_body, model: $env.GLM_MODEL || $json.llm_request_body.model } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 300000
+        },
+        "specifyBody": "json"
+      },
+      "id": "http-glm-block-revision-19",
+      "name": "HTTP请求 - 调用GLM局部修订",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -160,
+        -280
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Merge Block Revision GLM Response Context\nconst context = $('代码 - 构建局部修订 GLM请求').first().json;\nconst response = $json;\nreturn [{json: {...context, llm_response: response}}];"
+      },
+      "id": "code-merge-block-revision-response-19",
+      "name": "代码 - 合并局部修订 GLM响应上下文",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Merge Block Revision GLM Error Context\nconst context = $('代码 - 构建局部修订 GLM请求').first().json;\nconst errorPayload = $json || {};\nconst errorMessage = errorPayload.error?.message\n  || errorPayload.message\n  || errorPayload.error?.description\n  || errorPayload.description\n  || '局部修订模型调用失败';\nreturn [{json: {\n  ...context,\n  llm_response: errorPayload,\n  llm_response_json: JSON.stringify(errorPayload),\n  parsed_payload_json: '{}',\n  error_message: String(errorMessage),\n  ai_run_finished_at: new Date().toISOString(),\n}}];"
+      },
+      "id": "code-merge-block-revision-error-19",
+      "name": "代码 - 合并局部修订 GLM错误上下文",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node: Parse Novel Block Revision JSON\n// Extracts local revision output from an OpenAI-compatible response.\n\nfunction extractText(json) {\n  if (!json || typeof json !== 'object') return '';\n  if (json.llm_response?.choices?.[0]?.message?.content) return json.llm_response.choices[0].message.content;\n  if (json.choices?.[0]?.message?.content) return json.choices[0].message.content;\n  if (typeof json.output === 'string') return json.output;\n  if (typeof json.text === 'string') return json.text;\n  if (typeof json.response === 'string') return json.response;\n  if (typeof json.message?.content === 'string') return json.message.content;\n  return JSON.stringify(json);\n}\n\nfunction cleanJsonText(text) {\n  let s = String(text || '').trim();\n  s = s.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '').replace(/```$/i, '').trim();\n  const start = s.indexOf('{');\n  const end = s.lastIndexOf('}');\n  if (start >= 0 && end > start) s = s.slice(start, end + 1);\n  return s;\n}\n\nfunction asArray(value) {\n  if (Array.isArray(value)) return value;\n  if (value === undefined || value === null || value === '') return [];\n  return [value];\n}\n\nfunction text(value) {\n  return String(value ?? '').trim();\n}\n\nfunction normalizeChecklist(value) {\n  return asArray(value).map((item) => {\n    if (typeof item === 'string') {\n      return {\n        requirement: item,\n        fulfilled: true,\n        evidence: '',\n      };\n    }\n    if (!item || typeof item !== 'object') {\n      return {\n        requirement: String(item ?? ''),\n        fulfilled: false,\n        evidence: '',\n      };\n    }\n    return {\n      requirement: text(item.requirement || item.item || item.instruction || item.text),\n      fulfilled: item.fulfilled === undefined ? true : Boolean(item.fulfilled),\n      evidence: text(item.evidence || item.note || item.reason),\n    };\n  }).filter((item) => item.requirement);\n}\n\nconst source = $json || {};\nconst rawText = extractText(source);\nconst finishedAt = new Date().toISOString();\nconst llmResponseJson = source.llm_response_json || JSON.stringify(source.llm_response || {});\nlet parsed;\ntry {\n  parsed = JSON.parse(cleanJsonText(rawText));\n} catch (error) {\n  return [{\n    json: {\n      ...source,\n      block_revision_parse_success: false,\n      replacement_text: '',\n      change_summary: '',\n      instruction_checklist: [],\n      instruction_checklist_json: '[]',\n      affects_later_text: false,\n      parsed_payload_json: '{}',\n      llm_response_json: llmResponseJson,\n      raw_text: rawText,\n      error_message: `局部修订模型输出不是合法 JSON：${error.message}`,\n      ai_run_finished_at: finishedAt,\n    },\n  }];\n}\n\nconst replacementText = text(parsed.replacement_text);\nif (!replacementText) {\n  return [{\n    json: {\n      ...source,\n      block_revision_parse_success: false,\n      replacement_text: '',\n      change_summary: text(parsed.change_summary),\n      instruction_checklist: [],\n      instruction_checklist_json: '[]',\n      affects_later_text: false,\n      parsed_payload: parsed,\n      parsed_payload_json: JSON.stringify(parsed),\n      llm_response_json: llmResponseJson,\n      raw_text: rawText,\n      error_message: '局部修订模型没有返回 replacement_text。',\n      ai_run_finished_at: finishedAt,\n    },\n  }];\n}\n\nconst instructionChecklist = normalizeChecklist(parsed.human_instruction_checklist);\nconst affectsLaterText = parsed.affects_later_text === true || parsed.affects_later_text === 'true';\n\nreturn [{\n  json: {\n    ...source,\n    block_revision_parse_success: true,\n    replacement_text: replacementText,\n    change_summary: text(parsed.change_summary),\n    instruction_checklist: instructionChecklist,\n    instruction_checklist_json: JSON.stringify(instructionChecklist),\n    affects_later_text: affectsLaterText,\n    parsed_payload: parsed,\n    parsed_payload_json: JSON.stringify(parsed),\n    llm_response_json: llmResponseJson,\n    raw_text: rawText,\n    ai_run_finished_at: finishedAt,\n  },\n}];\n"
+      },
+      "id": "code-parse-block-revision-response-19",
+      "name": "代码 - 解析局部修订 GLM响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "block-revision-parse-success",
+              "leftValue": "={{ $json.block_revision_parse_success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-block-revision-parse-success-19",
+      "name": "条件判断 - 局部修订解析成功",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        -280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Record one block revision AI run.\nWITH input AS (\n  SELECT\n    NULLIF($12, '')::timestamptz AS started_at,\n    NULLIF($13, '')::timestamptz AS finished_at\n)\nINSERT INTO novel_ai_runs (\n  project_id,\n  chapter_id,\n  job_id,\n  run_type,\n  model,\n  prompt_version,\n  request_payload,\n  response_payload,\n  parsed_payload,\n  success,\n  error_message,\n  started_at,\n  finished_at,\n  duration_ms\n)\nSELECT\n  NULLIF($1, '')::uuid,\n  NULLIF($2, '')::uuid,\n  NULLIF($3, '')::uuid,\n  $4,\n  NULLIF($5, ''),\n  NULLIF($6, ''),\n  COALESCE(NULLIF($7, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($8, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($9, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($10::text, '')::boolean, TRUE),\n  NULLIF($11, ''),\n  input.started_at,\n  input.finished_at,\n  CASE\n    WHEN input.started_at IS NOT NULL AND input.finished_at IS NOT NULL\n      THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (input.finished_at - input.started_at)) * 1000)::integer)\n    ELSE NULL\n  END\nFROM input\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id, $json.original_chapter_id || $json.chapter_id, $json.job_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify($json.llm_request_body), $json.llm_response_json, $json.parsed_payload_json, true, \"\", $json.ai_run_started_at, $json.ai_run_finished_at ] }}"
+        }
+      },
+      "id": "postgres-record-block-revision-ai-run-19",
+      "name": "数据库 - 记录局部修订 AI调用",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        -360
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Record one block revision AI run.\nWITH input AS (\n  SELECT\n    NULLIF($12, '')::timestamptz AS started_at,\n    NULLIF($13, '')::timestamptz AS finished_at\n)\nINSERT INTO novel_ai_runs (\n  project_id,\n  chapter_id,\n  job_id,\n  run_type,\n  model,\n  prompt_version,\n  request_payload,\n  response_payload,\n  parsed_payload,\n  success,\n  error_message,\n  started_at,\n  finished_at,\n  duration_ms\n)\nSELECT\n  NULLIF($1, '')::uuid,\n  NULLIF($2, '')::uuid,\n  NULLIF($3, '')::uuid,\n  $4,\n  NULLIF($5, ''),\n  NULLIF($6, ''),\n  COALESCE(NULLIF($7, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($8, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($9, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($10::text, '')::boolean, TRUE),\n  NULLIF($11, ''),\n  input.started_at,\n  input.finished_at,\n  CASE\n    WHEN input.started_at IS NOT NULL AND input.finished_at IS NOT NULL\n      THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (input.finished_at - input.started_at)) * 1000)::integer)\n    ELSE NULL\n  END\nFROM input\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id, $json.original_chapter_id || $json.chapter_id, $json.job_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify($json.llm_request_body), $json.llm_response_json, $json.parsed_payload_json, false, $json.error_message, $json.ai_run_started_at, $json.ai_run_finished_at ] }}"
+        }
+      },
+      "id": "postgres-record-block-revision-ai-run-failed-19",
+      "name": "数据库 - 记录局部修订 AI调用失败",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Record one block revision AI run.\nWITH input AS (\n  SELECT\n    NULLIF($12, '')::timestamptz AS started_at,\n    NULLIF($13, '')::timestamptz AS finished_at\n)\nINSERT INTO novel_ai_runs (\n  project_id,\n  chapter_id,\n  job_id,\n  run_type,\n  model,\n  prompt_version,\n  request_payload,\n  response_payload,\n  parsed_payload,\n  success,\n  error_message,\n  started_at,\n  finished_at,\n  duration_ms\n)\nSELECT\n  NULLIF($1, '')::uuid,\n  NULLIF($2, '')::uuid,\n  NULLIF($3, '')::uuid,\n  $4,\n  NULLIF($5, ''),\n  NULLIF($6, ''),\n  COALESCE(NULLIF($7, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($8, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($9, '')::jsonb, '{}'::jsonb),\n  COALESCE(NULLIF($10::text, '')::boolean, TRUE),\n  NULLIF($11, ''),\n  input.started_at,\n  input.finished_at,\n  CASE\n    WHEN input.started_at IS NOT NULL AND input.finished_at IS NOT NULL\n      THEN GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (input.finished_at - input.started_at)) * 1000)::integer)\n    ELSE NULL\n  END\nFROM input\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.project_id, $json.original_chapter_id || $json.chapter_id, $json.job_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify($json.llm_request_body), $json.llm_response_json, $json.parsed_payload_json, false, $json.error_message, $json.ai_run_started_at, $json.ai_run_finished_at ] }}"
+        }
+      },
+      "id": "postgres-record-block-revision-http-ai-run-failed-19",
+      "name": "数据库 - 记录局部修订调用失败AI",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Save the AI suggestion to the block revision record.\nSELECT *\nFROM mark_novel_chapter_block_revision_suggested(\n  $1::uuid,\n  $2::uuid,\n  $3,\n  NULLIF($4, ''),\n  COALESCE(NULLIF($5, '')::jsonb, '[]'::jsonb),\n  COALESCE(NULLIF($6::text, '')::boolean, FALSE),\n  COALESCE(NULLIF($7, '')::jsonb, '{}'::jsonb)\n);",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析局部修订 GLM响应\").first().json.revision_id, $(\"代码 - 解析局部修订 GLM响应\").first().json.job_id, $(\"代码 - 解析局部修订 GLM响应\").first().json.replacement_text, $(\"代码 - 解析局部修订 GLM响应\").first().json.change_summary, $(\"代码 - 解析局部修订 GLM响应\").first().json.instruction_checklist_json, $(\"代码 - 解析局部修订 GLM响应\").first().json.affects_later_text, $(\"代码 - 解析局部修订 GLM响应\").first().json.parsed_payload_json ] }}"
+        }
+      },
+      "id": "postgres-save-block-revision-suggestion-19",
+      "name": "数据库 - 保存局部修订建议",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        940,
+        -360
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark the block revision record failed.\nSELECT *\nFROM mark_novel_chapter_block_revision_failed(\n  $1::uuid,\n  $2::uuid,\n  $3\n);",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析局部修订 GLM响应\").first().json.revision_id || $json.revision_id, $(\"代码 - 解析局部修订 GLM响应\").first().json.job_id || $json.job_id, $(\"代码 - 解析局部修订 GLM响应\").first().json.error_message || $json.error_message ] }}"
+        }
+      },
+      "id": "postgres-mark-block-revision-failed-19",
+      "name": "数据库 - 标记局部修订失败",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        940,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark the block revision record failed.\nSELECT *\nFROM mark_novel_chapter_block_revision_failed(\n  $1::uuid,\n  $2::uuid,\n  $3\n);",
+        "options": {
+          "queryReplacement": "={{ [ $json.revision_id, $json.job_id, $json.error_message ] }}"
+        }
+      },
+      "id": "postgres-mark-block-revision-http-failed-19",
+      "name": "数据库 - 标记局部修订调用失败",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        500,
+        -20
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark a block revision job succeeded.\nUPDATE novel_generation_jobs\nSET\n  status = 'SUCCEEDED',\n  error_message = NULL,\n  finished_at = NOW(),\n  updated_at = NOW()\nWHERE id = $1::uuid\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析局部修订 GLM响应\").first().json.job_id ] }}"
+        }
+      },
+      "id": "postgres-mark-block-revision-success-19",
+      "name": "数据库 - 标记局部修订任务成功",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1160,
+        -360
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark a block revision job failed.\nUPDATE novel_generation_jobs\nSET\n  status = 'FAILED',\n  error_message = COALESCE(NULLIF($2, ''), '局部修订任务失败'),\n  finished_at = NOW(),\n  updated_at = NOW()\nWHERE id = $1::uuid\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $(\"代码 - 解析局部修订 GLM响应\").first().json.job_id || $json.job_id, $(\"代码 - 解析局部修订 GLM响应\").first().json.error_message || $json.error_message ] }}"
+        }
+      },
+      "id": "postgres-mark-block-revision-job-failed-19",
+      "name": "数据库 - 标记局部修订任务失败",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1160,
+        -80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Mark a block revision job failed.\nUPDATE novel_generation_jobs\nSET\n  status = 'FAILED',\n  error_message = COALESCE(NULLIF($2, ''), '局部修订任务失败'),\n  finished_at = NOW(),\n  updated_at = NOW()\nWHERE id = $1::uuid\nRETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.job_id, $json.error_message ] }}"
+        }
+      },
+      "id": "postgres-mark-block-revision-http-job-failed-19",
+      "name": "数据库 - 标记局部修订调用任务失败",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        720,
+        -20
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgresVideoAgent",
+          "name": "Postgres video_agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "领取 `REVISE_CHAPTER_BLOCK`，基于选区、上下文、Bible、事实和导演台生成局部建议。AI 输出只写入 `novel_chapter_block_revisions`，不直接改章节。",
+        "height": 180,
+        "width": 340,
+        "color": 4
+      },
+      "id": "note-block-revision-19",
+      "name": "说明 - 局部修订 worker",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1040,
+        -520
+      ]
+    }
+  ],
+  "connections": {
+    "触发器 - 后台执行局部修订": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取指定局部修订任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取指定局部修订任务": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 读取局部修订上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "手动触发 - 局部修订": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 领取局部修订任务",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 领取局部修订任务": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 读取局部修订上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 读取局部修订上下文": {
+      "main": [
+        [
+          {
+            "node": "代码 - 构建局部修订 GLM请求",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 构建局部修订 GLM请求": {
+      "main": [
+        [
+          {
+            "node": "HTTP请求 - 调用GLM局部修订",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP请求 - 调用GLM局部修订": {
+      "main": [
+        [
+          {
+            "node": "代码 - 合并局部修订 GLM响应上下文",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "代码 - 合并局部修订 GLM错误上下文",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 合并局部修订 GLM响应上下文": {
+      "main": [
+        [
+          {
+            "node": "代码 - 解析局部修订 GLM响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 合并局部修订 GLM错误上下文": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 记录局部修订调用失败AI",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "数据库 - 标记局部修订调用失败",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "数据库 - 标记局部修订调用任务失败",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "代码 - 解析局部修订 GLM响应": {
+      "main": [
+        [
+          {
+            "node": "条件判断 - 局部修订解析成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "条件判断 - 局部修订解析成功": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 记录局部修订 AI调用",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "数据库 - 记录局部修订 AI调用失败",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 记录局部修订 AI调用": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 保存局部修订建议",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 保存局部修订建议": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记局部修订任务成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 记录局部修订 AI调用失败": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记局部修订失败",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "数据库 - 标记局部修订失败": {
+      "main": [
+        [
+          {
+            "node": "数据库 - 标记局部修订任务失败",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "novelBlockRevisionV1Workflow19-v1",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "description": "Novel workflow V1 generated from project SQL/code files."
+}

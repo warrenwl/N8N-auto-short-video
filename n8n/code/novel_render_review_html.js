@@ -69,6 +69,7 @@ const jobTypeLabel = {
   GENERATE_CHAPTER: '生成章节',
   REVIEW_CHAPTER: '智能审稿',
   REWRITE_CHAPTER: '重写章节',
+  REVISE_CHAPTER_BLOCK: '局部修订',
   NOTIFY_REVIEW: '发送审核提醒',
 };
 
@@ -90,6 +91,8 @@ const statusLabel = {
   REWRITE_REQUESTED: '已要求重写',
   SUPERSEDED: '已被新版本替代',
   REJECTED: '已拒绝',
+  SUGGESTED: '待确认建议',
+  APPLIED: '已应用',
   PASS: '可通过',
   MANUAL_REVIEW: '需人工判断',
   REWRITE: '建议重写',
@@ -106,6 +109,22 @@ const humanActionLabel = {
   REJECT: '拒绝',
   PAUSE_PROJECT: '暂停项目',
   MANUAL_EDIT: '人工改稿',
+};
+
+const blockActionLabel = {
+  modify: '定向修改',
+  expand: '扩写',
+  condense: '压缩',
+  polish: '润色',
+  continue: '续写',
+  logic_fix: '逻辑修补',
+  custom: '自定义',
+};
+
+const rangeLockLabel = {
+  selection_only: '只改选区',
+  adjacent_one: '允许前后一小句',
+  flag_later: '可标记影响后文',
 };
 
 const issueTypeLabel = {
@@ -151,10 +170,23 @@ function scoreClass(score) {
   return 'bad';
 }
 
+function hasAiReview(row) {
+  return Boolean(row.review_created_at || row.ai_run_id || Number(row.total_score || 0) > 0);
+}
+
+function scoreText(row) {
+  return hasAiReview(row) ? String(Number(row.total_score || 0) || '-') : '-';
+}
+
+function scoreTone(row) {
+  return hasAiReview(row) ? scoreClass(row.total_score) : 'muted';
+}
+
 function statusClass(status) {
   const value = String(status || '').toUpperCase();
   if (['SUCCESS', 'SUCCEEDED', 'SENT', 'ACTIVE', 'APPROVED', 'PASS', 'SKIPPED_DISABLED', 'SKIPPED_NO_SENDKEY'].includes(value)) return 'good';
-  if (['PENDING', 'RUNNING', 'MANUAL_REVIEW', 'REWRITE', 'REQUEST_REWRITE', 'NEED_REVIEW', 'AI_REVIEWED', 'DRAFT_READY'].includes(value)) return 'warn';
+  if (['APPLIED'].includes(value)) return 'good';
+  if (['PENDING', 'RUNNING', 'SUGGESTED', 'MANUAL_REVIEW', 'REWRITE', 'REQUEST_REWRITE', 'NEED_REVIEW', 'AI_REVIEWED', 'DRAFT_READY'].includes(value)) return 'warn';
   if (['FAILED', 'REJECTED', 'REJECT', 'SENT_OR_UNKNOWN'].includes(value)) return 'bad';
   return 'muted';
 }
@@ -212,7 +244,268 @@ function humanReviewItems(value) {
   }).join('');
 }
 
+function blockRevisionItems(value) {
+  const records = parseJsonMaybe(value, []);
+  return Array.isArray(records) ? records : [];
+}
+
+function splitChapterParagraphs(value) {
+  return chapterParagraphs(value).map((paragraph) => paragraph.text);
+}
+
+function chapterParagraphs(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const paragraphs = [];
+  const matcher = /[^\n]+/g;
+  let match = matcher.exec(text);
+  while (match) {
+    const raw = match[0];
+    const leadingTrim = raw.length - raw.trimStart().length;
+    const trimmed = raw.trim();
+    if (trimmed) {
+      const start = match.index + leadingTrim;
+      paragraphs.push({
+        text: trimmed,
+        start,
+        end: start + trimmed.length,
+      });
+    }
+    match = matcher.exec(text);
+  }
+  return paragraphs;
+}
+
+function blockRevisionChecklist(value) {
+  const items = parseJsonMaybe(value, []);
+  if (!Array.isArray(items) || !items.length) return '';
+  return `
+    <ul class="block-checklist">
+      ${items.map((item) => {
+        if (typeof item === 'string') return `<li>${escapeHtml(item)}</li>`;
+        const requirement = item.requirement || item.item || item.instruction || item.text || '要求';
+        const fulfilled = item.fulfilled === false ? '未确认' : '已落实';
+        const evidence = item.evidence || item.note || item.reason || '';
+        return `<li><strong>${escapeHtml(fulfilled)}</strong>${escapeHtml(requirement)}${evidence ? `<span>${escapeHtml(evidence)}</span>` : ''}</li>`;
+      }).join('')}
+    </ul>`;
+}
+
+function blockTextDiff(original, replacement) {
+  const before = String(original || '');
+  const after = String(replacement || '');
+  if (!before || !after) return '';
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) {
+    start += 1;
+  }
+  let endBefore = before.length;
+  let endAfter = after.length;
+  while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) {
+    endBefore -= 1;
+    endAfter -= 1;
+  }
+  const prefix = before.slice(0, start);
+  const removed = before.slice(start, endBefore);
+  const added = after.slice(start, endAfter);
+  const suffix = before.slice(endBefore);
+  if (!removed && !added) return '<p class="muted">建议文本与选中原文一致。</p>';
+  return `
+    <div class="block-diff" aria-label="局部修订对比">
+      <strong>修改对比</strong>
+      <p>
+        ${prefix ? `<span>${escapeHtml(prefix)}</span>` : ''}
+        ${removed ? `<del>${escapeHtml(removed)}</del>` : ''}
+        ${added ? `<ins>${escapeHtml(added)}</ins>` : ''}
+        ${suffix ? `<span>${escapeHtml(suffix)}</span>` : ''}
+      </p>
+    </div>`;
+}
+
+function paragraphReader(row, id) {
+  const paragraphs = chapterParagraphs(row.body || '');
+  if (!paragraphs.length) return '<div class="reader-body paragraph-reader"><p class="empty-paragraph">正文为空</p></div>';
+  return `
+	    <div
+	      class="reader-body paragraph-reader"
+	      data-block-reader
+	      data-workbench-id="${escapeHtml(id)}"
+	      data-chapter-id="${escapeHtml(row.chapter_id || row.id || '')}"
+	      data-review-token="${escapeHtml(row.review_token || '')}"
+	    >
+	      <textarea data-chapter-body hidden readonly>${escapeHtml(row.body || '')}</textarea>
+	      ${paragraphs.map((paragraph, index) => {
+        const paragraphNo = index + 1;
+        return `
+          <section
+            id="review-paragraph-${paragraphNo}"
+            class="reader-paragraph"
+            data-paragraph-no="${paragraphNo}"
+            data-body-start="${escapeHtml(paragraph.start)}"
+            data-body-end="${escapeHtml(paragraph.end)}"
+          >
+            <span class="paragraph-label" aria-hidden="true">P${paragraphNo}</span>
+            <p data-paragraph-text>${escapeHtml(paragraph.text)}</p>
+            <button
+              class="paragraph-revise-button"
+              type="button"
+              data-revise-paragraph
+              data-action-type="modify"
+              aria-label="对 P${paragraphNo} 发起局部修订"
+            >局部修订</button>
+          </section>`;
+      }).join('')}
+	    </div>
+	    <div class="selection-toolbar" data-selection-toolbar hidden>
+	      <span class="selection-summary" data-selection-summary>已选片段</span>
+	      ${Object.entries(blockActionLabel).filter(([key]) => key !== 'custom').map(([key, value]) => `
+	        <button type="button" data-selection-action="${escapeHtml(key)}">${escapeHtml(value)}</button>
+	      `).join('')}
+    </div>`;
+}
+
+function blockRevisionCard(revision, row) {
+  const status = String(revision.status || '').toUpperCase();
+  const isSuggested = status === 'SUGGESTED';
+  const isLive = status === 'PENDING' || status === 'RUNNING';
+  const canRegenerate = ['SUGGESTED', 'FAILED', 'REJECTED'].includes(status);
+  const revisionId = escapeHtml(revision.id || '');
+  const reviewToken = escapeHtml(row.review_token || '');
+  const action = escapeHtml(label(blockActionLabel, revision.action_type, revision.action_type || '局部修订'));
+  const range = escapeHtml(label(rangeLockLabel, revision.range_lock, revision.range_lock || '只改选区'));
+  const selectedText = revision.selected_text || '';
+  const replacementText = revision.replacement_text || '';
+  const summary = revision.change_summary || '';
+  const error = localizeError(revision.error_message);
+  const affectedWarning = revision.affects_later_text === true || revision.affects_later_text === 'true'
+    ? '<p class="block-risk">这条建议可能影响后文连续性，建议本章全部局部修改完成后再重新审稿。</p>'
+    : '';
+  const liveNote = isLive
+    ? '<div class="block-live" data-block-live><strong>建议生成中</strong><span data-block-refresh-countdown>页面会自动刷新建议状态。</span></div>'
+    : '';
+  const form = (isSuggested || canRegenerate) ? `
+    <form class="block-apply-form" method="POST" action="/webhook/novel-review-block-apply" data-block-revision-apply>
+      <input type="hidden" name="revision_id" value="${revisionId}" />
+      <input type="hidden" name="review_token" value="${reviewToken}" />
+      <input type="hidden" name="reviewer" value="local_user" />
+      ${isSuggested ? `
+        ${blockTextDiff(selectedText, replacementText)}
+        <label>
+          <span>建议文本</span>
+          <textarea name="replacement_text" rows="5" readonly data-block-replacement data-original-replacement="${escapeHtml(replacementText)}">${escapeHtml(replacementText)}</textarea>
+        </label>
+        <div class="block-apply-row">
+          <button type="submit" name="action" value="apply" data-apply-original>应用建议</button>
+          <button class="secondary" type="button" data-enable-block-edit>修改后应用</button>
+          <button class="secondary" type="submit" name="action" value="apply_edited" data-apply-edited hidden>确认应用修改</button>
+          <button class="secondary" type="button" data-reset-block-edit hidden>还原 AI 建议</button>
+          <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
+          <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
+          <button class="warn-button" type="submit" name="action" value="request_rewrite">转为整章重写意见</button>
+        </div>` : `
+        <div class="block-apply-row">
+          <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
+          <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
+        </div>`}
+    </form>` : '';
+
+  return `
+    <article class="block-revision-card ${escapeHtml(statusClass(status))}" data-block-status="${escapeHtml(status)}">
+      <div class="block-card-head">
+        <strong>${action}</strong>
+        ${badge(status, '未知状态')}
+      </div>
+      <p class="block-meta">${range} / ${escapeHtml(formatLocalTime(revision.created_at))}</p>
+      <dl class="block-revision-dl">
+        <dt>选中原文</dt><dd>${escapeHtml(selectedText || '-')}</dd>
+        <dt>人工要求</dt><dd>${escapeHtml(revision.instruction || '-')}</dd>
+        ${summary ? `<dt>修改摘要</dt><dd>${escapeHtml(summary)}</dd>` : ''}
+      </dl>
+      ${replacementText && !isSuggested ? `<div class="block-replacement"><strong>建议文本</strong><p>${escapeHtml(replacementText)}</p></div>` : ''}
+      ${affectedWarning}
+      ${liveNote}
+      ${blockRevisionChecklist(revision.instruction_checklist)}
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
+      ${form}
+    </article>`;
+}
+
+function blockRevisionPanel(row, id) {
+  const revisions = blockRevisionItems(row.block_revisions);
+  const token = escapeHtml(row.review_token || '');
+  const chapterId = escapeHtml(row.chapter_id || row.id || '');
+  const panelId = `block-revision-panel-${id}`;
+  const activeRevisionCount = revisions.filter((revision) => ['PENDING', 'RUNNING', 'SUGGESTED', 'FAILED'].includes(String(revision.status || '').toUpperCase())).length;
+  const panelStateClass = activeRevisionCount ? ' is-open has-active-revisions' : '';
+  return `
+    <section
+      class="block-revision-panel${panelStateClass}"
+      id="${escapeHtml(panelId)}"
+      data-block-revision-panel
+      data-workbench-id="${escapeHtml(id)}"
+      aria-label="局部修订工作台"
+    >
+      <div class="block-panel-head" data-block-panel-toggle role="button" tabindex="0" aria-expanded="${activeRevisionCount ? 'true' : 'false'}">
+        <div>
+          <p class="ops-kicker">局部修订工作台</p>
+          <strong>选区建议</strong>
+        </div>
+        <div class="block-panel-head-actions">
+          <span data-block-panel-state>${activeRevisionCount ? `待处理 ${activeRevisionCount}` : '未选择'}</span>
+          <button class="block-panel-close" type="button" data-close-block-panel aria-label="收起局部修订工作台">收起</button>
+        </div>
+      </div>
+      <div class="block-panel-body">
+        <form class="block-revision-form" method="POST" action="/webhook/novel-review-block-revise" data-block-revision-form>
+          <input type="hidden" name="chapter_id" value="${chapterId}" />
+          <input type="hidden" name="review_token" value="${token}" />
+          <input type="hidden" name="reviewer" value="local_user" />
+          <input type="hidden" name="selected_text" data-block-selected-text />
+          <input type="hidden" name="paragraph_start" data-block-paragraph-start />
+          <input type="hidden" name="paragraph_end" data-block-paragraph-end />
+          <input type="hidden" name="selection_start_offset" data-block-selection-start />
+          <input type="hidden" name="selection_end_offset" data-block-selection-end />
+          <input type="hidden" name="anchor_prefix" data-block-anchor-prefix />
+          <input type="hidden" name="anchor_suffix" data-block-anchor-suffix />
+          <input type="hidden" name="before_context" data-block-before-context />
+          <input type="hidden" name="after_context" data-block-after-context />
+          <div class="block-step-label"><span>1</span><strong>选中原文</strong></div>
+          <div class="selected-preview" data-block-selected-preview>未选择片段</div>
+          <div class="block-step-label"><span>2</span><strong>修改要求</strong></div>
+          <div class="block-form-grid">
+            <label>
+              <span>处理方式</span>
+              <select name="action_type" data-block-action-select>
+                ${Object.entries(blockActionLabel).map(([value, labelText]) => `<option value="${escapeHtml(value)}">${escapeHtml(labelText)}</option>`).join('')}
+              </select>
+            </label>
+            <label>
+              <span>范围锁</span>
+              <select name="range_lock">
+                ${Object.entries(rangeLockLabel).map(([value, labelText]) => `<option value="${escapeHtml(value)}">${escapeHtml(labelText)}</option>`).join('')}
+              </select>
+            </label>
+          </div>
+          <label>
+            <span>人工要求</span>
+            <textarea name="instruction" rows="3" placeholder="写清楚你希望这一块怎么改。"></textarea>
+          </label>
+          <p class="form-hint" data-block-revision-feedback aria-live="polite">提交后只生成局部建议，确认应用时才会生成新候选稿。</p>
+          <button type="submit">生成局部建议</button>
+        </form>
+        <div class="block-revision-results">
+          <div class="block-step-label"><span>3</span><strong>AI 建议与确认</strong></div>
+          <div class="block-revision-list" data-block-revision-list>
+            ${revisions.length
+              ? revisions.map((revision) => blockRevisionCard(revision, row)).join('')
+              : '<p class="muted">暂无局部修订记录</p>'}
+          </div>
+        </div>
+      </div>
+    </section>`;
+}
+
 function recommendation(row) {
+  if (!hasAiReview(row)) return '待智能审稿';
   const verdict = String(row.verdict || 'MANUAL_REVIEW').toUpperCase();
   const score = Number(row.total_score || 0);
   if (verdict === 'PASS' && score >= 85) return '建议通过';
@@ -334,21 +627,21 @@ function reviewEvidence(row) {
 }
 
 function reviewScoreBrief(row) {
-  const score = Number(row.total_score || 0);
+  const hasReview = hasAiReview(row);
   const rec = recommendation(row);
   const recClass = recommendationClass(row);
   return `
     <div class="review-brief" aria-label="审核快速判断">
       <span class="recommendation-pill ${escapeHtml(recClass)}">${escapeHtml(rec)}</span>
-      <span>智能评分 ${escapeHtml(score || '-')}</span>
-      <span>问题 ${escapeHtml(itemCount(row.issues))}</span>
-      <span>建议 ${escapeHtml(itemCount(row.suggestions))}</span>
+      <span>${hasReview ? `智能评分 ${escapeHtml(scoreText(row))}` : '智能审稿 待触发'}</span>
+      <span>问题 ${escapeHtml(hasReview ? itemCount(row.issues) : '-')}</span>
+      <span>建议 ${escapeHtml(hasReview ? itemCount(row.suggestions) : '-')}</span>
       <span>候选事实 ${escapeHtml(row.pending_fact_count ?? 0)}</span>
     </div>`;
 }
 
 function aiReviewDrawer(row, drawerId, opsId) {
-  const score = Number(row.total_score || 0);
+  const hasReview = hasAiReview(row);
   const transition = transitionReview(row);
   return `
     <dialog class="side-drawer" id="${escapeHtml(drawerId)}" aria-label="智能审稿抽屉">
@@ -362,8 +655,8 @@ function aiReviewDrawer(row, drawerId, opsId) {
           <button class="icon-button" type="button" data-close-dialog aria-label="关闭智能审稿">×</button>
         </header>
         <section class="drawer-section ai-score-card">
-          <div class="score ${scoreClass(score)}">${escapeHtml(score || '-')}</div>
-          ${reviewSummary(row)}
+          <div class="score ${escapeHtml(scoreTone(row))}">${escapeHtml(scoreText(row))}</div>
+          ${hasReview ? reviewSummary(row) : '<p class="muted">这一稿是局部修订后的候选版本，暂未重新智能审稿。你可以继续局部修改，完成后从右侧提交重新审稿。</p>'}
         </section>
         <section class="drawer-section">
           <h3>问题</h3>
@@ -427,9 +720,10 @@ function manualReviewEditDrawer(row, drawerId) {
             <span>改稿说明</span>
             <textarea name="comment" rows="3" placeholder="例如：拆分对话段落，补足情绪转折，修正错别字。"></textarea>
           </label>
-          <p class="form-hint" data-manual-edit-feedback>保存为候选稿会重新进入智能审稿；直接通过会立刻成为正式版本。</p>
+          <p class="form-hint" data-manual-edit-feedback>保存继续修改会留在当前章节，不会自动审稿；保存并重新审稿会进入智能审稿队列。</p>
           <div class="manual-button-row">
-            <button type="submit" name="decision" value="resubmit">保存改稿并送审</button>
+            <button type="submit" name="decision" value="save_only">保存继续修改</button>
+            <button class="secondary" type="submit" name="decision" value="resubmit">保存并重新审稿</button>
             <button class="secondary" type="submit" name="decision" value="approve">改稿并直接通过</button>
           </div>
         </form>
@@ -443,6 +737,10 @@ function actionForm(row, className) {
   const actionUrl = '/webhook/novel-review-action';
   const recClass = recommendationClass(row);
   const recText = recommendation(row);
+  const hasReview = hasAiReview(row);
+  const decisionHint = hasReview
+    ? `当前推荐：${escapeHtml(recText)}。要求重写会自动携带右侧智能审稿的问题与建议。`
+    : '当前稿件尚未重新智能审稿；可以继续局部修改，完成后重新审稿，或确认无误后直接通过。';
   return `
     <form class="actions ${className}" method="POST" action="${actionUrl}">
       <input type="hidden" name="chapter_id" value="${chapterId}" />
@@ -450,12 +748,13 @@ function actionForm(row, className) {
       <input type="hidden" name="reviewer" value="local_user" />
       <div class="action-card-head">
         <strong>提交审核决策</strong>
-        <span>当前推荐：${escapeHtml(recText)}。要求重写会自动携带右侧智能审稿的问题与建议。</span>
+        <span>${decisionHint}</span>
       </div>
       <label>
-        <textarea name="comment" rows="3" aria-label="审核意见" placeholder="通过可留空；要求重写即使留空，也会按智能审稿的问题与建议改稿；拒绝建议填写原因。"></textarea>
+        <textarea name="comment" rows="3" aria-label="审核意见" placeholder="${hasReview ? '通过可留空；要求重写即使留空，也会按智能审稿的问题与建议改稿；拒绝建议填写原因。' : '重新审稿可留空；也可以备注这轮局部修改的重点，方便后续追踪。'}"></textarea>
       </label>
       <div class="button-row" data-recommendation="${escapeHtml(recClass)}">
+        <button class="secondary" name="action" value="rerun_review" type="submit">重新审稿</button>
         <button class="${recClass === 'approve' ? 'recommended-button' : ''}" name="action" value="approve" type="submit">通过</button>
         <button class="warn-button ${recClass === 'rewrite' ? 'recommended-button' : ''}" name="action" value="request_rewrite" type="submit">要求重写</button>
         <button class="secondary danger-secondary ${recClass === 'reject' ? 'recommended-button' : ''}" name="action" value="reject" type="submit">拒绝</button>
@@ -648,7 +947,6 @@ function renderListGroups(items) {
 
 function renderDetailCard(row) {
   const body = String(row.body || '');
-  const score = Number(row.total_score || 0);
   const title = escapeHtml(reviewChapterTitle(row));
   const projectTitle = escapeHtml(row.project_title || row.novel_title || row.project_name || '小说项目');
   const id = safeId(row);
@@ -664,7 +962,7 @@ function renderDetailCard(row) {
           <p class="meta">${projectTitle} / 第 ${escapeHtml(row.chapter_no || '')} 章 / 版本 ${escapeHtml(row.generation_version || '')}</p>
           <h2>${title}</h2>
         </div>
-        <div class="score ${scoreClass(score)}">${score || '-'}</div>
+        <div class="score ${escapeHtml(scoreTone(row))}">${escapeHtml(scoreText(row))}</div>
       </header>
       <span id="${escapeHtml(commentAnchor)}" class="anchor-target"></span>
       ${actionForm(row, 'mobile-actions')}
@@ -674,17 +972,17 @@ function renderDetailCard(row) {
             <div>
               <p class="ops-kicker">审核内容</p>
               <h3>先读正文，再提交人工判断</h3>
-              <p class="muted">推荐动作：${escapeHtml(rec)}。智能审稿已收进右侧抽屉，避免干扰正文阅读。</p>
+              <p class="muted">${hasAiReview(row) ? `推荐动作：${escapeHtml(rec)}。智能审稿已收进右侧抽屉，避免干扰正文阅读。` : '这是局部修订后的可继续编辑稿；先批量微调，最后再从右侧重新审稿或直接通过。'}</p>
             </div>
             ${reviewScoreBrief(row)}
           </div>
-          <pre class="reader-body">${escapeHtml(body)}</pre>
+          ${paragraphReader(row, id)}
         </div>
         <aside class="decision-dock" aria-label="审核决策侧栏">
           <div class="decision-dock-head">
             <p class="ops-kicker">人工决策</p>
             <strong>${escapeHtml(rec)}</strong>
-            <span>阅读正文后提交；通过会成为正式版本，重写会继承你的意见。</span>
+            <span>${hasAiReview(row) ? '阅读正文后提交；通过会成为正式版本，重写会继承你的意见。' : '局部修改可以连续做；完成后点重新审稿，或确认无误后直接通过。'}</span>
           </div>
           ${actionForm(row, 'desktop-actions')}
           <div class="decision-links">
@@ -700,7 +998,8 @@ function renderDetailCard(row) {
       </section>
       ${aiReviewDrawer(row, drawerId, opsAnchor)}
       ${manualReviewEditDrawer(row, manualDrawerId)}
-    </article>`;
+    </article>
+    ${blockRevisionPanel(row, id)}`;
 }
 
 const rows = $input.all()
@@ -749,7 +1048,7 @@ const html = `<!doctype html>
   <style>
     :root { color-scheme: light; --ink:#17202a; --muted:#667085; --line:#d9dee7; --bg:#f6f7f9; --panel:#fff; --accent:#1f7a5c; --accent-soft:#edf8f3; --warn:#a76508; --bad:#b42318; --bad-soft:#fff0ee; }
     * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    html { scroll-behavior: auto; }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); -webkit-tap-highlight-color: rgba(31, 122, 92, .14); }
     .app-shell { min-height: 100vh; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
     .app-sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 16px; padding: 22px 16px; border-right: 1px solid var(--line); background: #fff; }
@@ -838,6 +1137,7 @@ const html = `<!doctype html>
     .score.good { color: var(--accent); }
     .score.warn { color: var(--warn); }
     .score.bad { color: var(--bad); }
+    .score.muted { color: var(--muted); background: #f6f7f9; }
     .review-summary { margin-top: 16px; padding: 14px; border: 1px solid #b9e3d4; border-radius: 8px; background: var(--accent-soft); }
     .decision-banner { display: grid; gap: 4px; margin-bottom: 12px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: #fff; }
     .decision-banner strong { font-size: 18px; }
@@ -860,6 +1160,28 @@ const html = `<!doctype html>
     .review-brief { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 420px; }
     .review-brief span { min-height: 28px; display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 0 10px; background: #fff; color: #344054; font-size: 13px; font-weight: 750; white-space: nowrap; }
     pre { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 18px 20px; background: #fff; border-radius: 0; line-height: 1.82; min-height: 0; height: 100%; overflow: auto; font-size: 16px; }
+    .reader-body { margin: 0; padding: 12px 0 18px; background: #fff; min-height: 0; height: 100%; overflow: auto; font-size: 16px; line-height: 1.82; }
+    .paragraph-reader { position: relative; scroll-behavior: auto; }
+    .reader-paragraph { position: relative; display: block; scroll-margin-top: 96px; padding: 10px 18px 10px 56px; border-bottom: 1px solid #f0f2f5; }
+    .reader-paragraph:hover, .reader-paragraph:focus-within { background: #fbfcfd; }
+    .reader-paragraph.is-selection-anchor { background: #f3faf7; box-shadow: inset 3px 0 0 #8fd4bd; }
+    .reader-paragraph.is-inline-editing { background: #fffdf7; box-shadow: inset 3px 0 0 var(--warn); }
+    .paragraph-label { position: absolute; left: 18px; top: 13px; min-height: 0; width: 30px; display: inline-flex; align-items: center; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; color: #98a2b3; opacity: .42; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; user-select: none; pointer-events: none; }
+    .reader-paragraph:hover .paragraph-label, .reader-paragraph:focus-within .paragraph-label, .reader-paragraph.is-selection-anchor .paragraph-label { opacity: .88; color: var(--accent); }
+    .reader-paragraph p { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .paragraph-revise-button { position: absolute; right: 14px; top: 8px; min-height: 28px; padding: 0 9px; border: 1px solid #b9e3d4; border-radius: 999px; background: #fff; color: var(--accent); font-size: 12px; white-space: nowrap; opacity: 0; pointer-events: none; transform: translateY(-2px); box-shadow: 0 8px 22px rgba(16, 24, 40, .12); transition: opacity .14s ease, transform .14s ease; }
+    .reader-paragraph:hover .paragraph-revise-button, .reader-paragraph:focus-within .paragraph-revise-button, .paragraph-revise-button:focus-visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+    .inline-paragraph-editor { display: grid; gap: 8px; }
+    .inline-paragraph-editor textarea { width: 100%; min-height: 96px; resize: vertical; border: 1px solid #f1ce96; border-radius: 8px; padding: 10px 12px; font: inherit; line-height: 1.86; color: var(--ink); background: #fff; }
+    .inline-edit-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .inline-edit-row button { min-height: 34px; padding: 0 12px; }
+    .inline-edit-feedback { color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .inline-edit-feedback.is-error { color: var(--bad); }
+    .empty-paragraph { margin: 0; padding: 18px; color: var(--muted); }
+    .selection-toolbar { position: fixed; z-index: 120; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: min(560px, calc(100vw - 24px)); padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: 0 16px 38px rgba(16, 24, 40, .22); }
+    .selection-toolbar[hidden] { display: none !important; }
+    .selection-summary { min-height: 32px; display: inline-flex; align-items: center; border-right: 1px solid var(--line); padding: 0 10px 0 2px; color: var(--muted); font-size: 12px; font-weight: 850; white-space: nowrap; }
+    .selection-toolbar button { min-height: 32px; padding: 0 10px; background: var(--accent); font-size: 13px; }
     aside { border-left: 1px solid var(--line); padding-left: 18px; }
     .decision-dock { position: sticky; top: 86px; align-self: start; max-height: var(--review-panel-height); display: flex; flex-direction: column; overflow: auto; border: 1px solid #b9e3d4; border-radius: 8px; background: var(--accent-soft); padding: 14px; }
     .decision-dock-head { display: grid; gap: 4px; margin-bottom: 12px; }
@@ -869,6 +1191,54 @@ const html = `<!doctype html>
     .decision-links { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #b9e3d4; }
     .decision-links a, .decision-links button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: #fff; color: var(--accent); text-decoration: none; font: inherit; font-weight: 750; cursor: pointer; }
     .decision-links button:first-child { grid-column: 1 / -1; background: var(--accent); color: #fff; border-color: var(--accent); }
+    .block-revision-panel { position: fixed; left: 50%; bottom: 14px; z-index: 92; width: min(1120px, calc(100vw - 32px)); max-height: min(78vh, 720px); display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid #a8d8c7; border-radius: 8px; background: #fff; box-shadow: 0 22px 70px rgba(16, 24, 40, .24); transform: translate(-50%, calc(100% - 58px)); transition: transform .18s ease, box-shadow .18s ease; overflow: hidden; }
+    .block-revision-panel.is-open { transform: translate(-50%, 0); }
+    .block-panel-head { min-height: 58px; display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: #f5fbf8; cursor: pointer; }
+    .block-panel-head strong { display: block; margin-top: 2px; font-size: 16px; line-height: 1.25; }
+    .block-panel-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .block-panel-head-actions span { min-height: 28px; display: inline-flex; align-items: center; border: 1px solid #b9e3d4; border-radius: 999px; padding: 0 10px; background: #fff; color: var(--accent); font-size: 12px; font-weight: 850; white-space: nowrap; }
+    .block-panel-close { min-height: 30px; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: #fff; color: var(--accent); font-size: 12px; }
+    .block-revision-panel:not(.is-open) .block-panel-body { display: none; }
+    .block-panel-body { min-height: 0; display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: 14px; padding: 14px; overflow: auto; }
+    .block-revision-form { display: grid; gap: 10px; align-self: start; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .block-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .block-revision-form label, .block-apply-form label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 750; }
+    .block-revision-form select, .block-revision-form textarea, .block-apply-form textarea { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; color: var(--ink); background: #fff; font: inherit; }
+    .block-revision-form button { min-height: 40px; }
+    .block-step-label { display: flex; align-items: center; gap: 8px; color: #344054; font-size: 13px; font-weight: 850; }
+    .block-step-label span { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--accent); color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .block-revision-results { min-width: 0; display: grid; align-self: start; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8faf9; }
+    .selected-preview { max-height: 156px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8faf9; color: #344054; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+    .selected-preview.has-selection { border-color: #b9e3d4; background: var(--accent-soft); color: #225447; }
+    .block-revision-list { min-width: 0; display: grid; gap: 10px; }
+    .block-revision-card { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; }
+    .block-revision-card.warn { border-color: #f1ce96; background: #fffaf0; }
+    .block-revision-card.good { border-color: #b9e3d4; background: #f7fcf9; }
+    .block-revision-card.bad { border-color: #f2b8b5; background: var(--bad-soft); }
+    .block-card-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .block-meta { margin: 6px 0 8px; color: var(--muted); font-size: 12px; }
+    .block-revision-dl { grid-template-columns: 86px 1fr; margin-bottom: 8px; font-size: 13px; }
+    .block-revision-dl dd { line-height: 1.55; }
+    .block-replacement { margin: 8px 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .block-replacement strong { display: block; margin-bottom: 4px; font-size: 13px; }
+    .block-replacement p { margin: 0; line-height: 1.65; white-space: pre-wrap; }
+    .block-diff { margin: 8px 0; padding: 12px; border: 1px solid #b9e3d4; border-radius: 8px; background: #f7fcf9; }
+    .block-diff strong { display: block; margin-bottom: 6px; font-size: 13px; color: #225447; }
+    .block-diff p { margin: 0; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    .block-diff del { padding: 1px 3px; border-radius: 4px; background: #fff0ee; color: var(--bad); text-decoration: line-through; }
+    .block-diff ins { padding: 1px 3px; border-radius: 4px; background: #dcfae6; color: #067647; text-decoration: none; }
+    .block-risk { margin: 8px 0; padding: 8px; border-radius: 8px; background: #fff7e8; color: var(--warn); line-height: 1.55; font-size: 13px; }
+    .block-live { display: grid; gap: 3px; margin: 8px 0; padding: 9px; border: 1px dashed #f1ce96; border-radius: 8px; background: #fffaf0; color: var(--warn); font-size: 13px; line-height: 1.5; }
+    .block-live span { color: #8a5204; }
+    .block-checklist { margin: 8px 0; padding-left: 18px; font-size: 13px; }
+    .block-checklist li { margin-bottom: 4px; line-height: 1.5; }
+    .block-checklist strong { margin-right: 6px; color: var(--accent); }
+    .block-checklist span { display: block; color: var(--muted); }
+    .block-apply-form { display: grid; gap: 8px; margin-top: 8px; }
+    .block-apply-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .block-apply-row button { min-height: 36px; padding: 9px 12px; }
+    .block-apply-form textarea[readonly] { background: #f8faf9; color: #344054; cursor: default; }
+    .block-apply-form.is-editing textarea { background: #fff; box-shadow: 0 0 0 3px rgba(31, 122, 92, .1); }
     dl { display: grid; grid-template-columns: 70px 1fr; gap: 6px 10px; margin: 0 0 16px; }
     dt { color: var(--muted); }
     dd { margin: 0; min-width: 0; }
@@ -898,7 +1268,7 @@ const html = `<!doctype html>
     .actions label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
     .actions em { font-style: normal; line-height: 1.45; }
     .actions textarea { min-height: 48px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; color: var(--ink); }
-    .button-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     button { border: 0; border-radius: 8px; padding: 12px 18px; font: inherit; font-weight: 650; background: var(--accent); color: white; cursor: pointer; touch-action: manipulation; }
     button:hover { filter: brightness(.95); }
     button:disabled { opacity: .68; cursor: progress; }
@@ -969,11 +1339,19 @@ const html = `<!doctype html>
       .reader-head { display: grid; grid-template-columns: 1fr; }
       .review-brief { justify-content: flex-start; max-width: none; }
       .review-reader-panel { height: auto; min-height: 0; }
-      pre { height: auto; max-height: 68vh; }
+      pre, .reader-body { height: auto; max-height: 68vh; }
+      .reader-paragraph { padding: 12px 14px 46px 42px; }
+      .paragraph-label { left: 12px; top: 14px; opacity: .5; }
+      .paragraph-revise-button { left: 42px; right: auto; top: auto; bottom: 10px; width: max-content; opacity: 1; pointer-events: auto; transform: none; box-shadow: none; }
       aside { border-left: 0; padding-left: 0; }
       .decision-dock { position: static; height: auto; min-height: 0; }
       .decision-links { margin-top: 10px; }
       .decision-rail .actions { position: static; }
+      .block-revision-panel { width: calc(100vw - 16px); bottom: 8px; max-height: min(84vh, 680px); transform: translate(-50%, calc(100% - 58px)); }
+      .block-panel-head { align-items: flex-start; }
+      .block-panel-head-actions { align-items: flex-end; flex-direction: column; gap: 6px; }
+      .block-panel-body { grid-template-columns: 1fr; padding: 10px; }
+      .block-revision-form, .block-revision-results { padding: 10px; }
       .desktop-actions { display: none; }
       .mobile-actions {
         display: grid;
@@ -986,6 +1364,8 @@ const html = `<!doctype html>
         padding: 12px;
       }
       .button-row { display: grid; grid-template-columns: 1fr; }
+      .block-form-grid, .block-apply-row { grid-template-columns: 1fr; }
+      .block-apply-row button { flex: 1 1 100%; }
       button { min-height: 44px; }
     }
   </style>
@@ -1094,9 +1474,11 @@ const html = `<!doctype html>
       const messages = {
         approve: '确认通过这一章？通过后会成为当前正式版本，并可能创建下一章任务。',
         request_rewrite: '确认要求重写这一稿？系统会自动携带智能审稿的问题与建议，人工意见会作为额外优先级。',
+        rerun_review: '确认重新进行智能审稿？当前稿件会先离开待审列表，审稿完成后再回到审核中心。',
         reject: '确认拒绝这一稿？拒绝后不会成为正式版本，建议填写拒绝原因。',
       };
       const manualEditMessages = {
+        save_only: '确认保存当前改稿并继续修改？系统会生成新的待审候选稿，但不会自动触发智能审稿。',
         resubmit: '确认保存人工改稿并重新送审？原待审稿会退出审核列表，新改稿会进入智能审稿队列。',
         approve: '确认保存人工改稿并直接通过？通过后会成为当前正式版本，并可能创建下一章任务。',
       };
@@ -1136,7 +1518,587 @@ const html = `<!doctype html>
         }
       };
 
+      const resultPrimaryHrefFromHtml = (html, fallback) => {
+        try {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const href = doc.querySelector('a.primary')?.getAttribute('href') || '';
+          return href || fallback;
+        } catch (error) {
+          return fallback;
+        }
+      };
+
+      const reviewSaveScrollKey = 'novel-review-save-scroll';
+      try {
+        if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
+      } catch (error) {}
+
+      const normalizeLocalHref = (href) => {
+        const anchor = document.createElement('a');
+        anchor.href = href || window.location.href;
+        return anchor.pathname + anchor.search;
+      };
+
+      const paragraphElementId = (paragraphNo) => paragraphNo ? 'review-paragraph-' + String(paragraphNo) : '';
+
+      const paragraphElementForNo = (paragraphNo) => {
+        const id = paragraphElementId(paragraphNo);
+        return id ? document.getElementById(id) : null;
+      };
+
+      const rememberReviewSaveScroll = (targetHref, options = {}) => {
+        try {
+          const paragraphNo = options.paragraphNo || '';
+          const target = options.element || paragraphElementForNo(paragraphNo);
+          const rect = target?.getBoundingClientRect?.();
+          const viewportTop = rect
+            ? Math.max(12, Math.min(rect.top, Math.max(12, window.innerHeight - 96)))
+            : null;
+          window.sessionStorage.setItem(reviewSaveScrollKey, JSON.stringify({
+            href: normalizeLocalHref(targetHref),
+            x: window.scrollX || 0,
+            y: window.scrollY || 0,
+            paragraphNo,
+            viewportTop,
+            at: Date.now(),
+          }));
+        } catch (error) {}
+      };
+
+      const restoreReviewSaveScroll = () => {
+        try {
+          const raw = window.sessionStorage.getItem(reviewSaveScrollKey);
+          if (!raw) return false;
+          window.sessionStorage.removeItem(reviewSaveScrollKey);
+          const state = JSON.parse(raw);
+          if (!state || Date.now() - Number(state.at || 0) > 30000) return false;
+          if (state.href && state.href !== normalizeLocalHref(window.location.href)) return false;
+          const x = Number(state.x) || 0;
+          const y = Number(state.y) || 0;
+          const scrollToSavedTarget = () => {
+            const target = paragraphElementForNo(state.paragraphNo);
+            if (target) {
+              const targetTop = target.getBoundingClientRect().top + window.scrollY;
+              const viewportTop = Number.isFinite(Number(state.viewportTop))
+                ? Number(state.viewportTop)
+                : Math.min(180, Math.max(80, window.innerHeight * 0.28));
+              window.scrollTo(x, Math.max(0, targetTop - viewportTop));
+              target.classList.add('is-selection-anchor');
+              window.setTimeout(() => target.classList.remove('is-selection-anchor'), 900);
+              return;
+            }
+            window.scrollTo(x, y);
+          };
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+              scrollToSavedTarget();
+              window.setTimeout(scrollToSavedTarget, 80);
+              window.setTimeout(scrollToSavedTarget, 260);
+            });
+          });
+          return true;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const scrollToParagraphHash = () => {
+        const hash = window.location.hash || '';
+        if (!hash.startsWith('#review-paragraph-')) return;
+        const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+        if (!target) return;
+        window.setTimeout(() => {
+          target.scrollIntoView({block: 'center'});
+          target.classList.add('is-selection-anchor');
+          window.setTimeout(() => target.classList.remove('is-selection-anchor'), 1400);
+        }, 120);
+      };
+
       const formPostUrl = (form) => form.getAttribute('action') || form.action || window.location.href;
+
+      const blockActionNames = {
+        modify: '定向修改',
+        expand: '扩写',
+        condense: '压缩',
+        polish: '润色',
+        continue: '续写',
+        logic_fix: '逻辑修补',
+        custom: '自定义',
+      };
+      const blockApplyMessages = {
+        apply: '确认应用这条局部建议？系统会保存成新的待审候选稿，你可以继续局部修改，不会自动重新审稿。',
+        apply_edited: '确认应用你修改后的局部文本？系统会保存成新的待审候选稿，你可以继续局部修改，不会自动重新审稿。',
+        regenerate: '确认重新生成这条局部建议？当前建议会被新任务替代。',
+        reject: '确认放弃这条局部修订建议？',
+        request_rewrite: '确认把这条局部意见转为整章重写？原候选稿会退出审核列表。',
+      };
+
+      let activeBlockSelection = null;
+
+      const setBlockPanelOpen = (panel, open) => {
+        if (!panel) return;
+        panel.classList.toggle('is-open', Boolean(open));
+        const toggle = panel.querySelector('[data-block-panel-toggle]');
+        if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      };
+
+      const openBlockPanel = (panel) => {
+        setBlockPanelOpen(panel, true);
+        const body = panel?.querySelector('.block-panel-body');
+        if (body) window.setTimeout(() => { body.scrollTop = 0; }, 0);
+      };
+
+      const closeBlockPanel = (panel) => {
+        setBlockPanelOpen(panel, false);
+      };
+
+      document.querySelectorAll('[data-block-revision-panel]').forEach((panel) => {
+        const toggle = panel.querySelector('[data-block-panel-toggle]');
+        if (toggle) {
+          const togglePanel = () => setBlockPanelOpen(panel, !panel.classList.contains('is-open'));
+          toggle.addEventListener('click', (event) => {
+            if (event.target.closest('button, a, input, textarea, select')) return;
+            togglePanel();
+          });
+          toggle.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            togglePanel();
+          });
+        }
+        panel.querySelectorAll('[data-close-block-panel]').forEach((button) => {
+          button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            closeBlockPanel(panel);
+          });
+        });
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        document.querySelectorAll('[data-block-revision-panel].is-open').forEach((panel) => closeBlockPanel(panel));
+      });
+      const restoredReviewSaveScroll = restoreReviewSaveScroll();
+      if (!restoredReviewSaveScroll) scrollToParagraphHash();
+
+      const paragraphText = (paragraph) => (
+        paragraph?.querySelector('[data-paragraph-text]')?.textContent || ''
+      ).trim();
+
+      const paragraphBodyStart = (paragraph) => Number.parseInt(paragraph?.dataset?.bodyStart || '0', 10) || 0;
+
+      const chapterBodyForReader = (reader) => reader?.querySelector('[data-chapter-body]')?.value || '';
+
+      const paragraphBodyEnd = (paragraph) => Number.parseInt(paragraph?.dataset?.bodyEnd || '0', 10) || paragraphBodyStart(paragraph);
+
+      const replaceParagraphInBody = (reader, paragraph, replacementText) => {
+        const body = chapterBodyForReader(reader);
+        const start = Math.max(0, Math.min(paragraphBodyStart(paragraph), body.length));
+        const end = Math.max(start, Math.min(paragraphBodyEnd(paragraph), body.length));
+        return body.slice(0, start) + replacementText + body.slice(end);
+      };
+
+      const paragraphNoFromBodyOffset = (body, rawOffset) => {
+        const raw = String(body || '');
+        const text = raw.replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');
+        const offset = raw.slice(0, Math.max(0, Number(rawOffset) || 0)).replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n').length;
+        const matcher = /[^\\n]+/g;
+        let paragraphNo = 0;
+        let lastParagraphNo = '';
+        let match = matcher.exec(text);
+        while (match) {
+          const rawLine = match[0];
+          const leadingTrim = rawLine.length - rawLine.trimStart().length;
+          const trimmed = rawLine.trim();
+          if (trimmed) {
+            paragraphNo += 1;
+            lastParagraphNo = String(paragraphNo);
+            const start = match.index + leadingTrim;
+            const end = start + trimmed.length;
+            if (offset <= end) return String(paragraphNo);
+          }
+          match = matcher.exec(text);
+        }
+        return lastParagraphNo;
+      };
+
+      const paragraphNoFromTextareaCaret = (textarea) => {
+        if (!textarea) return '';
+        return paragraphNoFromBodyOffset(textarea.value || '', textarea.selectionStart || 0);
+      };
+
+      const closeInlineParagraphEditor = (paragraph) => {
+        const editor = paragraph?.querySelector('[data-inline-edit-form]');
+        const textNode = paragraph?.querySelector('[data-paragraph-text]');
+        if (editor) editor.remove();
+        if (textNode) textNode.hidden = false;
+        paragraph?.classList.remove('is-inline-editing');
+      };
+
+      const closeAllInlineParagraphEditors = () => {
+        document.querySelectorAll('.reader-paragraph.is-inline-editing').forEach((paragraph) => closeInlineParagraphEditor(paragraph));
+      };
+
+      const startInlineParagraphEdit = (paragraph) => {
+        const reader = paragraph?.closest('[data-block-reader]');
+        const textNode = paragraph?.querySelector('[data-paragraph-text]');
+        if (!reader || !paragraph || !textNode || paragraph.querySelector('[data-inline-edit-form]')) return;
+        hideSelectionToolbar();
+        closeAllInlineParagraphEditors();
+        const originalText = textNode.textContent || '';
+        paragraph.classList.add('is-inline-editing');
+        textNode.hidden = true;
+
+        const editor = document.createElement('div');
+        editor.className = 'inline-paragraph-editor';
+        editor.dataset.inlineEditForm = 'true';
+
+        const textarea = document.createElement('textarea');
+        textarea.name = 'inline_body';
+        textarea.value = originalText;
+        textarea.setAttribute('aria-label', '直接修改当前段落');
+
+        const row = document.createElement('div');
+        row.className = 'inline-edit-row';
+        const saveButton = document.createElement('button');
+        saveButton.type = 'button';
+        saveButton.textContent = '保存继续修改';
+        const cancelButton = document.createElement('button');
+        cancelButton.type = 'button';
+        cancelButton.className = 'secondary';
+        cancelButton.textContent = '取消';
+        const feedback = document.createElement('span');
+        feedback.className = 'inline-edit-feedback';
+        feedback.textContent = '双击段落直接改；保存后不会自动审稿。';
+        row.append(saveButton, cancelButton, feedback);
+        editor.append(textarea, row);
+        textNode.after(editor);
+
+        cancelButton.addEventListener('click', () => closeInlineParagraphEditor(paragraph));
+        saveButton.addEventListener('click', async () => {
+          const replacement = textarea.value.trim();
+          if (!replacement) {
+            feedback.textContent = '段落不能为空。';
+            feedback.classList.add('is-error');
+            return;
+          }
+          if (replacement === originalText.trim()) {
+            closeInlineParagraphEditor(paragraph);
+            return;
+          }
+          const paragraphNo = paragraph.dataset.paragraphNo || '';
+          const requestBody = new FormData();
+          requestBody.append('chapter_id', reader.dataset.chapterId || '');
+          requestBody.append('review_token', reader.dataset.reviewToken || '');
+          requestBody.append('reviewer', 'local_user');
+          requestBody.append('decision', 'save_only');
+          requestBody.append('body', replaceParagraphInBody(reader, paragraph, replacement));
+          requestBody.append('comment', '双击段落直接修改：P' + (paragraphNo || ''));
+          saveButton.disabled = true;
+          cancelButton.disabled = true;
+          saveButton.textContent = '保存中...';
+          feedback.textContent = '正在保存为新的待审候选稿...';
+          feedback.classList.remove('is-error');
+          try {
+            const response = await fetch('/webhook/novel-review-manual-edit', {
+              method: 'POST',
+              body: requestBody,
+              credentials: 'same-origin',
+              headers: {'X-Requested-With': 'fetch'},
+            });
+            const html = await response.text();
+            if (!response.ok) {
+              throw new Error(resultMessageFromHtml(html, '段落保存失败：HTTP ' + response.status));
+            }
+            const targetHref = resultPrimaryHrefFromHtml(html, window.location.pathname + window.location.search);
+            rememberReviewSaveScroll(targetHref, {paragraphNo, element: paragraph});
+            showToast('段落已保存', '正在留在当前位置继续修改...');
+            window.setTimeout(() => {
+              window.location.href = targetHref;
+            }, 500);
+          } catch (error) {
+            feedback.textContent = error.message || '保存失败，请稍后重试。';
+            feedback.classList.add('is-error');
+            showToast('段落保存未完成', error.message || '保存失败，请稍后重试。', true);
+            saveButton.disabled = false;
+            cancelButton.disabled = false;
+            saveButton.textContent = '保存继续修改';
+          }
+        });
+
+        window.setTimeout(() => {
+          textarea.focus();
+          textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        }, 0);
+      };
+
+      const trimmedRange = (value, start, end) => {
+        const safeStart = Math.max(0, Math.min(start, value.length));
+        const safeEnd = Math.max(safeStart, Math.min(end, value.length));
+        const raw = value.slice(safeStart, safeEnd);
+        const leading = raw.length - raw.trimStart().length;
+        const trimmed = raw.trim();
+        return {
+          text: trimmed,
+          start: safeStart + leading,
+          end: safeStart + leading + trimmed.length,
+        };
+      };
+
+      const textOffsetWithin = (container, node, offset) => {
+        if (!container || !node) return 0;
+        if (node === container) return Math.max(0, offset || 0);
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        let cursor = 0;
+        let current = walker.nextNode();
+        while (current) {
+          if (current === node) return cursor + Math.max(0, offset || 0);
+          cursor += current.nodeValue.length;
+          current = walker.nextNode();
+        }
+        return cursor;
+      };
+
+      const rangeSliceForParagraph = (paragraph, range) => {
+        const textElement = paragraph?.querySelector('[data-paragraph-text]');
+        if (!textElement || !range) return {text: '', start: 0, end: 0};
+        const textValue = textElement.textContent || '';
+        const startInside = textElement.contains(range.startContainer);
+        const endInside = textElement.contains(range.endContainer);
+        const start = startInside ? textOffsetWithin(textElement, range.startContainer, range.startOffset) : 0;
+        const end = endInside ? textOffsetWithin(textElement, range.endContainer, range.endOffset) : textValue.length;
+        return trimmedRange(textValue, start, end);
+      };
+
+      const anchorAroundSelection = (reader, bodyStart, bodyEnd) => {
+        const value = chapterBodyForReader(reader);
+        const safeStart = Math.max(0, Math.min(bodyStart, value.length));
+        const safeEnd = Math.max(safeStart, Math.min(bodyEnd, value.length));
+        const prefix = value.slice(Math.max(0, safeStart - 120), safeStart);
+        const suffix = value.slice(safeEnd, Math.min(value.length, safeEnd + 120));
+        return {prefix, suffix};
+      };
+
+      const paragraphContext = (paragraph) => {
+        const reader = paragraph?.closest('[data-block-reader]');
+        const paragraphs = reader ? Array.from(reader.querySelectorAll('.reader-paragraph')) : [];
+        const index = paragraphs.indexOf(paragraph);
+        return {
+          beforeContext: index > 0 ? paragraphText(paragraphs[index - 1]) : '',
+          afterContext: index >= 0 && index < paragraphs.length - 1 ? paragraphText(paragraphs[index + 1]) : '',
+        };
+      };
+
+      const blockPanelForReader = (reader) => {
+        const workbenchId = reader?.dataset?.workbenchId || '';
+        return Array.from(document.querySelectorAll('[data-block-revision-panel]'))
+          .find((panel) => panel.dataset.workbenchId === workbenchId);
+      };
+
+      const fillBlockRevisionForm = (reader, payload) => {
+        const panel = blockPanelForReader(reader);
+        if (!panel) return;
+        const form = panel.querySelector('[data-block-revision-form]');
+        if (!form) return;
+        const actionSelect = form.querySelector('[data-block-action-select]');
+        const preview = form.querySelector('[data-block-selected-preview]');
+        const feedback = form.querySelector('[data-block-revision-feedback]');
+        const state = panel.querySelector('[data-block-panel-state]');
+        const selectedText = String(payload.selectedText || '').trim();
+        if (actionSelect) actionSelect.value = payload.actionType || 'modify';
+        form.querySelector('[data-block-selected-text]').value = selectedText;
+        form.querySelector('[data-block-paragraph-start]').value = payload.paragraphStart || '';
+        form.querySelector('[data-block-paragraph-end]').value = payload.paragraphEnd || payload.paragraphStart || '';
+        form.querySelector('[data-block-selection-start]').value = payload.selectionStartOffset ?? '';
+        form.querySelector('[data-block-selection-end]').value = payload.selectionEndOffset ?? '';
+        form.querySelector('[data-block-anchor-prefix]').value = payload.anchorPrefix || '';
+        form.querySelector('[data-block-anchor-suffix]').value = payload.anchorSuffix || '';
+        form.querySelector('[data-block-before-context]').value = payload.beforeContext || '';
+        form.querySelector('[data-block-after-context]').value = payload.afterContext || '';
+        if (preview) {
+          const actionName = blockActionNames[payload.actionType || 'modify'] || '局部修订';
+          const scope = payload.paragraphStart ? 'P' + payload.paragraphStart + (payload.paragraphEnd && payload.paragraphEnd !== payload.paragraphStart ? '-P' + payload.paragraphEnd : '') : '选区';
+          preview.textContent = selectedText ? actionName + ' / ' + scope + '\\n' + selectedText : '未选择片段';
+          preview.classList.toggle('has-selection', Boolean(selectedText));
+        }
+        if (feedback) {
+          feedback.textContent = '已锁定选区，填写要求后即可生成局部建议。';
+          feedback.classList.remove('is-error');
+          feedback.classList.add('is-success');
+        }
+        if (state) {
+          const actionName = blockActionNames[payload.actionType || 'modify'] || '局部修订';
+          state.textContent = actionName;
+        }
+        openBlockPanel(panel);
+        const instruction = form.querySelector('textarea[name="instruction"]');
+        if (instruction) window.setTimeout(() => instruction.focus(), 120);
+      };
+
+      const hideSelectionToolbar = () => {
+        document.querySelectorAll('[data-selection-toolbar]').forEach((toolbar) => {
+          toolbar.hidden = true;
+        });
+        document.querySelectorAll('.reader-paragraph.is-selection-anchor').forEach((paragraph) => {
+          paragraph.classList.remove('is-selection-anchor');
+        });
+      };
+
+      const captureSelectionForReader = (reader) => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+        const anchor = selection.anchorNode?.nodeType === Node.ELEMENT_NODE ? selection.anchorNode : selection.anchorNode?.parentElement;
+        const focus = selection.focusNode?.nodeType === Node.ELEMENT_NODE ? selection.focusNode : selection.focusNode?.parentElement;
+        if (!reader.contains(anchor) || !reader.contains(focus)) return null;
+        const range = selection.getRangeAt(0);
+        const paragraphs = Array.from(reader.querySelectorAll('.reader-paragraph'));
+        const touched = paragraphs.filter((paragraph) => {
+          const textNode = paragraph.querySelector('[data-paragraph-text]');
+          return textNode && range.intersectsNode(textNode);
+        });
+        if (!touched.length) return null;
+        const first = touched[0];
+        const last = touched[touched.length - 1];
+        const firstSlice = rangeSliceForParagraph(first, range);
+        const lastSlice = first === last ? firstSlice : rangeSliceForParagraph(last, range);
+        const selectionStartOffset = paragraphBodyStart(first) + firstSlice.start;
+        const selectionEndOffset = paragraphBodyStart(last) + lastSlice.end;
+        const bodyText = chapterBodyForReader(reader);
+        const selectedText = (bodyText
+          ? bodyText.slice(selectionStartOffset, selectionEndOffset)
+          : touched.map((paragraph) => paragraphText(paragraph)).join('\\n')
+        ).trim();
+        if (!selectedText) return null;
+        const firstNo = Number(first.dataset.paragraphNo || 0);
+        const lastNo = Number(last.dataset.paragraphNo || firstNo);
+        const before = paragraphText(paragraphs[Math.max(0, paragraphs.indexOf(first) - 1)]);
+        const after = paragraphText(paragraphs[Math.min(paragraphs.length - 1, paragraphs.indexOf(last) + 1)]);
+        const selectionAnchor = anchorAroundSelection(reader, selectionStartOffset, selectionEndOffset);
+        const rangeRect = range.getBoundingClientRect();
+        const firstClientRect = Array.from(range.getClientRects())[0];
+        const rect = rangeRect.width || rangeRect.height ? rangeRect : firstClientRect;
+        if (!rect) return null;
+        return {
+          reader,
+          selectedText,
+          paragraphStart: firstNo || '',
+          paragraphEnd: lastNo || firstNo || '',
+          selectionStartOffset,
+          selectionEndOffset,
+          anchorPrefix: selectionAnchor.prefix,
+          anchorSuffix: selectionAnchor.suffix,
+          beforeContext: paragraphs.indexOf(first) > 0 ? before : '',
+          afterContext: paragraphs.indexOf(last) < paragraphs.length - 1 ? after : '',
+          rect,
+        };
+      };
+
+      const showSelectionToolbar = (selectionPayload) => {
+        if (!selectionPayload) {
+          hideSelectionToolbar();
+          return;
+        }
+        activeBlockSelection = selectionPayload;
+        const toolbar = selectionPayload.reader.parentElement?.querySelector('[data-selection-toolbar]');
+        if (!toolbar) return;
+        const summary = toolbar.querySelector('[data-selection-summary]');
+        const paragraphs = Array.from(selectionPayload.reader.querySelectorAll('.reader-paragraph'));
+        paragraphs.forEach((paragraph) => {
+          const paragraphNo = Number(paragraph.dataset.paragraphNo || 0);
+          paragraph.classList.toggle(
+            'is-selection-anchor',
+            paragraphNo >= Number(selectionPayload.paragraphStart || 0)
+              && paragraphNo <= Number(selectionPayload.paragraphEnd || selectionPayload.paragraphStart || 0)
+          );
+        });
+        if (summary) {
+          const scope = 'P' + selectionPayload.paragraphStart
+            + (selectionPayload.paragraphEnd && selectionPayload.paragraphEnd !== selectionPayload.paragraphStart ? '-P' + selectionPayload.paragraphEnd : '');
+          summary.textContent = '已选 ' + scope;
+        }
+        toolbar.hidden = false;
+        const maxLeft = Math.max(12, window.innerWidth - toolbar.offsetWidth - 12);
+        const left = Math.min(Math.max(12, selectionPayload.rect.left), maxLeft);
+        const preferredTop = selectionPayload.rect.top - toolbar.offsetHeight - 10;
+        const fallbackTop = selectionPayload.rect.bottom + 10;
+        const maxTop = Math.max(12, window.innerHeight - toolbar.offsetHeight - 12);
+        const top = Math.min(Math.max(12, preferredTop > 12 ? preferredTop : fallbackTop), maxTop);
+        toolbar.style.left = left + 'px';
+        toolbar.style.top = top + 'px';
+      };
+
+      const readers = Array.from(document.querySelectorAll('[data-block-reader]'));
+      const updateSelectionFromDocument = () => {
+        window.setTimeout(() => {
+          const payload = readers.map((reader) => captureSelectionForReader(reader)).find(Boolean);
+          showSelectionToolbar(payload || null);
+        }, 0);
+      };
+
+      readers.forEach((reader) => {
+        const updateSelection = () => {
+          window.setTimeout(() => showSelectionToolbar(captureSelectionForReader(reader)), 0);
+        };
+        reader.addEventListener('mouseup', updateSelection);
+        reader.addEventListener('keyup', updateSelection);
+        reader.addEventListener('touchend', () => hideSelectionToolbar());
+      });
+      document.addEventListener('mouseup', updateSelectionFromDocument);
+      document.addEventListener('keyup', updateSelectionFromDocument);
+      document.addEventListener('selectionchange', () => {
+        window.clearTimeout(window.__novelBlockSelectionTimer);
+        window.__novelBlockSelectionTimer = window.setTimeout(updateSelectionFromDocument, 80);
+      });
+
+      document.querySelectorAll('[data-selection-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          if (!activeBlockSelection) return;
+          hideSelectionToolbar();
+          fillBlockRevisionForm(activeBlockSelection.reader, {
+            ...activeBlockSelection,
+            actionType: button.dataset.selectionAction || 'modify',
+          });
+        });
+      });
+
+      document.querySelectorAll('.reader-paragraph').forEach((paragraph) => {
+        paragraph.addEventListener('dblclick', (event) => {
+          if (event.target.closest('button, a, textarea, input, select, [data-inline-edit-form]')) return;
+          startInlineParagraphEdit(paragraph);
+        });
+      });
+
+      document.querySelectorAll('[data-revise-paragraph]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const paragraph = button.closest('.reader-paragraph');
+          const reader = button.closest('[data-block-reader]');
+          if (!paragraph || !reader) return;
+          const context = paragraphContext(paragraph);
+          const paragraphNo = Number(paragraph.dataset.paragraphNo || 0);
+          const selectionStartOffset = paragraphBodyStart(paragraph);
+          const selectionEndOffset = paragraphBodyEnd(paragraph);
+          const selectionAnchor = anchorAroundSelection(reader, selectionStartOffset, selectionEndOffset);
+          hideSelectionToolbar();
+          fillBlockRevisionForm(reader, {
+            selectedText: paragraphText(paragraph),
+            paragraphStart: paragraphNo,
+            paragraphEnd: paragraphNo,
+            selectionStartOffset,
+            selectionEndOffset,
+            anchorPrefix: selectionAnchor.prefix,
+            anchorSuffix: selectionAnchor.suffix,
+            beforeContext: context.beforeContext,
+            afterContext: context.afterContext,
+            actionType: button.dataset.actionType || 'modify',
+          });
+        });
+      });
+
+      document.addEventListener('mousedown', (event) => {
+        if (!event.target.closest('[data-selection-toolbar]') && !event.target.closest('[data-block-reader]')) {
+          hideSelectionToolbar();
+        }
+      });
 
       document.querySelectorAll('form.actions button[name="action"]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -1179,9 +2141,10 @@ const html = `<!doctype html>
             if (!response.ok) {
               throw new Error(resultMessageFromHtml(html, '审核操作失败：HTTP ' + response.status));
             }
-            showToast('审核决策已提交', '正在返回审核列表...');
+            const targetHref = resultPrimaryHrefFromHtml(html, '/webhook/novel-review-list');
+            showToast('审核决策已提交', action === 'rerun_review' ? '正在打开审稿队列...' : '正在返回审核列表...');
             window.setTimeout(() => {
-              window.location.href = '/webhook/novel-review-list';
+              window.location.href = targetHref;
             }, 450);
           } catch (error) {
             showToast('审核操作未完成', error.message || '提交失败，请稍后重试。', true);
@@ -1193,6 +2156,185 @@ const html = `<!doctype html>
         });
       });
 
+      document.querySelectorAll('form[data-block-revision-form]').forEach((form) => {
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const selectedText = String(form.querySelector('[data-block-selected-text]')?.value || '').trim();
+          const instruction = String(form.querySelector('textarea[name="instruction"]')?.value || '').trim();
+          const feedback = form.querySelector('[data-block-revision-feedback]');
+          const button = event.submitter || form.querySelector('button[type="submit"]');
+          if (!selectedText) {
+            if (feedback) {
+              feedback.textContent = '请先在正文中选择一个片段。';
+              feedback.classList.add('is-error');
+              feedback.classList.remove('is-success');
+            }
+            return;
+          }
+          if (!instruction) {
+            if (feedback) {
+              feedback.textContent = '请填写局部修订要求。';
+              feedback.classList.add('is-error');
+              feedback.classList.remove('is-success');
+            }
+            return;
+          }
+          const originalText = button?.textContent || '提交';
+          if (feedback) {
+            feedback.textContent = '正在创建局部修订任务...';
+            feedback.classList.remove('is-error', 'is-success');
+          }
+          if (button) {
+            button.disabled = true;
+            button.textContent = '生成中...';
+          }
+          try {
+            const requestBody = new FormData(form);
+            const response = await fetch(formPostUrl(form), {
+              method: 'POST',
+              body: requestBody,
+              credentials: 'same-origin',
+              headers: {'X-Requested-With': 'fetch'},
+            });
+            const html = await response.text();
+            if (!response.ok) {
+              throw new Error(resultMessageFromHtml(html, '局部修订创建失败：HTTP ' + response.status));
+            }
+            if (feedback) {
+              feedback.textContent = '局部修订任务已创建，正在刷新建议列表...';
+              feedback.classList.add('is-success');
+            }
+            showToast('局部修订已提交', '正在刷新审核详情...');
+            window.setTimeout(() => {
+              window.location.href = window.location.pathname + window.location.search;
+            }, 650);
+          } catch (error) {
+            if (feedback) {
+              feedback.textContent = error.message || '局部修订提交失败，请稍后重试。';
+              feedback.classList.add('is-error');
+            }
+            showToast('局部修订未完成', error.message || '提交失败，请稍后重试。', true);
+            if (button) {
+              button.disabled = false;
+              button.textContent = originalText;
+            }
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-enable-block-edit]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const form = button.closest('[data-block-revision-apply]');
+          const textarea = form?.querySelector('[data-block-replacement]');
+          const editedApply = form?.querySelector('[data-apply-edited]');
+          const reset = form?.querySelector('[data-reset-block-edit]');
+          const applyOriginal = form?.querySelector('[data-apply-original]');
+          if (!form || !textarea) return;
+          form.classList.add('is-editing');
+          textarea.readOnly = false;
+          textarea.focus();
+          textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+          button.hidden = true;
+          if (applyOriginal) applyOriginal.hidden = true;
+          if (editedApply) editedApply.hidden = false;
+          if (reset) reset.hidden = false;
+        });
+      });
+
+      document.querySelectorAll('[data-reset-block-edit]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const form = button.closest('[data-block-revision-apply]');
+          const textarea = form?.querySelector('[data-block-replacement]');
+          const edit = form?.querySelector('[data-enable-block-edit]');
+          const editedApply = form?.querySelector('[data-apply-edited]');
+          const applyOriginal = form?.querySelector('[data-apply-original]');
+          if (!form || !textarea) return;
+          textarea.value = textarea.dataset.originalReplacement || '';
+          textarea.readOnly = true;
+          form.classList.remove('is-editing');
+          if (edit) edit.hidden = false;
+          if (editedApply) editedApply.hidden = true;
+          if (applyOriginal) applyOriginal.hidden = false;
+          button.hidden = true;
+        });
+      });
+
+      document.querySelectorAll('form[data-block-revision-apply] button[name="action"]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const form = button.closest('form');
+          if (form) form.dataset.pendingAction = button.value || '';
+        });
+      });
+
+      document.querySelectorAll('form[data-block-revision-apply]').forEach((form) => {
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const button = event.submitter || form.querySelector('button[name="action"][value="' + (form.dataset.pendingAction || '') + '"]') || form.querySelector('button[type="submit"]');
+          const action = button?.value || form.dataset.pendingAction || 'apply';
+          const replacement = String(form.querySelector('textarea[name="replacement_text"]')?.value || '').trim();
+          if (action === 'apply_edited' && !replacement) {
+            showToast('局部修订未完成', '修改后应用时，建议文本不能为空。', true);
+            return;
+          }
+          if (!window.confirm(blockApplyMessages[action] || '确认处理这条局部修订？')) {
+            return;
+          }
+          const originalText = button?.textContent || '提交';
+          const buttons = Array.from(form.querySelectorAll('button'));
+          buttons.forEach((item) => { item.disabled = true; });
+          if (button) button.textContent = '处理中...';
+          try {
+            const requestBody = new FormData(form);
+            if (action === 'apply') requestBody.delete('replacement_text');
+            if (button?.name && !requestBody.has(button.name)) requestBody.append(button.name, button.value || '');
+            const response = await fetch(formPostUrl(form), {
+              method: 'POST',
+              body: requestBody,
+              credentials: 'same-origin',
+              headers: {'X-Requested-With': 'fetch'},
+            });
+            const html = await response.text();
+            if (!response.ok) {
+              throw new Error(resultMessageFromHtml(html, '局部修订处理失败：HTTP ' + response.status));
+            }
+            const currentHref = window.location.pathname + window.location.search;
+            const detailHref = resultPrimaryHrefFromHtml(html, currentHref);
+            const targetHref = action === 'request_rewrite' ? '/webhook/novel-review-list' : detailHref;
+            const keepsEditing = action === 'apply' || action === 'apply_edited';
+            if (keepsEditing) rememberReviewSaveScroll(targetHref);
+            showToast('局部修订已处理', keepsEditing ? '正在打开新的候选稿继续修改...' : (action === 'request_rewrite' ? '正在返回审核列表...' : '正在刷新审核详情...'));
+            window.setTimeout(() => {
+              window.location.href = targetHref;
+            }, 650);
+          } catch (error) {
+            showToast('局部修订未完成', error.message || '处理失败，请稍后重试。', true);
+            buttons.forEach((item) => { item.disabled = false; });
+            if (button) button.textContent = originalText;
+          }
+        });
+      });
+
+      const liveBlockCards = Array.from(document.querySelectorAll('[data-block-status="PENDING"], [data-block-status="RUNNING"]'));
+      if (liveBlockCards.length) {
+        let secondsLeft = 4;
+        const updateLiveCountdown = () => {
+          liveBlockCards.forEach((card) => {
+            const node = card.querySelector('[data-block-refresh-countdown]');
+            if (node) node.textContent = '建议仍在生成中，' + secondsLeft + ' 秒后自动刷新。';
+          });
+        };
+        updateLiveCountdown();
+        const timer = window.setInterval(() => {
+          secondsLeft -= 1;
+          if (secondsLeft <= 0) {
+            window.clearInterval(timer);
+            window.location.href = window.location.pathname + window.location.search;
+            return;
+          }
+          updateLiveCountdown();
+        }, 1000);
+      }
+
       document.querySelectorAll('form[data-review-manual-edit] button[name="decision"]').forEach((button) => {
         button.addEventListener('click', () => {
           const form = button.closest('form');
@@ -1203,8 +2345,12 @@ const html = `<!doctype html>
       document.querySelectorAll('form[data-review-manual-edit]').forEach((form) => {
         form.addEventListener('submit', async (event) => {
           event.preventDefault();
-          const button = event.submitter || form.querySelector('button[name="decision"][value="' + (form.dataset.pendingDecision || '') + '"]') || form.querySelector('button[type="submit"]');
-          const decision = button?.value || form.dataset.pendingDecision || 'resubmit';
+          const fallbackDecision = form.dataset.pendingDecision || 'save_only';
+          const button = event.submitter
+            || form.querySelector('button[name="decision"][value="' + fallbackDecision + '"]')
+            || form.querySelector('button[name="decision"][value="save_only"]')
+            || form.querySelector('button[type="submit"]');
+          const decision = button?.value || fallbackDecision;
           const body = String(form.querySelector('textarea[name="body"]')?.value || '').trim();
           const feedback = form.querySelector('[data-manual-edit-feedback]');
           if (!body) {
@@ -1215,7 +2361,7 @@ const html = `<!doctype html>
             }
             return;
           }
-          if (!window.confirm(manualEditMessages[decision] || '确认保存人工改稿？')) {
+          if (decision !== 'save_only' && !window.confirm(manualEditMessages[decision] || '确认保存人工改稿？')) {
             return;
           }
           const originalText = button?.textContent || '提交';
@@ -1240,13 +2386,21 @@ const html = `<!doctype html>
             if (!response.ok) {
               throw new Error(resultMessageFromHtml(html, '人工改稿保存失败：HTTP ' + response.status));
             }
+            const bodyTextarea = form.querySelector('textarea[name="body"]');
+            const savedParagraphNo = paragraphNoFromTextareaCaret(bodyTextarea);
+            const targetHref = decision === 'save_only'
+              ? resultPrimaryHrefFromHtml(html, window.location.pathname + window.location.search)
+              : '/webhook/novel-review-list';
+            if (decision === 'save_only') rememberReviewSaveScroll(targetHref, {paragraphNo: savedParagraphNo});
             if (feedback) {
-              feedback.textContent = decision === 'approve' ? '已保存并通过，正在返回审核列表...' : '已保存并送审，正在返回审核列表...';
+              feedback.textContent = decision === 'save_only'
+                ? '已保存为新的待审候选稿，正在继续修改...'
+              : (decision === 'approve' ? '已保存并通过，正在返回审核列表...' : '已保存并重新审稿，正在返回审核列表...');
               feedback.classList.add('is-success');
             }
-            showToast('人工改稿已保存', '正在返回审核列表...');
+            showToast('人工改稿已保存', decision === 'save_only' ? '正在留在当前章节继续修改...' : '正在返回审核列表...');
             window.setTimeout(() => {
-              window.location.href = '/webhook/novel-review-list';
+              window.location.href = targetHref;
             }, 450);
           } catch (error) {
             if (feedback) {

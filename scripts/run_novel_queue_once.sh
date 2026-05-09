@@ -19,6 +19,7 @@ Runs one novel queue pass with the real GLM endpoint from .env:
   14 GENERATE_CHAPTER
   15 REVIEW_CHAPTER
   17 REWRITE_CHAPTER + NOTIFY_REVIEW
+  19 REVISE_CHAPTER_BLOCK
   18 auto recovery
 
 Default notification mode is safe for smoke tests:
@@ -96,4 +97,5 @@ else
   execute_workflow novelRewriteNotifyV1Workflow17
 fi
 
+execute_workflow novelBlockRevisionV1Workflow19
 execute_workflow novelAutoRecoveryV1Workflow18

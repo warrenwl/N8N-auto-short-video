@@ -33,7 +33,7 @@ const summary = text(body.summary || body.chapter_summary);
 const chapterBody = text(body.body || body.chapter_body);
 const comment = text(body.comment || body.note);
 const reviewer = text(body.reviewer || 'local_user') || 'local_user';
-const rawDecision = text(body.decision || body.manual_decision || 'resubmit').toLowerCase();
+const rawDecision = text(body.decision || body.manual_decision || 'save_only').toLowerCase();
 
 const decisionMap = {
   resubmit: 'RESUBMIT',
@@ -41,6 +41,10 @@ const decisionMap = {
   submit: 'RESUBMIT',
   submit_review: 'RESUBMIT',
   send_review: 'RESUBMIT',
+  save_only: 'SAVE_ONLY',
+  save_draft: 'SAVE_ONLY',
+  save_continue: 'SAVE_ONLY',
+  continue_edit: 'SAVE_ONLY',
   approve: 'APPROVE',
   pass: 'APPROVE',
   direct_approve: 'APPROVE',

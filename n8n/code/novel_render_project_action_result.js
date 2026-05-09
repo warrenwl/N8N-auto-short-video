@@ -56,6 +56,7 @@ const resultLabel = {
   MANUAL_CHAPTER_CANDIDATE_CREATED: '已创建人工编辑候选稿',
   SUPERSEDED_CHAPTER_VERSION: '章节版本已过期',
   MANUAL_REVIEW_CANDIDATE_CREATED: '已保存人工改稿并送审',
+  MANUAL_REVIEW_DRAFT_SAVED: '已保存人工改稿',
   MANUAL_REVIEW_APPROVED: '人工改稿已直接通过',
   INVALID_MANUAL_REVIEW_DECISION: '人工改稿决策无效',
   ACTIVE_CHAPTER_JOB_BLOCKED: '同章任务仍在处理',
@@ -150,11 +151,17 @@ const row = $json || {};
 const success = row.success === true || row.success === 'true';
 const projectId = row.project_id || '';
 const chapterId = row.chapter_id || '';
+const reviewToken = row.review_token || row.token || '';
 const resultCode = row.result_code || 'UNKNOWN';
 const action = row.action || '';
 const headline = success ? '操作已提交' : '操作未执行';
 const detailHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-project-list';
+const reviewHref = chapterId && reviewToken
+  ? `/webhook/novel-review-detail?chapter_id=${encodeURIComponent(chapterId)}&review_token=${encodeURIComponent(reviewToken)}`
+  : '/webhook/novel-review-list';
 const queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';
+const primaryHref = success && resultCode === 'MANUAL_REVIEW_DRAFT_SAVED' ? reviewHref : detailHref;
+const primaryLabel = success && resultCode === 'MANUAL_REVIEW_DRAFT_SAVED' ? '继续修改正文' : '返回项目控制台';
 
 const rows = [
   ['操作', label(actionLabel, action, '项目操作')],
@@ -237,7 +244,7 @@ const html = `<!doctype html>
         <dl>${rows}</dl>
       </div>
       <div class="actions">
-        <a class="button primary" href="${escapeHtml(detailHref)}">返回项目控制台</a>
+        <a class="button primary" href="${escapeHtml(primaryHref)}">${escapeHtml(primaryLabel)}</a>
         <a class="button" href="${escapeHtml(queueHref)}">查看队列</a>
         <a class="button" href="/webhook/novel-review-list">审核中心</a>
         <a class="button" href="/webhook/novel-project-list">项目列表</a>

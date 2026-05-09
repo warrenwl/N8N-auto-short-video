@@ -512,7 +512,7 @@ for (const expected of ['审核决策侧栏', '返回项目', '返回章节', '�
 for (const expected of ['review-detail-workspace', '审核内容', 'ai-review-drawer', '智能审稿抽屉', 'data-open-dialog']) {
   assert(reviewDetailText.includes(expected) || reviewDetailHtml.includes(expected), `review detail should prioritize reader and drawer interaction: ${expected}`);
 }
-for (const expected of ['manual-edit-drawer', '人工改稿抽屉', '/webhook/novel-review-manual-edit', 'data-review-manual-edit', '保存改稿并送审', '改稿并直接通过']) {
+for (const expected of ['manual-edit-drawer', '人工改稿抽屉', '/webhook/novel-review-manual-edit', 'data-review-manual-edit', '保存并重新审稿', '改稿并直接通过']) {
   assert(reviewDetailText.includes(expected) || reviewDetailHtml.includes(expected), `review detail should support manual text editing in a drawer: ${expected}`);
 }
 assert(
@@ -541,7 +541,7 @@ assert(reviewDetailHtml.includes('href="/webhook/novel-review-list">审核中心
 assert(!reviewDetailHtml.includes('href="/webhook/novel-project-list">项目列表</a><span class="crumb-separator">/</span><a href="/webhook/novel-project-detail'), 'review detail breadcrumb should not pretend project list is its parent');
 assert(reviewDetailHtml.includes("form.getAttribute('action')"), 'review decision forms should avoid form.action property shadowing by action buttons');
 assert(reviewDetailHtml.includes('fetch(formPostUrl(form)'), 'review decision forms should submit in-place instead of navigating to result pages');
-assert(reviewDetailHtml.includes("window.location.href = '/webhook/novel-review-list'"), 'review decision should return to the review list after success');
+assert(reviewDetailHtml.includes("resultPrimaryHrefFromHtml(html, '/webhook/novel-review-list')"), 'review decision should return to the review list after success');
 assert(!reviewDetailHtml.includes('<h2>第一章 旧城灯火</h2>'), 'review detail title should strip generated chapter-number prefixes');
 assertNoGetWriteLinks(reviewDetailHtml, 'review detail');
 

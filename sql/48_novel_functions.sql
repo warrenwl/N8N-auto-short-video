@@ -25,6 +25,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
+CREATE OR REPLACE FUNCTION normalize_novel_anchor_text(p_text TEXT)
+RETURNS TEXT AS $$
+  SELECT regexp_replace(COALESCE($1, ''), '\s+', '', 'g');
+$$ LANGUAGE sql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION normalize_novel_body_newlines(p_text TEXT)
+RETURNS TEXT AS $$
+  SELECT replace(replace(COALESCE($1, ''), E'\r\n', E'\n'), E'\r', E'\n');
+$$ LANGUAGE sql IMMUTABLE;
+
 CREATE OR REPLACE FUNCTION create_novel_chapter_version(
   p_project_id UUID,
   p_outline_id UUID,
@@ -368,6 +378,27 @@ BEGIN
       AND j.job_type = 'NOTIFY_REVIEW'
       AND j.status IN ('PENDING', 'RUNNING')
     RETURNING j.*
+  ), cancelled_block_revision_jobs AS (
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(j.error_message, '人工审核已通过，取消旧局部修订任务'),
+      finished_at = COALESCE(j.finished_at, NOW()),
+      updated_at = NOW()
+    FROM approved a
+    WHERE j.chapter_id = a.id
+      AND j.job_type = 'REVISE_CHAPTER_BLOCK'
+      AND j.status IN ('PENDING', 'RUNNING')
+    RETURNING j.*
+  ), superseded_block_revisions AS (
+    UPDATE novel_chapter_block_revisions br
+    SET
+      status = 'SUPERSEDED',
+      updated_at = NOW()
+    FROM approved a
+    WHERE br.chapter_id = a.id
+      AND br.status IN ('PENDING', 'RUNNING', 'SUGGESTED', 'FAILED')
+    RETURNING br.*
   ), inactive_old_facts AS (
     UPDATE novel_continuity_facts f
     SET status = 'INACTIVE'
@@ -492,6 +523,27 @@ BEGIN
       AND j.job_type = 'NOTIFY_REVIEW'
       AND j.status IN ('PENDING', 'RUNNING')
     RETURNING j.*
+  ), cancelled_block_revision_jobs AS (
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(j.error_message, '人工要求整章重写，取消旧局部修订任务'),
+      finished_at = COALESCE(j.finished_at, NOW()),
+      updated_at = NOW()
+    FROM requested r
+    WHERE j.chapter_id = r.id
+      AND j.job_type = 'REVISE_CHAPTER_BLOCK'
+      AND j.status IN ('PENDING', 'RUNNING')
+    RETURNING j.*
+  ), superseded_block_revisions AS (
+    UPDATE novel_chapter_block_revisions br
+    SET
+      status = 'SUPERSEDED',
+      updated_at = NOW()
+    FROM requested r
+    WHERE br.chapter_id = r.id
+      AND br.status IN ('PENDING', 'RUNNING', 'SUGGESTED', 'FAILED')
+    RETURNING br.*
   ), updated_project AS (
     UPDATE novel_projects p
     SET
@@ -607,6 +659,27 @@ BEGIN
       AND j.job_type = 'NOTIFY_REVIEW'
       AND j.status IN ('PENDING', 'RUNNING')
     RETURNING j.*
+  ), cancelled_block_revision_jobs AS (
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(j.error_message, '人工拒绝候选稿，取消旧局部修订任务'),
+      finished_at = COALESCE(j.finished_at, NOW()),
+      updated_at = NOW()
+    FROM rejected r
+    WHERE j.chapter_id = r.id
+      AND j.job_type = 'REVISE_CHAPTER_BLOCK'
+      AND j.status IN ('PENDING', 'RUNNING')
+    RETURNING j.*
+  ), superseded_block_revisions AS (
+    UPDATE novel_chapter_block_revisions br
+    SET
+      status = 'SUPERSEDED',
+      updated_at = NOW()
+    FROM rejected r
+    WHERE br.chapter_id = r.id
+      AND br.status IN ('PENDING', 'RUNNING', 'SUGGESTED', 'FAILED')
+    RETURNING br.*
   ), updated_project AS (
     UPDATE novel_projects p
     SET
@@ -693,7 +766,16 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
   v_action TEXT := UPPER(TRIM(COALESCE(p_action, '')));
+  v_chapter novel_chapters%ROWTYPE;
+  v_project novel_projects%ROWTYPE;
+  v_job novel_generation_jobs%ROWTYPE;
+  v_actor TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
+  v_cancelled_job_count INTEGER := 0;
 BEGIN
+  IF v_action IN ('RERUN_REVIEW', 'REQUEST_REVIEW', 'REQUEST_AI_REVIEW', 'REVIEW_AGAIN', 'AI_REVIEW', 'REVIEW_CHAPTER', '重新审稿', '智能审稿') THEN
+    v_action := 'RERUN_REVIEW';
+  END IF;
+
   IF v_action = 'APPROVE' THEN
     RETURN QUERY
     SELECT
@@ -775,6 +857,126 @@ BEGIN
         0::bigint;
     END IF;
 
+    RETURN;
+  END IF;
+
+  IF v_action = 'RERUN_REVIEW' THEN
+    SELECT *
+    INTO v_chapter
+    FROM novel_chapters c
+    WHERE c.id = p_chapter_id
+      AND c.review_token = p_review_token
+      AND c.status = 'NEED_REVIEW'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM novel_chapter_outlines o
+        WHERE o.id = c.outline_id
+          AND c.created_at < o.updated_at
+      )
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RETURN QUERY
+      SELECT
+        FALSE,
+        'NO_MATCH_OR_INVALID_STATE'::text,
+        v_action,
+        p_chapter_id,
+        NULL::uuid,
+        NULL::integer,
+        NULL::text,
+        NULL::text,
+        NULL::uuid,
+        NULL::uuid,
+        0::bigint,
+        0::bigint;
+      RETURN;
+    END IF;
+
+    SELECT *
+    INTO v_project
+    FROM novel_projects p
+    WHERE p.id = v_chapter.project_id
+    FOR UPDATE;
+
+    IF v_project.status IN ('PAUSED', 'ARCHIVED') THEN
+      RETURN QUERY
+      SELECT
+        FALSE,
+        'PROJECT_NOT_EDITABLE'::text,
+        v_action,
+        v_chapter.id,
+        v_chapter.project_id,
+        v_chapter.chapter_no,
+        v_chapter.status,
+        v_project.status,
+        NULL::uuid,
+        NULL::uuid,
+        0::bigint,
+        0::bigint;
+      RETURN;
+    END IF;
+
+    UPDATE novel_generation_jobs j
+    SET
+      status = 'CANCELLED',
+      error_message = COALESCE(error_message, '人工触发重新审稿，取消旧审核/通知任务'),
+      finished_at = COALESCE(finished_at, NOW()),
+      updated_at = NOW()
+    WHERE j.chapter_id = v_chapter.id
+      AND j.job_type IN ('REVIEW_CHAPTER', 'NOTIFY_REVIEW')
+      AND j.status IN ('PENDING', 'RUNNING');
+
+    GET DIAGNOSTICS v_cancelled_job_count = ROW_COUNT;
+
+    UPDATE novel_chapters c
+    SET status = 'DRAFT_READY'
+    WHERE c.id = v_chapter.id
+    RETURNING * INTO v_chapter;
+
+    UPDATE novel_projects p
+    SET status = 'REVIEWING'
+    WHERE p.id = v_chapter.project_id
+      AND p.status NOT IN ('PAUSED', 'ARCHIVED', 'FAILED', 'COMPLETED')
+    RETURNING * INTO v_project;
+
+    INSERT INTO novel_generation_jobs (
+      project_id,
+      chapter_id,
+      job_type,
+      chapter_no,
+      payload,
+      status
+    )
+    VALUES (
+      v_chapter.project_id,
+      v_chapter.id,
+      'REVIEW_CHAPTER',
+      v_chapter.chapter_no,
+      jsonb_build_object(
+        'source', 'manual_rerun_review',
+        'requested_by', v_actor,
+        'comment', NULLIF(p_comment, ''),
+        'cancelled_job_count', v_cancelled_job_count
+      ),
+      'PENDING'
+    )
+    RETURNING * INTO v_job;
+
+    RETURN QUERY
+    SELECT
+      TRUE,
+      'REVIEW_RERUN_QUEUED'::text,
+      v_action,
+      v_chapter.id,
+      v_chapter.project_id,
+      v_chapter.chapter_no,
+      v_chapter.status,
+      COALESCE(v_project.status, 'REVIEWING')::text,
+      v_job.id,
+      NULL::uuid,
+      0::bigint,
+      0::bigint;
     RETURN;
   END IF;
 
@@ -872,6 +1074,7 @@ DECLARE
   v_max_current_chapter_no INTEGER;
   v_next_chapter_no INTEGER;
   v_rejected_retry_chapter_id UUID;
+  v_ready_director_card_id UUID;
   v_job novel_generation_jobs%ROWTYPE;
 BEGIN
   SELECT *
@@ -1147,6 +1350,50 @@ BEGIN
     c.generation_version DESC,
     COALESCE(c.updated_at, c.created_at) DESC
   LIMIT 1;
+
+  SELECT d.id
+  INTO v_ready_director_card_id
+  FROM novel_chapter_director_cards d
+  WHERE d.project_id = p_project_id
+    AND d.chapter_no = v_next_chapter_no
+    AND d.is_current = TRUE
+    AND d.status = 'READY'
+  ORDER BY d.version DESC, COALESCE(d.updated_at, d.created_at) DESC
+  LIMIT 1;
+
+  IF v_ready_director_card_id IS NOT NULL THEN
+    INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, status, payload)
+    VALUES (
+      p_project_id,
+      'GENERATE_CHAPTER',
+      v_next_chapter_no,
+      'PENDING',
+      jsonb_build_object(
+        'trigger_source', CASE WHEN v_rejected_retry_chapter_id IS NULL THEN 'project_continue_ready_director' ELSE 'chapter_rejected_retry_ready_director' END,
+        'requested_by', COALESCE(NULLIF(p_reviewer, ''), 'local_user'),
+        'comment', NULLIF(p_comment, ''),
+        'director_card_id', v_ready_director_card_id,
+        'rejected_chapter_id', v_rejected_retry_chapter_id
+      )
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING * INTO v_job;
+
+    RETURN QUERY SELECT
+      TRUE,
+      'CHAPTER_JOB_CREATED'::text,
+      'CONTINUE_PROJECT'::text,
+      v_project.id,
+      CASE WHEN v_next_chapter_no = 1 THEN 'OUTLINE_READY' ELSE 'WRITING' END,
+      'GENERATE_CHAPTER'::text,
+      v_next_chapter_no,
+      v_job.id,
+      CASE
+        WHEN v_rejected_retry_chapter_id IS NULL THEN format('第 %s 章导演台已就绪，已创建正文生成任务。', v_next_chapter_no)
+        ELSE format('第 %s 章导演台已就绪，已创建继续重写正文生成任务。', v_next_chapter_no)
+      END::text;
+    RETURN;
+  END IF;
 
   INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, status, payload)
   VALUES (
@@ -3133,6 +3380,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS apply_novel_review_manual_edit(
+  UUID,
+  TEXT,
+  TEXT,
+  TEXT,
+  TEXT,
+  TEXT,
+  TEXT,
+  TEXT
+);
+
 CREATE OR REPLACE FUNCTION apply_novel_review_manual_edit(
   p_chapter_id UUID,
   p_review_token TEXT,
@@ -3141,13 +3399,14 @@ CREATE OR REPLACE FUNCTION apply_novel_review_manual_edit(
   p_summary TEXT DEFAULT NULL,
   p_comment TEXT DEFAULT NULL,
   p_reviewer TEXT DEFAULT 'local_user',
-  p_decision TEXT DEFAULT 'RESUBMIT'
+  p_decision TEXT DEFAULT 'SAVE_ONLY'
 )
 RETURNS TABLE (
   success BOOLEAN,
   result_code TEXT,
   action TEXT,
   chapter_id UUID,
+  review_token TEXT,
   project_id UUID,
   chapter_no INTEGER,
   chapter_status TEXT,
@@ -3166,7 +3425,7 @@ DECLARE
   v_job novel_generation_jobs%ROWTYPE;
   v_approved RECORD;
   v_actor TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
-  v_decision TEXT := UPPER(TRIM(COALESCE(p_decision, 'RESUBMIT')));
+  v_decision TEXT := UPPER(TRIM(COALESCE(p_decision, 'SAVE_ONLY')));
   v_body TEXT := NULLIF(p_body, '');
   v_copied_fact_count INTEGER := 0;
   v_cancelled_job_count INTEGER := 0;
@@ -3174,6 +3433,8 @@ DECLARE
 BEGIN
   IF v_decision IN ('SUBMIT', 'SUBMIT_REVIEW', 'SEND_REVIEW', 'REVIEW', 'RESUBMIT', '送审', '提交审核') THEN
     v_decision := 'RESUBMIT';
+  ELSIF v_decision IN ('SAVE_ONLY', 'SAVE_DRAFT', 'SAVE_CONTINUE', 'CONTINUE_EDIT', '保存继续修改', '保存不送审') THEN
+    v_decision := 'SAVE_ONLY';
   ELSIF v_decision IN ('APPROVE', 'PASS', 'DIRECT_APPROVE', '通过', '直接通过') THEN
     v_decision := 'APPROVE';
   ELSE
@@ -3182,6 +3443,7 @@ BEGIN
       'INVALID_MANUAL_REVIEW_DECISION'::text,
       'MANUAL_EDIT_REVIEW_CHAPTER'::text,
       p_chapter_id,
+      NULL::text,
       NULL::uuid,
       NULL::integer,
       NULL::text,
@@ -3191,7 +3453,7 @@ BEGIN
       NULL::uuid,
       0::bigint,
       0::bigint,
-      '人工改稿决策无效，只支持送审或直接通过。'::text;
+      '人工改稿决策无效，只支持保存继续修改、送审或直接通过。'::text;
     RETURN;
   END IF;
 
@@ -3215,6 +3477,7 @@ BEGIN
       'NO_MATCH_OR_INVALID_STATE'::text,
       'MANUAL_EDIT_REVIEW_CHAPTER'::text,
       p_chapter_id,
+      NULL::text,
       NULL::uuid,
       NULL::integer,
       NULL::text,
@@ -3240,6 +3503,7 @@ BEGIN
       'PROJECT_ARCHIVED'::text,
       'MANUAL_EDIT_REVIEW_CHAPTER'::text,
       v_original.id,
+      v_original.review_token,
       v_original.project_id,
       v_original.chapter_no,
       v_original.status,
@@ -3259,6 +3523,7 @@ BEGIN
       'INVALID_CHAPTER_BODY'::text,
       'MANUAL_EDIT_REVIEW_CHAPTER'::text,
       v_original.id,
+      v_original.review_token,
       v_original.project_id,
       v_original.chapter_no,
       v_original.status,
@@ -3278,10 +3543,17 @@ BEGIN
     error_message = COALESCE(error_message, '人工改稿后取消旧待审候选稿相关任务'),
     finished_at = COALESCE(finished_at, NOW())
   WHERE j.chapter_id = v_original.id
-    AND j.job_type IN ('REVIEW_CHAPTER', 'NOTIFY_REVIEW', 'REWRITE_CHAPTER')
+    AND j.job_type IN ('REVIEW_CHAPTER', 'NOTIFY_REVIEW', 'REWRITE_CHAPTER', 'REVISE_CHAPTER_BLOCK')
     AND j.status IN ('PENDING', 'RUNNING');
 
   GET DIAGNOSTICS v_cancelled_job_count = ROW_COUNT;
+
+  UPDATE novel_chapter_block_revisions br
+  SET
+    status = 'SUPERSEDED',
+    updated_at = NOW()
+  WHERE br.chapter_id = v_original.id
+    AND br.status IN ('PENDING', 'RUNNING', 'SUGGESTED', 'FAILED');
 
   UPDATE novel_chapters c
   SET
@@ -3316,7 +3588,7 @@ BEGIN
     COALESCE(NULLIF(p_summary, ''), v_original.summary),
     char_length(regexp_replace(v_body, '\s+', '', 'g')),
     'manual',
-    CASE WHEN v_decision = 'APPROVE' THEN 'NEED_REVIEW' ELSE 'DRAFT_READY' END,
+    CASE WHEN v_decision IN ('APPROVE', 'SAVE_ONLY') THEN 'NEED_REVIEW' ELSE 'DRAFT_READY' END,
     FALSE
   );
 
@@ -3376,6 +3648,34 @@ BEGIN
     )
   );
 
+  IF v_decision = 'SAVE_ONLY' THEN
+    UPDATE novel_projects p
+    SET status = 'REVIEWING'
+    WHERE p.id = v_candidate.project_id
+      AND p.status NOT IN ('PAUSED', 'ARCHIVED', 'FAILED', 'COMPLETED')
+    RETURNING p.status INTO v_project_status;
+
+    v_project_status := COALESCE(v_project_status, v_project.status);
+
+    RETURN QUERY SELECT
+      TRUE,
+      'MANUAL_REVIEW_DRAFT_SAVED'::text,
+      'MANUAL_EDIT_REVIEW_CHAPTER'::text,
+      v_candidate.id,
+      v_candidate.review_token,
+      v_candidate.project_id,
+      v_candidate.chapter_no,
+      v_candidate.status,
+      v_project_status,
+      NULL::text,
+      NULL::uuid,
+      NULL::uuid,
+      0::bigint,
+      0::bigint,
+      format('已保存第 %s 章人工改稿，新候选稿仍在待人工审核状态；不会自动触发智能审稿。', v_candidate.chapter_no)::text;
+    RETURN;
+  END IF;
+
   IF v_decision = 'APPROVE' THEN
     SELECT *
     INTO v_approved
@@ -3392,6 +3692,7 @@ BEGIN
         'NO_MATCH_OR_INVALID_STATE'::text,
         'MANUAL_EDIT_REVIEW_CHAPTER'::text,
         v_candidate.id,
+        v_candidate.review_token,
         v_candidate.project_id,
         v_candidate.chapter_no,
         v_candidate.status,
@@ -3410,6 +3711,7 @@ BEGIN
       'MANUAL_REVIEW_APPROVED'::text,
       'MANUAL_EDIT_REVIEW_CHAPTER'::text,
       v_approved.chapter_id,
+      v_candidate.review_token,
       v_approved.project_id,
       v_approved.chapter_no,
       v_approved.chapter_status,
@@ -3461,6 +3763,7 @@ BEGIN
     'MANUAL_REVIEW_CANDIDATE_CREATED'::text,
     'MANUAL_EDIT_REVIEW_CHAPTER'::text,
     v_candidate.id,
+    v_candidate.review_token,
     v_candidate.project_id,
     v_candidate.chapter_no,
     v_candidate.status,
@@ -3471,6 +3774,1150 @@ BEGIN
     0::bigint,
     0::bigint,
     format('已保存第 %s 章人工改稿，并进入智能审稿队列；原待审稿已退出审核列表。', v_candidate.chapter_no)::text;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS request_novel_chapter_block_revision(
+  UUID,
+  TEXT,
+  TEXT,
+  TEXT,
+  TEXT,
+  INTEGER,
+  INTEGER,
+  TEXT,
+  TEXT,
+  TEXT,
+  TEXT
+);
+
+CREATE OR REPLACE FUNCTION request_novel_chapter_block_revision(
+  p_chapter_id UUID,
+  p_review_token TEXT,
+  p_action_type TEXT,
+  p_selected_text TEXT,
+  p_instruction TEXT,
+  p_paragraph_start INTEGER DEFAULT NULL,
+  p_paragraph_end INTEGER DEFAULT NULL,
+  p_before_context TEXT DEFAULT NULL,
+  p_after_context TEXT DEFAULT NULL,
+  p_range_lock TEXT DEFAULT 'selection_only',
+  p_reviewer TEXT DEFAULT 'local_user',
+  p_selection_start_offset INTEGER DEFAULT NULL,
+  p_selection_end_offset INTEGER DEFAULT NULL,
+  p_anchor_prefix TEXT DEFAULT NULL,
+  p_anchor_suffix TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  revision_id UUID,
+  project_id UUID,
+  chapter_id UUID,
+  chapter_no INTEGER,
+  job_type TEXT,
+  job_id UUID,
+  revision_status TEXT,
+  message TEXT
+) AS $$
+DECLARE
+  v_chapter novel_chapters%ROWTYPE;
+  v_project novel_projects%ROWTYPE;
+  v_revision novel_chapter_block_revisions%ROWTYPE;
+  v_job novel_generation_jobs%ROWTYPE;
+  v_action TEXT := lower(trim(COALESCE(p_action_type, 'modify')));
+  v_range_lock TEXT := lower(trim(COALESCE(p_range_lock, 'selection_only')));
+  v_selected_text TEXT := trim(COALESCE(p_selected_text, ''));
+  v_instruction TEXT := trim(COALESCE(p_instruction, ''));
+  v_reviewer TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
+  v_active_job_count INTEGER := 0;
+  v_body TEXT := '';
+  v_anchor_prefix TEXT := COALESCE(p_anchor_prefix, '');
+  v_anchor_suffix TEXT := COALESCE(p_anchor_suffix, '');
+  v_anchor_text TEXT;
+  v_anchor_pos INTEGER := 0;
+  v_anchor_length INTEGER := char_length(v_selected_text);
+  v_occurrence_count INTEGER := 0;
+  v_selection_start_offset INTEGER := p_selection_start_offset;
+  v_selection_end_offset INTEGER := p_selection_end_offset;
+  v_expected_span INTEGER;
+  v_near_start INTEGER;
+  v_near_text TEXT;
+  v_near_pos INTEGER;
+BEGIN
+  IF v_action IN ('revise', 'edit', 'rewrite_selection', 'direct_modify') THEN
+    v_action := 'modify';
+  ELSIF v_action IN ('compress', 'shorten') THEN
+    v_action := 'condense';
+  ELSIF v_action IN ('logic', 'fix_logic') THEN
+    v_action := 'logic_fix';
+  END IF;
+
+  IF v_action NOT IN ('modify', 'expand', 'condense', 'polish', 'continue', 'logic_fix', 'custom') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'INVALID_BLOCK_REVISION_ACTION'::text,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '局部修订类型无效。'::text;
+    RETURN;
+  END IF;
+
+  IF v_range_lock NOT IN ('selection_only', 'adjacent_one', 'flag_later') THEN
+    v_range_lock := 'selection_only';
+  END IF;
+
+  IF v_selected_text = '' THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'EMPTY_SELECTED_TEXT'::text,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '请先选择需要局部修订的原文。'::text;
+    RETURN;
+  END IF;
+
+  IF v_instruction = '' THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'EMPTY_BLOCK_REVISION_INSTRUCTION'::text,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '请填写局部修订要求。'::text;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_chapter
+  FROM novel_chapters c
+  WHERE c.id = p_chapter_id
+    AND c.review_token = p_review_token
+    AND c.status = 'NEED_REVIEW'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM novel_chapter_outlines o
+      WHERE o.id = c.outline_id
+        AND c.created_at < o.updated_at
+    )
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'NO_MATCH_OR_INVALID_STATE'::text,
+      NULL::uuid,
+      NULL::uuid,
+      p_chapter_id,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '只能对当前仍处于待人工审核状态的候选稿发起局部修订。'::text;
+    RETURN;
+  END IF;
+
+  v_body := normalize_novel_body_newlines(v_chapter.body);
+
+  IF v_selection_start_offset IS NOT NULL AND v_selection_start_offset < 0 THEN
+    v_selection_start_offset := NULL;
+  END IF;
+
+  IF v_selection_end_offset IS NOT NULL AND v_selection_end_offset < 0 THEN
+    v_selection_end_offset := NULL;
+  END IF;
+
+  IF v_selection_start_offset IS NOT NULL
+     AND v_selection_end_offset IS NOT NULL
+     AND v_selection_end_offset > v_selection_start_offset THEN
+    v_expected_span := v_selection_end_offset - v_selection_start_offset;
+    IF substring(v_body FROM v_selection_start_offset + 1 FOR v_expected_span) = v_selected_text
+       OR normalize_novel_anchor_text(substring(v_body FROM v_selection_start_offset + 1 FOR v_expected_span)) = normalize_novel_anchor_text(v_selected_text) THEN
+      v_anchor_pos := v_selection_start_offset + 1;
+      v_anchor_length := v_expected_span;
+    END IF;
+  END IF;
+
+  IF v_anchor_pos <= 0
+     AND v_selection_start_offset IS NOT NULL
+     AND substring(v_body FROM v_selection_start_offset + 1 FOR char_length(v_selected_text)) = v_selected_text THEN
+    v_anchor_pos := v_selection_start_offset + 1;
+    v_anchor_length := char_length(v_selected_text);
+  END IF;
+
+  IF v_anchor_pos <= 0 AND v_selection_start_offset IS NOT NULL THEN
+    v_near_start := GREATEST(0, v_selection_start_offset - 240);
+    v_near_text := substring(v_body FROM v_near_start + 1 FOR char_length(v_selected_text) + 480);
+    v_near_pos := position(v_selected_text IN v_near_text);
+    IF v_near_pos > 0 THEN
+      v_anchor_pos := v_near_start + v_near_pos;
+      v_anchor_length := char_length(v_selected_text);
+    END IF;
+  END IF;
+
+  IF v_anchor_pos <= 0 AND (v_anchor_prefix <> '' OR v_anchor_suffix <> '') THEN
+    v_anchor_text := v_anchor_prefix || v_selected_text || v_anchor_suffix;
+    v_anchor_pos := position(v_anchor_text IN v_body);
+    IF v_anchor_pos > 0 THEN
+      v_anchor_pos := v_anchor_pos + char_length(v_anchor_prefix);
+      v_anchor_length := char_length(v_selected_text);
+    END IF;
+  END IF;
+
+  IF v_anchor_pos <= 0 THEN
+    v_occurrence_count := CASE
+      WHEN char_length(v_selected_text) = 0 THEN 0
+      ELSE ((char_length(v_body) - char_length(replace(v_body, v_selected_text, ''))) / char_length(v_selected_text))::integer
+    END;
+
+    IF v_occurrence_count = 1 THEN
+      v_anchor_pos := position(v_selected_text IN v_body);
+      v_anchor_length := char_length(v_selected_text);
+    ELSIF v_occurrence_count > 1 THEN
+      RETURN QUERY SELECT
+        FALSE,
+        'AMBIGUOUS_ANCHOR'::text,
+        NULL::uuid,
+        v_chapter.project_id,
+        v_chapter.id,
+        v_chapter.chapter_no,
+        NULL::text,
+        NULL::uuid,
+        NULL::text,
+        '选中的原文在正文中出现多次，请刷新页面后重新选择更精确的片段。'::text;
+      RETURN;
+    END IF;
+  END IF;
+
+  IF v_anchor_pos <= 0 THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'ANCHOR_NOT_FOUND'::text,
+      NULL::uuid,
+      v_chapter.project_id,
+      v_chapter.id,
+      v_chapter.chapter_no,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '选中的原文锚点已失效，请刷新页面后重新选择。'::text;
+    RETURN;
+  END IF;
+
+  v_selection_start_offset := v_anchor_pos - 1;
+  v_selection_end_offset := v_selection_start_offset + v_anchor_length;
+
+  SELECT *
+  INTO v_project
+  FROM novel_projects p
+  WHERE p.id = v_chapter.project_id
+  FOR UPDATE;
+
+  IF v_project.status IN ('PAUSED', 'ARCHIVED') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'PROJECT_NOT_EDITABLE'::text,
+      NULL::uuid,
+      v_chapter.project_id,
+      v_chapter.id,
+      v_chapter.chapter_no,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '项目已暂停或归档，不能发起局部修订。'::text;
+    RETURN;
+  END IF;
+
+  SELECT COUNT(*)::integer
+  INTO v_active_job_count
+  FROM novel_generation_jobs j
+  WHERE j.chapter_id = v_chapter.id
+    AND j.job_type = 'REVISE_CHAPTER_BLOCK'
+    AND j.status IN ('PENDING', 'RUNNING');
+
+  IF v_active_job_count > 0 THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'ACTIVE_BLOCK_REVISION_JOB_EXISTS'::text,
+      NULL::uuid,
+      v_chapter.project_id,
+      v_chapter.id,
+      v_chapter.chapter_no,
+      NULL::text,
+      NULL::uuid,
+      NULL::text,
+      '这一章已有局部修订任务在处理中，请等待建议返回后再继续。'::text;
+    RETURN;
+  END IF;
+
+  INSERT INTO novel_chapter_block_revisions (
+    project_id,
+    chapter_id,
+    source_generation_version,
+    action_type,
+    range_lock,
+    paragraph_start,
+    paragraph_end,
+    selection_start_offset,
+    selection_end_offset,
+    anchor_prefix,
+    anchor_suffix,
+    selected_text,
+    selected_text_hash,
+    before_context,
+    after_context,
+    instruction,
+    status,
+    created_by
+  )
+  VALUES (
+    v_chapter.project_id,
+    v_chapter.id,
+    v_chapter.generation_version,
+    v_action,
+    v_range_lock,
+    p_paragraph_start,
+    COALESCE(p_paragraph_end, p_paragraph_start),
+    v_selection_start_offset,
+    v_selection_end_offset,
+    NULLIF(v_anchor_prefix, ''),
+    NULLIF(v_anchor_suffix, ''),
+    v_selected_text,
+    encode(digest(v_selected_text, 'sha256'), 'hex'),
+    NULLIF(p_before_context, ''),
+    NULLIF(p_after_context, ''),
+    v_instruction,
+    'PENDING',
+    v_reviewer
+  )
+  RETURNING * INTO v_revision;
+
+  INSERT INTO novel_generation_jobs (
+    project_id,
+    chapter_id,
+    job_type,
+    chapter_no,
+    payload,
+    status
+  )
+  VALUES (
+    v_chapter.project_id,
+    v_chapter.id,
+    'REVISE_CHAPTER_BLOCK',
+    v_chapter.chapter_no,
+    jsonb_build_object(
+      'source', 'review_block_revision',
+      'revision_id', v_revision.id,
+      'action_type', v_action,
+      'range_lock', v_range_lock,
+      'paragraph_start', p_paragraph_start,
+      'paragraph_end', COALESCE(p_paragraph_end, p_paragraph_start),
+      'selection_start_offset', v_selection_start_offset,
+      'selection_end_offset', v_selection_end_offset,
+      'selected_text_hash', v_revision.selected_text_hash,
+      'requested_by', v_reviewer
+    ),
+    'PENDING'
+  )
+  RETURNING * INTO v_job;
+
+  UPDATE novel_chapter_block_revisions br
+  SET job_id = v_job.id
+  WHERE br.id = v_revision.id
+  RETURNING * INTO v_revision;
+
+  RETURN QUERY SELECT
+    TRUE,
+    'BLOCK_REVISION_QUEUED'::text,
+    v_revision.id,
+    v_chapter.project_id,
+    v_chapter.id,
+    v_chapter.chapter_no,
+    v_job.job_type,
+    v_job.id,
+    v_revision.status,
+    format('已创建第 %s 章局部修订任务，请等待 AI 建议返回。', v_chapter.chapter_no)::text;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION mark_novel_chapter_block_revision_suggested(
+  p_revision_id UUID,
+  p_job_id UUID,
+  p_replacement_text TEXT,
+  p_change_summary TEXT DEFAULT NULL,
+  p_instruction_checklist JSONB DEFAULT '[]'::jsonb,
+  p_affects_later_text BOOLEAN DEFAULT FALSE,
+  p_raw_payload JSONB DEFAULT '{}'::jsonb
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  revision_id UUID,
+  chapter_id UUID,
+  job_id UUID,
+  revision_status TEXT,
+  message TEXT
+) AS $$
+DECLARE
+  v_revision novel_chapter_block_revisions%ROWTYPE;
+  v_replacement TEXT := trim(COALESCE(p_replacement_text, ''));
+BEGIN
+  IF v_replacement = '' THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'EMPTY_BLOCK_REVISION_SUGGESTION'::text,
+      p_revision_id,
+      NULL::uuid,
+      p_job_id,
+      NULL::text,
+      'AI 未返回可用的局部替换文本。'::text;
+    RETURN;
+  END IF;
+
+  UPDATE novel_chapter_block_revisions br
+  SET
+    replacement_text = v_replacement,
+    change_summary = NULLIF(p_change_summary, ''),
+    instruction_checklist = COALESCE(p_instruction_checklist, '[]'::jsonb),
+    affects_later_text = COALESCE(p_affects_later_text, FALSE),
+    status = 'SUGGESTED',
+    error_message = NULL,
+    updated_at = NOW()
+  WHERE br.id = p_revision_id
+    AND (p_job_id IS NULL OR br.job_id = p_job_id)
+    AND br.status IN ('PENDING', 'RUNNING')
+  RETURNING * INTO v_revision;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BLOCK_REVISION_NOT_UPDATABLE'::text,
+      p_revision_id,
+      NULL::uuid,
+      p_job_id,
+      NULL::text,
+      '局部修订记录已不处于可写入建议的状态。'::text;
+    RETURN;
+  END IF;
+
+  INSERT INTO novel_project_events (
+    project_id,
+    chapter_id,
+    event_type,
+    actor,
+    after_payload
+  )
+  VALUES (
+    v_revision.project_id,
+    v_revision.chapter_id,
+    'CHAPTER_BLOCK_REVISION_SUGGESTED',
+    'ai_worker',
+    COALESCE(p_raw_payload, '{}'::jsonb) || jsonb_build_object(
+      'revision_id', v_revision.id,
+      'job_id', p_job_id,
+      'affects_later_text', v_revision.affects_later_text
+    )
+  );
+
+  RETURN QUERY SELECT
+    TRUE,
+    'BLOCK_REVISION_SUGGESTED'::text,
+    v_revision.id,
+    v_revision.chapter_id,
+    v_revision.job_id,
+    v_revision.status,
+    '局部修订建议已生成，等待人工确认。'::text;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION mark_novel_chapter_block_revision_failed(
+  p_revision_id UUID,
+  p_job_id UUID,
+  p_error_message TEXT
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  revision_id UUID,
+  chapter_id UUID,
+  job_id UUID,
+  revision_status TEXT,
+  message TEXT
+) AS $$
+DECLARE
+  v_revision novel_chapter_block_revisions%ROWTYPE;
+BEGIN
+  UPDATE novel_chapter_block_revisions br
+  SET
+    status = 'FAILED',
+    error_message = COALESCE(NULLIF(p_error_message, ''), '局部修订任务失败'),
+    updated_at = NOW()
+  WHERE br.id = p_revision_id
+    AND (p_job_id IS NULL OR br.job_id = p_job_id)
+    AND br.status IN ('PENDING', 'RUNNING')
+  RETURNING * INTO v_revision;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BLOCK_REVISION_NOT_FAILED'::text,
+      p_revision_id,
+      NULL::uuid,
+      p_job_id,
+      NULL::text,
+      '局部修订记录已不处于可标记失败的状态。'::text;
+    RETURN;
+  END IF;
+
+  RETURN QUERY SELECT
+    TRUE,
+    'BLOCK_REVISION_FAILED'::text,
+    v_revision.id,
+    v_revision.chapter_id,
+    v_revision.job_id,
+    v_revision.status,
+    '局部修订任务已标记失败。'::text;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP FUNCTION IF EXISTS apply_novel_chapter_block_revision(UUID, TEXT, TEXT, TEXT, TEXT);
+
+CREATE OR REPLACE FUNCTION apply_novel_chapter_block_revision(
+  p_revision_id UUID,
+  p_review_token TEXT,
+  p_action TEXT DEFAULT 'APPLY',
+  p_replacement_text_override TEXT DEFAULT NULL,
+  p_reviewer TEXT DEFAULT 'local_user'
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  action TEXT,
+  revision_id UUID,
+  chapter_id UUID,
+  project_id UUID,
+  chapter_no INTEGER,
+  chapter_status TEXT,
+  job_type TEXT,
+  job_id UUID,
+  message TEXT,
+  review_token TEXT
+) AS $$
+DECLARE
+  v_revision novel_chapter_block_revisions%ROWTYPE;
+  v_original novel_chapters%ROWTYPE;
+  v_candidate novel_chapters%ROWTYPE;
+  v_project novel_projects%ROWTYPE;
+  v_job novel_generation_jobs%ROWTYPE;
+  v_rewrite RECORD;
+  v_action TEXT := upper(trim(COALESCE(p_action, 'APPLY')));
+  v_replacement TEXT;
+  v_selected TEXT;
+  v_pos INTEGER;
+  v_new_body TEXT;
+  v_reviewer TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
+  v_active_job_count INTEGER := 0;
+  v_body TEXT := '';
+  v_anchor_text TEXT;
+  v_occurrence_count INTEGER := 0;
+  v_copied_fact_count INTEGER := 0;
+  v_cancelled_job_count INTEGER := 0;
+  v_match_length INTEGER := 0;
+  v_expected_span INTEGER;
+  v_near_start INTEGER;
+  v_near_text TEXT;
+  v_near_pos INTEGER;
+BEGIN
+  IF v_action IN ('APPLY_SUGGESTION', 'ACCEPT') THEN
+    v_action := 'APPLY';
+  ELSIF v_action IN ('EDIT_AND_APPLY', 'MODIFY_APPLY') THEN
+    v_action := 'APPLY_EDITED';
+  ELSIF v_action IN ('DISCARD', 'ABANDON') THEN
+    v_action := 'REJECT';
+  ELSIF v_action IN ('REGEN', 'RERUN') THEN
+    v_action := 'REGENERATE';
+  ELSIF v_action IN ('REQUEST_REWRITE_CHAPTER', 'FULL_REWRITE') THEN
+    v_action := 'REQUEST_REWRITE';
+  END IF;
+
+  IF v_action NOT IN ('APPLY', 'APPLY_EDITED', 'REJECT', 'REGENERATE', 'REQUEST_REWRITE') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'INVALID_BLOCK_REVISION_APPLY_ACTION'::text,
+      v_action,
+      p_revision_id,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::text,
+      NULL::uuid,
+      '局部修订确认动作无效。'::text,
+      NULL::text;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_revision
+  FROM novel_chapter_block_revisions br
+  WHERE br.id = p_revision_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BLOCK_REVISION_NOT_FOUND'::text,
+      v_action,
+      p_revision_id,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::text,
+      NULL::uuid,
+      '局部修订记录不存在。'::text,
+      NULL::text;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_original
+  FROM novel_chapters c
+  WHERE c.id = v_revision.chapter_id
+    AND c.review_token = p_review_token
+    AND c.status = 'NEED_REVIEW'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM novel_chapter_outlines o
+      WHERE o.id = c.outline_id
+        AND c.created_at < o.updated_at
+    )
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'NO_MATCH_OR_INVALID_STATE'::text,
+      v_action,
+      v_revision.id,
+      v_revision.chapter_id,
+      v_revision.project_id,
+      NULL::integer,
+      NULL::text,
+      NULL::text,
+      NULL::uuid,
+      '只能处理当前仍处于待人工审核状态的候选稿局部修订。'::text,
+      NULL::text;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_project
+  FROM novel_projects p
+  WHERE p.id = v_original.project_id
+  FOR UPDATE;
+
+  IF v_action = 'REJECT' THEN
+    IF v_revision.status IN ('APPLIED', 'SUPERSEDED') THEN
+      RETURN QUERY SELECT
+        FALSE,
+        'BLOCK_REVISION_ALREADY_CLOSED'::text,
+        v_action,
+        v_revision.id,
+        v_original.id,
+        v_original.project_id,
+        v_original.chapter_no,
+        v_original.status,
+        NULL::text,
+        NULL::uuid,
+        '局部修订已经关闭，不能重复放弃。'::text,
+        p_review_token;
+      RETURN;
+    END IF;
+
+    UPDATE novel_chapter_block_revisions br
+    SET
+      status = 'REJECTED',
+      updated_at = NOW()
+    WHERE br.id = v_revision.id
+    RETURNING * INTO v_revision;
+
+    RETURN QUERY SELECT
+      TRUE,
+      'BLOCK_REVISION_REJECTED'::text,
+      'REJECT_BLOCK_REVISION'::text,
+      v_revision.id,
+      v_original.id,
+      v_original.project_id,
+      v_original.chapter_no,
+      v_original.status,
+      NULL::text,
+      NULL::uuid,
+      '已放弃这条局部修订建议。'::text,
+      p_review_token;
+    RETURN;
+  END IF;
+
+  IF v_project.status IN ('PAUSED', 'ARCHIVED') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'PROJECT_NOT_EDITABLE'::text,
+      v_action,
+      v_revision.id,
+      v_original.id,
+      v_original.project_id,
+      v_original.chapter_no,
+      v_original.status,
+      NULL::text,
+      NULL::uuid,
+      '项目已暂停或归档，不能应用局部修订。'::text,
+      p_review_token;
+    RETURN;
+  END IF;
+
+  IF v_action = 'REGENERATE' THEN
+    SELECT COUNT(*)::integer
+    INTO v_active_job_count
+    FROM novel_generation_jobs j
+    WHERE j.chapter_id = v_original.id
+      AND j.job_type = 'REVISE_CHAPTER_BLOCK'
+      AND j.status IN ('PENDING', 'RUNNING');
+
+    IF v_active_job_count > 0 THEN
+      RETURN QUERY SELECT
+        FALSE,
+        'ACTIVE_BLOCK_REVISION_JOB_EXISTS'::text,
+        v_action,
+        v_revision.id,
+        v_original.id,
+        v_original.project_id,
+        v_original.chapter_no,
+        v_original.status,
+        NULL::text,
+        NULL::uuid,
+        '这一章已有局部修订任务在处理中，请稍后再重新生成。'::text,
+        p_review_token;
+      RETURN;
+    END IF;
+
+    INSERT INTO novel_generation_jobs (
+      project_id,
+      chapter_id,
+      job_type,
+      chapter_no,
+      payload,
+      status
+    )
+    VALUES (
+      v_original.project_id,
+      v_original.id,
+      'REVISE_CHAPTER_BLOCK',
+      v_original.chapter_no,
+      jsonb_build_object(
+        'source', 'review_block_revision_regenerate',
+        'revision_id', v_revision.id,
+        'previous_job_id', v_revision.job_id,
+        'action_type', v_revision.action_type,
+        'range_lock', v_revision.range_lock,
+        'requested_by', v_reviewer
+      ),
+      'PENDING'
+    )
+    RETURNING * INTO v_job;
+
+    UPDATE novel_chapter_block_revisions br
+    SET
+      job_id = v_job.id,
+      replacement_text = NULL,
+      change_summary = NULL,
+      instruction_checklist = '[]'::jsonb,
+      affects_later_text = FALSE,
+      error_message = NULL,
+      status = 'PENDING',
+      updated_at = NOW()
+    WHERE br.id = v_revision.id
+    RETURNING * INTO v_revision;
+
+    RETURN QUERY SELECT
+      TRUE,
+      'BLOCK_REVISION_REGENERATED'::text,
+      'REGENERATE_BLOCK_REVISION'::text,
+      v_revision.id,
+      v_original.id,
+      v_original.project_id,
+      v_original.chapter_no,
+      v_original.status,
+      v_job.job_type,
+      v_job.id,
+      '已重新创建局部修订任务。'::text,
+      p_review_token;
+    RETURN;
+  END IF;
+
+  IF v_action = 'REQUEST_REWRITE' THEN
+    SELECT *
+    INTO v_rewrite
+    FROM request_novel_chapter_rewrite(
+      v_original.id,
+      p_review_token,
+      format(
+        '由局部修订转为整章重写意见。处理方式：%s。选中原文：%s。人工要求：%s',
+        v_revision.action_type,
+        v_revision.selected_text,
+        v_revision.instruction
+      ),
+      v_reviewer
+    );
+
+    IF NOT FOUND THEN
+      RETURN QUERY SELECT
+        FALSE,
+        'REQUEST_REWRITE_FAILED'::text,
+        v_action,
+        v_revision.id,
+        v_original.id,
+        v_original.project_id,
+        v_original.chapter_no,
+        v_original.status,
+        NULL::text,
+        NULL::uuid,
+        '转为整章重写失败，请刷新后重试。'::text,
+        p_review_token;
+      RETURN;
+    END IF;
+
+    UPDATE novel_chapter_block_revisions br
+    SET
+      status = CASE WHEN br.id = v_revision.id THEN 'SUPERSEDED' ELSE br.status END,
+      updated_at = NOW()
+    WHERE br.chapter_id = v_original.id
+      AND br.status IN ('PENDING', 'RUNNING', 'SUGGESTED', 'FAILED')
+    RETURNING * INTO v_revision;
+
+    RETURN QUERY SELECT
+      TRUE,
+      'BLOCK_REVISION_TO_REWRITE_QUEUED'::text,
+      'REQUEST_REWRITE'::text,
+      p_revision_id,
+      v_rewrite.chapter_id,
+      v_rewrite.project_id,
+      v_rewrite.chapter_no,
+      v_rewrite.chapter_status,
+      CASE WHEN v_rewrite.rewrite_job_id IS NULL THEN NULL::text ELSE 'REWRITE_CHAPTER'::text END,
+      v_rewrite.rewrite_job_id,
+      '已把局部修订意见转为整章重写任务。'::text,
+      NULL::text;
+    RETURN;
+  END IF;
+
+  IF v_revision.status <> 'SUGGESTED' THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BLOCK_REVISION_NOT_SUGGESTED'::text,
+      v_action,
+      v_revision.id,
+      v_original.id,
+      v_original.project_id,
+      v_original.chapter_no,
+      v_original.status,
+      NULL::text,
+      NULL::uuid,
+      'AI 建议尚未生成，不能应用局部修订。'::text,
+      p_review_token;
+    RETURN;
+  END IF;
+
+  v_replacement := trim(COALESCE(NULLIF(p_replacement_text_override, ''), v_revision.replacement_text, ''));
+  v_selected := COALESCE(v_revision.selected_text, '');
+  v_body := normalize_novel_body_newlines(v_original.body);
+  v_pos := 0;
+  v_match_length := char_length(v_selected);
+
+  IF v_revision.selection_start_offset IS NOT NULL
+     AND v_revision.selection_end_offset IS NOT NULL
+     AND v_revision.selection_start_offset >= 0
+     AND v_revision.selection_end_offset > v_revision.selection_start_offset THEN
+    v_expected_span := v_revision.selection_end_offset - v_revision.selection_start_offset;
+    IF substring(v_body FROM v_revision.selection_start_offset + 1 FOR v_expected_span) = v_selected
+       OR normalize_novel_anchor_text(substring(v_body FROM v_revision.selection_start_offset + 1 FOR v_expected_span)) = normalize_novel_anchor_text(v_selected) THEN
+      v_pos := v_revision.selection_start_offset + 1;
+      v_match_length := v_expected_span;
+    END IF;
+  END IF;
+
+  IF v_pos <= 0
+     AND v_revision.selection_start_offset IS NOT NULL
+     AND v_revision.selection_start_offset >= 0
+     AND substring(v_body FROM v_revision.selection_start_offset + 1 FOR char_length(v_selected)) = v_selected THEN
+    v_pos := v_revision.selection_start_offset + 1;
+    v_match_length := char_length(v_selected);
+  END IF;
+
+  IF v_pos <= 0
+     AND v_revision.selection_start_offset IS NOT NULL
+     AND v_revision.selection_start_offset >= 0 THEN
+    v_near_start := GREATEST(0, v_revision.selection_start_offset - 240);
+    v_near_text := substring(v_body FROM v_near_start + 1 FOR char_length(v_selected) + 480);
+    v_near_pos := position(v_selected IN v_near_text);
+    IF v_near_pos > 0 THEN
+      v_pos := v_near_start + v_near_pos;
+      v_match_length := char_length(v_selected);
+    END IF;
+  END IF;
+
+  IF v_pos <= 0 AND (COALESCE(v_revision.anchor_prefix, '') <> '' OR COALESCE(v_revision.anchor_suffix, '') <> '') THEN
+    v_anchor_text := COALESCE(v_revision.anchor_prefix, '') || v_selected || COALESCE(v_revision.anchor_suffix, '');
+    v_pos := position(v_anchor_text IN v_body);
+    IF v_pos > 0 THEN
+      v_pos := v_pos + char_length(COALESCE(v_revision.anchor_prefix, ''));
+      v_match_length := char_length(v_selected);
+    END IF;
+  END IF;
+
+  IF v_pos <= 0 THEN
+    v_occurrence_count := CASE
+      WHEN char_length(v_selected) = 0 THEN 0
+      ELSE ((char_length(v_body) - char_length(replace(v_body, v_selected, ''))) / char_length(v_selected))::integer
+    END;
+
+    IF v_occurrence_count = 1 THEN
+      v_pos := position(v_selected IN v_body);
+      v_match_length := char_length(v_selected);
+    ELSIF v_occurrence_count > 1 THEN
+      UPDATE novel_chapter_block_revisions br
+      SET
+        error_message = '选中的原文锚点不唯一，请重新选择更精确的片段。',
+        updated_at = NOW()
+      WHERE br.id = v_revision.id;
+
+      RETURN QUERY SELECT
+        FALSE,
+        'AMBIGUOUS_ANCHOR'::text,
+        v_action,
+        v_revision.id,
+        v_original.id,
+        v_original.project_id,
+        v_original.chapter_no,
+        v_original.status,
+        NULL::text,
+        NULL::uuid,
+        '选中的原文在正文中出现多次，请刷新页面后重新选择更精确的片段。'::text,
+        p_review_token;
+      RETURN;
+    END IF;
+  END IF;
+
+  IF v_replacement = '' THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'EMPTY_BLOCK_REVISION_REPLACEMENT'::text,
+      v_action,
+      v_revision.id,
+      v_original.id,
+      v_original.project_id,
+      v_original.chapter_no,
+      v_original.status,
+      NULL::text,
+      NULL::uuid,
+      '局部修订替换文本不能为空。'::text,
+      p_review_token;
+    RETURN;
+  END IF;
+
+  IF v_pos <= 0 THEN
+    UPDATE novel_chapter_block_revisions br
+    SET
+      error_message = '选中的原文锚点已失效，请重新选择。',
+      updated_at = NOW()
+    WHERE br.id = v_revision.id;
+
+    RETURN QUERY SELECT
+      FALSE,
+      'ANCHOR_NOT_FOUND'::text,
+      v_action,
+      v_revision.id,
+      v_original.id,
+      v_original.project_id,
+      v_original.chapter_no,
+      v_original.status,
+      NULL::text,
+      NULL::uuid,
+      '选中的原文锚点已失效，请刷新页面后重新选择。'::text,
+      p_review_token;
+    RETURN;
+  END IF;
+
+  IF v_revision.action_type = 'continue' THEN
+    v_new_body := substring(v_body FROM 1 FOR v_pos + v_match_length - 1)
+      || E'\n\n'
+      || v_replacement
+      || substring(v_body FROM v_pos + v_match_length);
+  ELSE
+    v_new_body := substring(v_body FROM 1 FOR v_pos - 1)
+      || v_replacement
+      || substring(v_body FROM v_pos + v_match_length);
+  END IF;
+
+  UPDATE novel_generation_jobs j
+  SET
+    status = 'CANCELLED',
+    error_message = COALESCE(error_message, '局部修订应用后取消旧待审候选稿相关任务'),
+    finished_at = COALESCE(finished_at, NOW()),
+    updated_at = NOW()
+  WHERE j.chapter_id = v_original.id
+    AND j.job_type IN ('REVIEW_CHAPTER', 'NOTIFY_REVIEW', 'REWRITE_CHAPTER', 'REVISE_CHAPTER_BLOCK')
+    AND j.status IN ('PENDING', 'RUNNING');
+
+  GET DIAGNOSTICS v_cancelled_job_count = ROW_COUNT;
+
+  UPDATE novel_chapters c
+  SET
+    status = 'REWRITE_REQUESTED',
+    is_current = FALSE
+  WHERE c.id = v_original.id;
+
+  INSERT INTO novel_human_reviews (
+    project_id,
+    chapter_id,
+    action,
+    comment,
+    reviewer
+  )
+  VALUES (
+    v_original.project_id,
+    v_original.id,
+    'MANUAL_EDIT',
+    format(
+      '应用局部修订。处理方式：%s。人工要求：%s。AI 摘要：%s',
+      v_revision.action_type,
+      v_revision.instruction,
+      COALESCE(v_revision.change_summary, '')
+    ),
+    v_reviewer
+  );
+
+  SELECT *
+  INTO v_candidate
+  FROM create_novel_chapter_version(
+    v_original.project_id,
+    v_original.outline_id,
+    v_original.id,
+    v_original.chapter_no,
+    v_original.title,
+    v_new_body,
+    v_original.summary,
+    char_length(regexp_replace(v_new_body, '\s+', '', 'g')),
+    'manual',
+    'NEED_REVIEW',
+    FALSE
+  );
+
+  INSERT INTO novel_continuity_facts (
+    project_id,
+    chapter_id,
+    chapter_no,
+    chapter_generation_version,
+    fact_type,
+    fact_key,
+    fact_value,
+    source,
+    confidence,
+    status
+  )
+  SELECT
+    v_candidate.project_id,
+    v_candidate.id,
+    v_candidate.chapter_no,
+    v_candidate.generation_version,
+    f.fact_type,
+    f.fact_key,
+    f.fact_value,
+    'ai',
+    LEAST(f.confidence, 0.65),
+    'PENDING'
+  FROM novel_continuity_facts f
+  WHERE f.project_id = v_original.project_id
+    AND f.chapter_no = v_original.chapter_no
+    AND f.chapter_id = v_original.id
+    AND f.source = 'ai'
+    AND f.status IN ('PENDING', 'ACTIVE');
+
+  GET DIAGNOSTICS v_copied_fact_count = ROW_COUNT;
+
+  UPDATE novel_projects p
+  SET status = 'REVIEWING'
+  WHERE p.id = v_candidate.project_id
+    AND p.status NOT IN ('PAUSED', 'ARCHIVED', 'FAILED', 'COMPLETED');
+
+  INSERT INTO novel_project_events (
+    project_id,
+    chapter_id,
+    event_type,
+    actor,
+    comment,
+    before_payload,
+    after_payload
+  )
+  VALUES (
+    v_candidate.project_id,
+    v_candidate.id,
+    'CHAPTER_MANUAL_EDIT_CREATED',
+    v_reviewer,
+    '局部修订应用后保存为可继续编辑的待审候选稿。',
+    to_jsonb(v_original),
+    to_jsonb(v_candidate) || jsonb_build_object(
+      'source_review_chapter_id', v_original.id,
+      'source_block_revision_id', v_revision.id,
+      'decision', CASE WHEN v_action = 'APPLY_EDITED' THEN 'APPLY_EDITED_BLOCK_REVISION' ELSE 'APPLY_BLOCK_REVISION' END,
+      'copied_fact_count', v_copied_fact_count,
+      'cancelled_job_count', v_cancelled_job_count
+    )
+  );
+
+  UPDATE novel_chapter_block_revisions br
+  SET
+    status = 'APPLIED',
+    applied_chapter_id = v_candidate.id,
+    replacement_text = v_replacement,
+    updated_at = NOW()
+  WHERE br.id = v_revision.id
+  RETURNING * INTO v_revision;
+
+  UPDATE novel_chapter_block_revisions br
+  SET
+    status = 'SUPERSEDED',
+    updated_at = NOW()
+  WHERE br.chapter_id = v_original.id
+    AND br.id <> v_revision.id
+    AND br.status IN ('PENDING', 'RUNNING', 'SUGGESTED', 'FAILED');
+
+  RETURN QUERY SELECT
+    TRUE,
+    'BLOCK_REVISION_APPLIED'::text,
+    CASE WHEN v_action = 'APPLY_EDITED' THEN 'APPLY_EDITED_BLOCK_REVISION' ELSE 'APPLY_BLOCK_REVISION' END,
+    v_revision.id,
+    v_candidate.id,
+    v_candidate.project_id,
+    v_candidate.chapter_no,
+    v_candidate.status,
+    NULL::text,
+    NULL::uuid,
+    format('已应用第 %s 章局部修订，新候选稿已保存为待人工处理状态；你可以继续局部修改，完成后再手动重新审稿或直接通过。', v_candidate.chapter_no)::text,
+    v_candidate.review_token;
 END;
 $$ LANGUAGE plpgsql;
 

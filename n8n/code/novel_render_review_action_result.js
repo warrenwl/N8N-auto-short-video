@@ -27,6 +27,7 @@ const inactivatedFactCount = Number(row.inactivated_fact_count || 0);
 const actionLabel = {
   APPROVE: '通过',
   REQUEST_REWRITE: '要求重写',
+  RERUN_REVIEW: '重新审稿',
   REJECT: '拒绝',
 }[action] || action || '未知动作';
 
@@ -40,6 +41,8 @@ const helpText = success
     ? '这一章已经成为正式版本。下一步通常是回项目确认续写状态，或继续处理下一条待审。'
     : action === 'REQUEST_REWRITE'
       ? '重写要求已经记录，后台重写任务会立即启动。你可以去队列查看进度，或回项目查看章节上下文。'
+      : action === 'RERUN_REVIEW'
+        ? `已为第 ${chapterNo || ''} 章创建智能审稿任务。审稿完成后，它会重新回到待人工审核列表。`
       : nextJobId
         ? `这一稿已拒绝，系统已为第 ${chapterNo || ''} 章排好继续重写任务。回项目后首屏会显示“继续重写第 ${chapterNo || ''} 章”。`
         : `这一稿已拒绝。回项目后可以继续重写第 ${chapterNo || ''} 章，不会跳过本章。`)
@@ -47,7 +50,16 @@ const helpText = success
 const projectHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-project-list';
 const chapterHref = projectId ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}&view=chapters${chapterNo ? `#chapter-${encodeURIComponent(chapterNo)}` : '#written-section'}` : '/webhook/novel-project-list';
 const queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';
-const primaryLabel = success && action === 'REJECT' ? '返回项目继续重写' : (success ? '继续审核下一章' : '返回审核中心');
+const primaryLabel = success && action === 'REJECT'
+  ? '返回项目继续重写'
+  : success && action === 'RERUN_REVIEW'
+    ? '查看审稿队列'
+    : (success ? '继续审核下一章' : '返回审核中心');
+const primaryHref = success && action === 'REJECT'
+  ? projectHref
+  : success && action === 'RERUN_REVIEW'
+    ? queueHref
+    : '/webhook/novel-review-list';
 
 const rows = [
   ['动作', actionLabel],
@@ -104,7 +116,7 @@ const html = `<!doctype html>
       <div class="badge">${escapeHtml(statusText)}</div>
       <div class="tip">${escapeHtml(helpText)}</div>
       <div class="links">
-        <a class="primary" href="${escapeHtml(action === 'REJECT' && success ? projectHref : '/webhook/novel-review-list')}">${escapeHtml(primaryLabel)}</a>
+        <a class="primary" href="${escapeHtml(primaryHref)}">${escapeHtml(primaryLabel)}</a>
         <a href="${escapeHtml(projectHref)}">返回项目</a>
         <a href="${escapeHtml(chapterHref)}">返回章节</a>
         <a href="${escapeHtml(queueHref)}">查看队列</a>

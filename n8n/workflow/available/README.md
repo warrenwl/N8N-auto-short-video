@@ -13,7 +13,7 @@
 
 ## 小说工作流 V1
 
-当前小说工作流已跑通“项目创建 -> Bible -> 大纲 -> 导演台 -> 候选章节 -> AI 审稿 -> 人工审核 -> 下一章导演台任务”，并已补齐重写、审核提醒和自动恢复。
+当前小说工作流已跑通“项目创建 -> Bible -> 大纲 -> 导演台 -> 候选章节 -> AI 审稿 -> 人工审核 -> 下一章导演台任务”，并已补齐重写、局部修订、审核提醒和自动恢复。
 
 使用顺序：
 
@@ -23,9 +23,10 @@
 4. `13b_novel_director_workflow.json`：手动执行可领取任意 `PLAN_CHAPTER_DIRECTOR`；浏览器可提交 `POST /webhook/novel-generate-director-now`，也可在项目控制台编辑、重生成或按当前导演台启动正文。导演台只写短 JSON，检查因果、动机、连续性、伏笔和分段计划；通过质量闸门才创建 `GENERATE_CHAPTER(PENDING)`。
 5. `14_novel_chapter_workflow.json`：手动执行，领取已有当前 READY 导演台的 `GENERATE_CHAPTER`，调用 GLM，原子写入候选章节 `DRAFT_READY + is_current=false`，写入 `PENDING` continuity facts，并创建 `REVIEW_CHAPTER(PENDING)`。
 6. `15_novel_ai_review_workflow.json`：手动执行，领取 `REVIEW_CHAPTER`，调用 GLM 审稿，写入带 `ai_run_id` 的 `novel_review_reports`，章节进入 `NEED_REVIEW + is_current=false`，并创建 `NOTIFY_REVIEW(PENDING)`。
-7. `16_novel_review_workflow.json`：浏览器审核中心，`GET /webhook/novel-review-list` 和 `GET /webhook/novel-review-detail` 只展示页面，`POST /webhook/novel-review-action` 才执行通过、要求重写或拒绝；详情页还提供 `POST /webhook/novel-review-manual-edit` 人工改稿，可保存改稿后重新送审，也可人工改稿后直接通过；通过后章节变 `APPROVED + is_current=true`，facts 变 `ACTIVE`，并创建下一章 `PLAN_CHAPTER_DIRECTOR(PENDING)`。
+7. `16_novel_review_workflow.json`：浏览器审核中心，`GET /webhook/novel-review-list` 和 `GET /webhook/novel-review-detail` 只展示页面，`POST /webhook/novel-review-action` 才执行通过、要求重写、拒绝或手动重新审稿；详情页还提供 `POST /webhook/novel-review-manual-edit` 人工改稿，以及 `POST /webhook/novel-review-block-revise`、`POST /webhook/novel-review-block-apply` 局部修订确认流。局部修订只对 `NEED_REVIEW` 候选稿生效，AI 建议不会直接覆盖章节；应用后会生成新的待审候选稿，但不会自动进入智能审稿，便于同一章多处连续修改。正文段落支持双击直接改稿，行内“保存继续修改”同样只生成新的待审候选稿，不自动创建 `REVIEW_CHAPTER`。选区会保存偏移和前后锚点，重复原文无法定位时返回“锚点不唯一”；建议卡展示原文/建议 diff，默认只读，点“修改后应用”才进入编辑态。完成局部修改后可在右侧点“重新审稿”创建 `REVIEW_CHAPTER(PENDING)` 并异步启动 15 号审稿 worker；通过后章节变 `APPROVED + is_current=true`，facts 变 `ACTIVE`，并创建下一章 `PLAN_CHAPTER_DIRECTOR(PENDING)`。
 8. `17_novel_rewrite_notify_workflow.json`：手动执行，领取 `REWRITE_CHAPTER` 和 `NOTIFY_REVIEW`。重写分支读取原候选稿、人工意见和 AI 审稿意见，调用 GLM 写入新候选版本 `DRAFT_READY + is_current=false`、新 `PENDING` facts，并创建 `REVIEW_CHAPTER(PENDING)`；通知分支只发送审核详情链接 `/webhook/novel-review-detail?chapter_id=...&review_token=...`，不携带通过、拒绝或重写动作链接。
 9. `18_novel_auto_recovery_workflow.json`：定时或手动执行，恢复小说任务队列。`PLAN_CHAPTER_DIRECTOR` 和 `GENERATE_CHAPTER` 超时失败只更新 job，因为章节候选尚未创建；`REVIEW_CHAPTER` 达上限后同步章节为 `FAILED`；`REWRITE_CHAPTER` 达上限后只让重写 job 失败，原章节保持 `REWRITE_REQUESTED`；同时取消已不再待审章节的过期 `NOTIFY_REVIEW`，并补齐“章节已批准但下一章任务缺失”的 `PLAN_CHAPTER_DIRECTOR(PENDING)` 或 READY 导演台后的 `GENERATE_CHAPTER(PENDING)`。
+10. `19_novel_block_revision_workflow.json`：手动执行或由 16 号审核页异步触发，领取 `REVISE_CHAPTER_BLOCK`。它读取选区、前后文、Bible、事实和导演台，调用 GLM 只生成局部 JSON 建议，并写入 `novel_chapter_block_revisions(SUGGESTED)`；真正应用由 16 号确认 webhook 完成。
 
 小说入口：
 
@@ -55,7 +56,7 @@ Server酱只做提醒，不承载审核动作；提醒链接只能进入详情�
 
 真实 GLM smoke test 不要再设置 `GLM_API_BASE_URL=http://host.docker.internal:18080/...`，这样才会走 `.env` 中的外部 GLM。联调时如不希望发送真实微信提醒，可在执行 17 号时加 `NOVEL_DISABLE_SERVERCHAN=true`；工作流仍会记录审核详情链接并把提醒任务标记为已处理，但 `remind_status` 会写为 `SKIPPED_DISABLED`。
 
-日常队列处理可使用 `scripts/run_novel_queue_once.sh`：它会按 12/13/13B/14/15/17/18 顺序跑一轮，默认带 `NOVEL_DISABLE_SERVERCHAN=true`，只有显式 `--real-notify` 才发送真实 Server酱提醒。详细调度、crontab 和真实重写 smoke 步骤见 `docs/novel_workflow/运行手册.md`。
+日常队列处理可使用 `scripts/run_novel_queue_once.sh`：它会按 12/13/13B/14/15/17/19/18 顺序跑一轮，默认带 `NOVEL_DISABLE_SERVERCHAN=true`，只有显式 `--real-notify` 才发送真实 Server酱提醒。详细调度、crontab 和真实重写 smoke 步骤见 `docs/novel_workflow/运行手册.md`。
 
 ## 选题入口
 

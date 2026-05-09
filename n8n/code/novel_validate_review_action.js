@@ -27,6 +27,10 @@ const actionMap = {
   pass: 'APPROVE',
   request_rewrite: 'REQUEST_REWRITE',
   rewrite: 'REQUEST_REWRITE',
+  rerun_review: 'RERUN_REVIEW',
+  request_review: 'RERUN_REVIEW',
+  review_again: 'RERUN_REVIEW',
+  ai_review: 'RERUN_REVIEW',
   reject: 'REJECT',
 };
 
@@ -54,6 +58,7 @@ return [{
     action_sql_function: {
       APPROVE: 'approve_novel_chapter',
       REQUEST_REWRITE: 'request_novel_chapter_rewrite',
+      RERUN_REVIEW: 'apply_novel_review_action',
       REJECT: 'reject_novel_chapter',
     }[action],
   },

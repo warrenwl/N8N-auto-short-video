@@ -963,18 +963,52 @@ WITH input AS (
   WHERE o.project_id = input.project_id
     AND o.chapter_no = input.chapter_no
     AND o.status = 'READY'
+), running_job AS (
+  SELECT j.*
+  FROM novel_generation_jobs j, input
+  WHERE j.project_id = input.project_id
+    AND j.chapter_no = input.chapter_no
+    AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'
+    AND j.status = 'RUNNING'
+  ORDER BY j.created_at DESC
+  LIMIT 1
+), claimed_pending AS (
+  UPDATE novel_generation_jobs j
+  SET
+    status = 'RUNNING',
+    payload = j.payload || jsonb_build_object(
+      'requested_by', COALESCE((SELECT reviewer FROM input), 'local_user'),
+      'trigger_source', 'manual_regenerate',
+      'comment', (SELECT comment FROM input)
+    ),
+    started_at = COALESCE(j.started_at, NOW()),
+    updated_at = NOW()
+  FROM input
+  WHERE j.project_id = input.project_id
+    AND j.chapter_no = input.chapter_no
+    AND j.job_type = 'PLAN_CHAPTER_DIRECTOR'
+    AND j.status = 'PENDING'
+    AND NOT EXISTS (SELECT 1 FROM running_job)
+  RETURNING j.*
 ), job AS (
-  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status)
+  INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status, started_at)
   SELECT
     input.project_id,
     'PLAN_CHAPTER_DIRECTOR',
     input.chapter_no,
     jsonb_build_object('requested_by', COALESCE(input.reviewer, 'local_user'), 'trigger_source', 'manual_regenerate', 'comment', input.comment),
-    'PENDING'
+    'RUNNING',
+    NOW()
   FROM input
   WHERE EXISTS (SELECT 1 FROM outline)
+    AND NOT EXISTS (SELECT 1 FROM running_job)
+    AND NOT EXISTS (SELECT 1 FROM claimed_pending)
   ON CONFLICT DO NOTHING
   RETURNING *
+), runnable_job AS (
+  SELECT * FROM claimed_pending
+  UNION ALL
+  SELECT * FROM job
 ), event AS (
   INSERT INTO novel_project_events (project_id, outline_id, event_type, actor, comment)
   SELECT
@@ -985,26 +1019,27 @@ WITH input AS (
     COALESCE(input.comment, '重新生成导演台')
   FROM input
   JOIN outline ON true
-  WHERE EXISTS (SELECT 1 FROM job)
+  WHERE EXISTS (SELECT 1 FROM runnable_job)
   RETURNING *
 )
 SELECT
-  EXISTS (SELECT 1 FROM job) AS success,
+  EXISTS (SELECT 1 FROM runnable_job) AS success,
   CASE
     WHEN NOT EXISTS (SELECT 1 FROM outline) THEN 'OUTLINE_NOT_FOUND'
-    WHEN EXISTS (SELECT 1 FROM job) THEN 'DIRECTOR_CARD_REGENERATE_JOB_CREATED'
+    WHEN EXISTS (SELECT 1 FROM runnable_job) THEN 'DIRECTOR_CARD_REGENERATE_JOB_CREATED'
     ELSE 'REGENERATE_JOB_ALREADY_EXISTS'
   END AS result_code,
   'REGENERATE_DIRECTOR_CARD'::text AS action,
   input.project_id,
   (SELECT id FROM outline) AS outline_id,
   input.chapter_no,
-  (SELECT id FROM job) AS job_id,
+  (SELECT id FROM runnable_job) AS id,
+  (SELECT id FROM runnable_job) AS job_id,
   'PLAN_CHAPTER_DIRECTOR'::text AS job_type,
   CASE
     WHEN NOT EXISTS (SELECT 1 FROM outline) THEN '未找到可用于生成导演台的章节大纲。'
-    WHEN EXISTS (SELECT 1 FROM job) THEN '已创建导演台重生成任务。'
-    ELSE '该章节已有待处理或运行中的导演台任务。'
+    WHEN EXISTS (SELECT 1 FROM runnable_job) THEN '已启动导演台重生成任务。'
+    ELSE '该章节已有运行中的导演台任务。'
   END AS message
 FROM input;`;
 
@@ -1180,8 +1215,9 @@ const directorWorkflow = workflowBase(
       regenerateDirectorQuery,
       '={{ [ $json.project_id, $json.chapter_no, $json.reviewer, $json.comment ] }}'
     ),
-    codeNode('code-render-regenerate-director-result-13b', '代码 - 生成重新生成导演台结果页', [840, 560], code('n8n/code/novel_render_project_action_result.js')),
-    respondNode('respond-regenerate-director-result-13b', '响应Webhook - 返回重新生成导演台结果', [1060, 560], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}'),
+    ifNode('if-regenerate-director-claimed-13b', '条件判断 - 重生成导演台任务已领取', [840, 560], '={{ $json.success }}', 'regenerate-director-claimed'),
+    codeNode('code-render-regenerate-director-result-13b', '代码 - 生成重新生成导演台结果页', [1060, 620], code('n8n/code/novel_render_project_action_result.js')),
+    respondNode('respond-regenerate-director-result-13b', '响应Webhook - 返回重新生成导演台结果', [1280, 620], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}'),
     webhookNode('webhook-start-chapter-director-13b', 'Webhook - 按导演台生成正文', [180, 760], 'POST', 'novel-director-card-start-chapter', 'novel-director-card-start-chapter-13b'),
     codeNode('code-validate-start-chapter-director-13b', '代码 - 校验按导演台生成正文', [400, 760], code('n8n/code/novel_validate_director_card_action.js')),
     postgresNode(
@@ -1219,7 +1255,8 @@ const directorWorkflow = workflowBase(
     '代码 - 生成保存导演台结果页': {main: [[{node: '响应Webhook - 返回保存导演台结果', type: 'main', index: 0}]]},
     'Webhook - 重新生成导演台': {main: [[{node: '代码 - 校验重新生成导演台', type: 'main', index: 0}]]},
     '代码 - 校验重新生成导演台': {main: [[{node: '数据库 - 创建导演台重生成任务', type: 'main', index: 0}]]},
-    '数据库 - 创建导演台重生成任务': {main: [[{node: '代码 - 生成重新生成导演台结果页', type: 'main', index: 0}]]},
+    '数据库 - 创建导演台重生成任务': {main: [[{node: '条件判断 - 重生成导演台任务已领取', type: 'main', index: 0}]]},
+    '条件判断 - 重生成导演台任务已领取': {main: [[{node: '代码 - 生成重新生成导演台结果页', type: 'main', index: 0}, {node: '执行子流程 - 异步生成导演台', type: 'main', index: 0}], [{node: '代码 - 生成重新生成导演台结果页', type: 'main', index: 0}]]},
     '代码 - 生成重新生成导演台结果页': {main: [[{node: '响应Webhook - 返回重新生成导演台结果', type: 'main', index: 0}]]},
     'Webhook - 按导演台生成正文': {main: [[{node: '代码 - 校验按导演台生成正文', type: 'main', index: 0}]]},
     '代码 - 校验按导演台生成正文': {main: [[{node: '数据库 - 按导演台创建正文任务', type: 'main', index: 0}]]},

@@ -294,6 +294,18 @@ function buildDirectorRepairInstruction(runType, values) {
   ].join('\n');
 }
 
+function buildDirectorSegmentInstruction(runType, values) {
+  if (runType !== 'PLAN_CHAPTER_DIRECTOR') return '';
+  const segmentTotal = Number(values.chapter_segment_total || 0);
+  if (!Number.isFinite(segmentTotal) || segmentTotal <= 0) return '';
+  return [
+    '【segment_plan 数量硬规则】',
+    `本章正文分段数是 ${segmentTotal}。segment_plan 必须精确输出 ${segmentTotal} 个对象，segment_no 必须从 1 连续编号到 ${segmentTotal}。`,
+    '输出 JSON 示例里的 segment_plan 只有 1 项，那只是单项字段示例；不得只复制示例第一项。',
+    '每个 segment_plan 对象都必须填写 goal、conflict、information_release、emotion_turn、ending_hook，不得留空。',
+  ].join('\n');
+}
+
 function buildReviewTransitionInstruction(runType, values) {
   if (runType !== 'REVIEW_CHAPTER') return '';
   return [
@@ -381,7 +393,15 @@ const values = {
 
 const systemPrompt = renderTemplate(config.system_prompts[key], values);
 const renderedUserPrompt = renderTemplate(config.user_prompt_templates[key], values);
-const maxTokens = source.max_tokens ?? (config.max_tokens_by_prompt || {})[key] ?? config.max_tokens ?? 12000;
+let maxTokens = source.max_tokens ?? (config.max_tokens_by_prompt || {})[key] ?? config.max_tokens ?? 12000;
+if (runType === 'PLAN_CHAPTER_DIRECTOR' && source.max_tokens === undefined) {
+  const segmentTotal = Number(source.chapter_segment_total || 0);
+  if (segmentTotal >= 6) {
+    maxTokens = Math.max(Number(maxTokens) || 0, 4200);
+  } else if (segmentTotal >= 4) {
+    maxTokens = Math.max(Number(maxTokens) || 0, 3200);
+  }
+}
 const userPromptWithBrief = renderedUserPrompt.includes('【创作约束】')
   ? renderedUserPrompt
   : `${renderedUserPrompt}\n\n${values.creative_brief}`;
@@ -420,9 +440,14 @@ const userPromptWithDirectorTransition = appendInstructionOnce(
   '【跨章镜头调度】',
   buildDirectorTransitionInstruction(runType, values)
 );
+const userPromptWithDirectorSegments = appendInstructionOnce(
+  userPromptWithDirectorTransition,
+  '【segment_plan 数量硬规则】',
+  buildDirectorSegmentInstruction(runType, values)
+);
 const userPromptWithReviewTransition = appendInstructionOnce(
   appendInstructionOnce(
-    userPromptWithDirectorTransition,
+    userPromptWithDirectorSegments,
     '【导演台阻断修复】',
     buildDirectorRepairInstruction(runType, values)
   ),
