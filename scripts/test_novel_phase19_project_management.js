@@ -85,24 +85,47 @@ const nodes11 = new Map(workflow11.nodes.map((node) => [node.name, node]));
 
 for (const [name, pathName] of [
   ['Webhook - 小说设定集编辑', 'novel-bible-update'],
+  ['Webhook - 小说设定集补丁操作', 'novel-bible-patch-action'],
   ['Webhook - 小说大纲编辑', 'novel-outline-update'],
   ['Webhook - 小说项目目标修改', 'novel-project-targets-update'],
+  ['Webhook - 项目扩写剧情AI创意', 'novel-project-expansion-ai-assist'],
   ['Webhook - 小说项目暂停恢复', 'novel-project-status-toggle'],
+  ['Webhook - 小说已归档项目清理', 'novel-archived-projects-cleanup'],
 ]) {
   assert.strictEqual(nodes11.get(name)?.parameters?.httpMethod, 'POST', `${name} must be POST`);
   assert.strictEqual(nodes11.get(name)?.parameters?.path, pathName, `${name} should use ${pathName}`);
 }
 
 const detailCode = read('n8n/code/novel_render_project_detail_html.js');
+const projectListCode = read('n8n/code/novel_render_project_list_html.js');
+for (const marker of [
+  '一键清理已归档项目',
+  '/webhook/novel-archived-projects-cleanup',
+  'CLEAR_ARCHIVED_PROJECTS',
+]) {
+  assert(projectListCode.includes(marker), `project list should include archived cleanup marker: ${marker}`);
+}
 for (const marker of [
   'bible-card-actions',
   '编辑本章大纲',
-  '修改项目目标',
+  '项目目标与扩写计划',
   'select name="target_words_per_chapter"',
+  'textarea name="expansion_request"',
+  'data-ai-expansion',
+  'AI创意',
+  '/webhook/novel-project-expansion-ai-assist',
+  'data-expansion-ai-feedback',
+  'select name="expansion_scope"',
+  '只追加新章节',
+  '保留约束',
+  '扩写设定补丁',
+  '/webhook/novel-bible-patch-action',
   '深度长章 4000 字',
-  '只影响后续章节生成和重写',
+  '字数越高，导演台分段数和生成耗时通常也会增加',
   '暂停项目',
   '恢复项目',
+  '归档项目',
+  'data-confirm-title',
   '项目操作记录',
   '/webhook/novel-bible-update',
   '/webhook/novel-outline-update',
@@ -147,6 +170,10 @@ const detailRow = {
     villain_setting: [{名字: '沈老板'}],
     power_system: '鉴宝能力有限制',
     relationship_map: [{关系: '盟友'}],
+    organizations: [{name: '沈氏商会', type: '商会', leader: '沈老板'}],
+    locations: [{name: '旧货街', story_function: '冲突发生地'}],
+    plot_constraints: [{constraint: '第3章前不能揭露商会后台'}],
+    expansion_notes: '后续扩写商会线。',
     tone_rules: '紧凑',
     forbidden_rules: '不跳设定',
     selling_points: ['反转'],
@@ -159,6 +186,21 @@ const detailRow = {
   ]),
   facts: JSON.stringify([]),
   jobs: JSON.stringify([]),
+  bible_patches: JSON.stringify([
+    {
+      id: '19190000-0000-0000-0000-000000000031',
+      status: 'PENDING',
+      expansion_request: '新增商会线。',
+      expansion_scope: 'append_only',
+      patch_payload: {
+        summary: '补商会组织。',
+        new_organizations: [{name: '沈氏商会', type: '商会', leader: '沈老板'}],
+        plot_constraints: [{constraint: '第3章前不能揭露商会后台'}],
+      },
+      risk_notes: [],
+      created_at: '2026-05-03T01:12:00.000Z',
+    },
+  ]),
   ai_runs: JSON.stringify([]),
   project_events: JSON.stringify([
     {event_type: 'BIBLE_UPDATED', actor: 'phase19_test', comment: '补充主角动机', created_at: '2026-05-03T01:10:00.000Z'},
@@ -174,18 +216,24 @@ const detailOpsHtml = runListCodeNode('n8n/code/novel_render_project_detail_html
 const detailOpsText = visibleText(detailOpsHtml);
 const combinedDetailText = [detailOverviewText, detailBibleText, detailOutlineText, detailOpsText].join(' ');
 
-for (const expected of ['小说项目控制台', '修改项目目标', '暂停项目']) {
+for (const expected of ['小说项目控制台', '项目目标与扩写计划', '暂停项目']) {
   assert(detailOverviewText.includes(expected), `project console overview visible text should include: ${expected}`);
 }
+const detailOverviewHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [detailRow])[0].json.response_html;
+assert(detailOverviewHtml.includes('action="/webhook/novel-project-archive-toggle"'), 'project console should expose archive through POST form');
+assert(detailOverviewHtml.includes('data-confirm-title="第十九阶段项目"'), 'archive form should carry the exact title for client-side confirmation');
+assert(detailOverviewHtml.includes('name="confirm_title" autocomplete="off" required'), 'archive confirmation input should be required before submit');
+assert(detailOverviewHtml.includes('必须完整输入项目名'), 'archive form should explain placeholder is not enough');
 assert(detailBibleHtml.includes('data-open-dialog="bible-edit-story-core"'), 'project console bible view should expose per-setting Bible edit buttons on cards');
 assert(detailBibleHtml.includes('class="side-dialog bible-field-edit-dialog"'), 'project console bible view should open per-setting Bible edit drawers');
+assert(detailBibleText.includes('扩写设定补丁待确认') && detailBibleHtml.includes('/webhook/novel-bible-patch-action'), 'project console Bible view should expose confirmable expansion Bible patches');
 assert(detailOutlineText.includes('编辑本章大纲'), 'project console outline view should expose outline edit forms');
 for (const expected of ['项目操作记录', '设定集已编辑', '项目目标已修改']) {
   assert(detailOpsText.includes(expected), `project console ops view should include: ${expected}`);
 }
 assert(detailOpsHtml.includes('<option value="1800" selected>当前 1800 字（自定义）</option>'), 'project ops should preserve custom current word target when it is not in the dropdown preset list');
 
-const rawVisibleEnums = /\b(BIBLE_UPDATED|OUTLINE_UPDATED|PROJECT_TARGET_UPDATED|PROJECT_PAUSED|PROJECT_RESUMED|PAUSE|RESUME|CREATED|GENERATE_BIBLE|GENERATE_OUTLINE|PENDING|RUNNING|SUCCEEDED|FAILED)\b/;
+const rawVisibleEnums = /\b(BIBLE_UPDATED|BIBLE_PATCH_CREATED|OUTLINE_UPDATED|PROJECT_TARGET_UPDATED|PROJECT_PAUSED|PROJECT_RESUMED|PAUSE|RESUME|CREATED|GENERATE_BIBLE|GENERATE_BIBLE_PATCH|GENERATE_OUTLINE|PENDING|RUNNING|SUCCEEDED|FAILED)\b/;
 assert(!rawVisibleEnums.test(combinedDetailText), `project console visible text should not expose internal enums: ${combinedDetailText}`);
 
 const bibleValidation = runSingleCodeNode('n8n/code/novel_validate_bible_update.js', {
@@ -197,10 +245,17 @@ const bibleValidation = runSingleCodeNode('n8n/code/novel_validate_bible_update.
     supporting_characters_json: '[]',
     villain_setting_json: '[]',
     relationship_map_json: '[]',
+    organizations_json: '[{"名称":"沈氏商会","负责人":"沈老板"}]',
+    locations_json: '[{"名称":"旧货街","剧情功能":"冲突发生地"}]',
+    plot_constraints_json: '[{"约束":"第3章前不能揭露商会后台"}]',
+    expansion_notes: '后续扩写商会线。',
     selling_points_json: '[]',
   },
 })[0].json;
 assert.strictEqual(bibleValidation.project_id, uuid, 'Bible validator should accept POST body');
+assert.strictEqual(JSON.parse(bibleValidation.organizations_json)[0].leader, '沈老板', 'Bible validator should normalize organizations');
+assert.strictEqual(JSON.parse(bibleValidation.locations_json)[0].story_function, '冲突发生地', 'Bible validator should normalize locations');
+assert.strictEqual(JSON.parse(bibleValidation.plot_constraints_json)[0].constraint, '第3章前不能揭露商会后台', 'Bible validator should normalize plot constraints');
 assert.throws(
   () => runSingleCodeNode('n8n/code/novel_validate_bible_update.js', {query: {project_id: uuid}}),
   /POST body/,
@@ -213,14 +268,48 @@ const outlineValidation = runSingleCodeNode('n8n/code/novel_validate_outline_upd
 assert.strictEqual(outlineValidation.outline_id, outlineId, 'Outline validator should accept POST body');
 
 const targetValidation = runSingleCodeNode('n8n/code/novel_validate_project_targets_update.js', {
-  body: {project_id: uuid, target_total_chapters: '8', target_words_per_chapter: '2000'},
+  body: {
+    project_id: uuid,
+    target_total_chapters: '8',
+    target_words_per_chapter: '2000',
+    expansion_request: '新增女主身世线和反派商会。',
+    expansion_scope: '重排未写章节',
+    expansion_constraints: '已批准正文不改；已激活事实不破坏。',
+  },
 })[0].json;
 assert.strictEqual(targetValidation.target_total_chapters, 8, 'Target validator should parse chapter target');
+assert.strictEqual(targetValidation.expansion_scope, 'rewrite_unwritten', 'Target validator should normalize expansion scope');
+assert(targetValidation.expansion_request.includes('女主身世线'), 'Target validator should preserve expansion requirements');
+
+const biblePatchValidation = runSingleCodeNode('n8n/code/novel_validate_bible_patch_action.js', {
+  body: {
+    patch_id: '19190000-0000-0000-0000-000000000031',
+    patch_action: '重新生成',
+    comment: '冲突较多',
+    reviewer: 'phase19_test',
+  },
+})[0].json;
+assert.strictEqual(biblePatchValidation.patch_action, 'REGENERATE', 'Bible patch validator should normalize regenerate action');
 
 const pauseValidation = runSingleCodeNode('n8n/code/novel_validate_project_status_toggle.js', {
   body: {project_id: uuid, desired_action: 'pause'},
 })[0].json;
 assert.strictEqual(pauseValidation.desired_action, 'PAUSE', 'Pause validator should normalize action');
+
+const archiveValidation = runSingleCodeNode('n8n/code/novel_validate_project_archive_toggle.js', {
+  body: {project_id: uuid, desired_action: 'archive', confirm_title: '第十九阶段项目'},
+})[0].json;
+assert.strictEqual(archiveValidation.desired_action, 'ARCHIVE', 'Archive validator should normalize action');
+const blankArchiveValidation = runSingleCodeNode('n8n/code/novel_validate_project_archive_toggle.js', {
+  body: {project_id: uuid, desired_action: 'archive', confirm_title: ''},
+})[0].json;
+assert.strictEqual(blankArchiveValidation.confirm_title, '', 'Archive validator should pass blank title to SQL for friendly result rendering');
+
+const archivedCleanupValidation = runSingleCodeNode('n8n/code/novel_validate_archived_projects_cleanup.js', {
+  body: {cleanup_action: '清理已归档项目', reviewer: 'phase19_test'},
+})[0].json;
+assert.strictEqual(archivedCleanupValidation.cleanup_action, 'CLEAR_ARCHIVED_PROJECTS', 'Archived project cleanup validator should normalize action');
+assert.strictEqual(archivedCleanupValidation.action, 'CLEAR_ARCHIVED_PROJECTS', 'Archived project cleanup should expose a result action label');
 
 console.log(JSON.stringify({
   ok: true,

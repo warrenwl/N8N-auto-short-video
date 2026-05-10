@@ -60,6 +60,7 @@ const projectStatusLabel = {
 
 const jobTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   GENERATE_CHAPTER: '生成章节',
   REVIEW_CHAPTER: '智能审稿',
@@ -77,6 +78,7 @@ const jobStatusLabel = {
 
 const runTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   GENERATE_CHAPTER: '生成章节',
   REVIEW_CHAPTER: '智能审稿',
@@ -135,6 +137,7 @@ function liveProjectBadge(row) {
   if (!active || !['RUNNING', 'PENDING'].includes(jobStatus)) return projectBadge(base);
   const labels = {
     GENERATE_BIBLE: jobStatus === 'RUNNING' ? '设定集生成中' : '设定集待启动',
+    GENERATE_BIBLE_PATCH: jobStatus === 'RUNNING' ? '扩写设定补丁生成中' : '扩写设定补丁待确认',
     GENERATE_OUTLINE: jobStatus === 'RUNNING' ? '大纲生成中' : '大纲待启动',
     GENERATE_CHAPTER: jobStatus === 'RUNNING' ? '章节生成中' : '章节待启动',
     REVIEW_CHAPTER: jobStatus === 'RUNNING' ? '智能审稿中' : '等待智能审稿',
@@ -329,6 +332,16 @@ const filters = `
   ${filterButton('completed', '已完结', counts.completed)}
   ${filterButton('archived', '已归档', counts.archived)}
 `;
+const archivedCleanupDisabled = counts.archived > 0 ? '' : ' disabled';
+const archivedCleanupHint = counts.archived > 0
+  ? `将永久清理 ${counts.archived} 个已归档项目`
+  : '暂无已归档项目可清理';
+const archivedCleanupForm = `
+  <form class="archived-cleanup-form" method="POST" action="/webhook/novel-archived-projects-cleanup" data-confirm="这会永久删除所有已归档项目及其设定、大纲、正文、队列和日志，且不可恢复。确认清理？">
+    <input type="hidden" name="cleanup_action" value="CLEAR_ARCHIVED_PROJECTS" />
+    <input type="hidden" name="reviewer" value="local_user" />
+    <button type="submit"${archivedCleanupDisabled}><span>一键清理已归档项目</span><small>${escapeHtml(archivedCleanupHint)}</small></button>
+  </form>`;
 
 const projectRows = rows.length
   ? rows.map((row) => `
@@ -397,6 +410,13 @@ const html = `<!doctype html>
     nav { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     nav a { white-space: nowrap; }
     section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
+    .page-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+    .archived-cleanup-form { margin: 0; }
+    .archived-cleanup-form button { min-height: 42px; display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; border: 1px solid #f2b8b5; border-radius: 8px; padding: 6px 12px; background: #fff; color: var(--danger); font: inherit; font-weight: 800; cursor: pointer; touch-action: manipulation; }
+    .archived-cleanup-form button small { color: var(--muted); font-size: 12px; font-weight: 650; line-height: 1.35; }
+    .archived-cleanup-form button:not(:disabled):hover { border-color: var(--danger); background: var(--danger-soft); }
+    .archived-cleanup-form button:disabled { opacity: .62; cursor: not-allowed; }
+    .archived-cleanup-form button.is-submitting { cursor: progress; }
     .next-step { min-width: 150px; display: grid; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: #fff; color: var(--ink); text-decoration: none; }
     .next-step strong { color: var(--ink); }
     .next-step span { display: block; margin-top: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
@@ -467,6 +487,8 @@ const html = `<!doctype html>
       .side-nav a, .side-nav span { white-space: nowrap; }
       .side-primary { display: none; }
       header { display: block; }
+      .page-actions { justify-content: stretch; margin-top: 12px; }
+      .archived-cleanup-form, .archived-cleanup-form button { width: 100%; }
       nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
       .pager { display: grid; grid-template-columns: 1fr; }
       .desktop-table { display: none; }
@@ -485,6 +507,9 @@ const html = `<!doctype html>
         <p class="ops-kicker">项目管理</p>
         <h1>小说项目管理</h1>
         <p class="muted">按下一步动作扫描项目：先看待审核和失败，再看队列与可继续写作。</p>
+      </div>
+      <div class="page-actions" aria-label="项目批量操作">
+        ${archivedCleanupForm}
       </div>
     </header>
     </div>
@@ -621,6 +646,21 @@ const html = `<!doctype html>
         pageSize = Number(sizeSelect.value) || 10;
         currentPage = 1;
         applyFilter(readFilter());
+      });
+      document.querySelectorAll('form[data-confirm]').forEach((form) => {
+        form.addEventListener('submit', (event) => {
+          const message = form.dataset.confirm || '确认执行？';
+          if (!window.confirm(message)) {
+            event.preventDefault();
+            return;
+          }
+          const button = event.submitter || form.querySelector('button[type="submit"]');
+          if (button) {
+            button.disabled = true;
+            button.classList.add('is-submitting');
+            button.textContent = '清理中...';
+          }
+        });
       });
       readPageState();
       applyFilter(readFilter(), {write: false});

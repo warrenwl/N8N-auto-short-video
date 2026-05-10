@@ -148,6 +148,7 @@ const chapterStatusLabel = {
 
 const jobTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -166,6 +167,7 @@ const jobStatusLabel = {
 
 const runTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -173,17 +175,19 @@ const runTypeLabel = {
   REWRITE_CHAPTER: '重写章节',
 };
 
-const factTypeLabel = {
-  character: '人物',
-  item: '物品',
-  location: '地点',
-  ability: '能力',
-  relationship: '关系',
-  foreshadowing: '伏笔',
-  timeline: '时间线',
-  rule: '规则',
-  other: '其他',
-};
+const factTypeOptions = [
+  ['character', '人物'],
+  ['item', '物品'],
+  ['location', '地点'],
+  ['ability', '能力'],
+  ['relationship', '关系'],
+  ['foreshadowing', '伏笔'],
+  ['timeline', '时间线'],
+  ['rule', '规则'],
+  ['other', '其他'],
+];
+
+const factTypeLabel = Object.fromEntries(factTypeOptions);
 
 const factStatusLabel = {
   ACTIVE: '已激活',
@@ -233,6 +237,10 @@ const humanActionLabel = {
 
 const projectEventLabel = {
   BIBLE_UPDATED: '设定集已编辑',
+  BIBLE_PATCH_CREATED: '扩写设定补丁已生成',
+  BIBLE_PATCH_APPLIED: '扩写设定补丁已应用',
+  BIBLE_PATCH_REJECTED: '扩写设定补丁已拒绝',
+  BIBLE_PATCH_REGENERATE_REQUESTED: '扩写设定补丁重跑已排队',
   OUTLINE_UPDATED: '大纲已编辑',
   DIRECTOR_CARD_UPDATED: '导演台已编辑',
   DIRECTOR_CARD_REGENERATE_REQUESTED: '导演台重跑已排队',
@@ -246,6 +254,11 @@ const projectEventLabel = {
   OUTLINE_REGENERATE_REQUESTED: '大纲重跑已排队',
   PROJECT_ARCHIVED: '项目已归档',
   PROJECT_RESTORED: '项目已恢复归档',
+  FACT_CREATED: '事实已新增',
+  FACT_UPDATED: '事实已编辑',
+  FACT_ACTIVATED: '事实已激活',
+  FACT_DEACTIVATED: '事实已失效',
+  FACTS_CLEARED: '失效事实已清理',
 };
 
 function label(map, value, fallback) {
@@ -379,6 +392,19 @@ const bibleFieldLabel = {
   faction: '阵营',
   family: '家族',
   organization: '组织',
+  organizations: '组织势力',
+  type: '类型',
+  leader: '负责人',
+  representative: '代表人物',
+  interest: '利益诉求',
+  first_touch_suggestion: '初次触达建议',
+  locations: '关键地点',
+  owner: '所属方',
+  story_function: '剧情功能',
+  plot_constraints: '剧情约束',
+  constraint: '约束',
+  until_chapter: '截止章节',
+  expansion_notes: '扩写备注',
   status: '状态',
   arc: '人物线',
   emotional_arc: '情感线',
@@ -546,6 +572,10 @@ function bibleFieldValues(bible) {
     supporting_characters_json: jsonInputValue(bible.supporting_characters, []),
     villain_setting_json: jsonInputValue(bible.villain_setting, []),
     relationship_map_json: jsonInputValue(bible.relationship_map, []),
+    organizations_json: jsonInputValue(bible.organizations, []),
+    locations_json: jsonInputValue(bible.locations, []),
+    plot_constraints_json: jsonInputValue(bible.plot_constraints, []),
+    expansion_notes: bible.expansion_notes || '',
     selling_points_json: jsonInputValue(bible.selling_points, []),
   };
 }
@@ -559,7 +589,11 @@ function bibleFieldConfigs(bible) {
     {name: 'supporting_characters_json', label: '配角设定', group: '人物设定', type: 'json', value: bible.supporting_characters, fallback: [], help: '只保存配角列表。'},
     {name: 'villain_setting_json', label: '反派设定', group: '人物设定', type: 'json', value: bible.villain_setting, fallback: [], help: '只保存反派和阻力角色。'},
     {name: 'relationship_map_json', label: '人物关系', group: '人物设定', type: 'json', value: bible.relationship_map, fallback: [], help: '只保存人物关系线。'},
+    {name: 'organizations_json', label: '组织势力', group: '势力版图', type: 'json', value: bible.organizations, fallback: [], help: '只保存商会、家族、宗门、公司或机构。'},
+    {name: 'locations_json', label: '关键地点', group: '势力版图', type: 'json', value: bible.locations, fallback: [], help: '只保存据点、地盘、禁区和关键场所。'},
     {name: 'power_system', label: '能力体系', group: '生成约束', type: 'text', value: bible.power_system, help: '只保存能力、限制和升级规则。'},
+    {name: 'plot_constraints_json', label: '剧情约束', group: '生成约束', type: 'json', value: bible.plot_constraints, fallback: [], help: '只保存长期伏笔、揭露时机和不可破坏边界。'},
+    {name: 'expansion_notes', label: '扩写备注', group: '生成约束', type: 'text', value: bible.expansion_notes, help: '只保存扩写产生的编辑备注。'},
     {name: 'forbidden_rules', label: '禁忌规则', group: '生成约束', type: 'text', value: bible.forbidden_rules, help: '只保存后续生成不可突破的边界。'},
     {name: 'selling_points_json', label: '卖点', group: '生成约束', type: 'json', value: bible.selling_points, fallback: [], help: '只保存商业卖点。'},
   ];
@@ -699,6 +733,13 @@ function generationRunForm(projectId, jobType, job = {}, options = {}) {
       label: '启动设定集生成',
       confirm: '这会启动后台模型任务；提交完成后会留在当前项目页并刷新状态。确认启动？',
     },
+    GENERATE_BIBLE_PATCH: {
+      action: '/webhook/novel-generate-bible-patch-now',
+      step: 'bible_patch',
+      label: '启动扩写设定补丁',
+      subText: '先生成待确认设定',
+      confirm: '这会根据扩写计划生成待确认的设定集补丁，不会直接改正式设定集。确认启动？',
+    },
     GENERATE_OUTLINE: {
       action: '/webhook/novel-generate-outline-now',
       step: 'outline',
@@ -798,13 +839,15 @@ function regenerateAssetForm(projectId, step, options = {}) {
 }
 
 function projectTargetsForm(row) {
+  const defaultExpansionConstraints = row.expansion_constraints || '已批准正文不改；已激活事实不破坏；新增剧情优先承接现有大纲和连续性事实。';
   return `
-    <details class="action-detail management-detail">
-      <summary>修改项目目标</summary>
-      <form method="POST" action="/webhook/novel-project-targets-update" data-confirm="确认保存新的项目目标？如果目标章节数增加，后续继续写作可能会先补齐大纲。">
+    <details class="action-detail management-detail project-action-card">
+      <summary><span>项目目标与扩写计划</span><small>章节、字数和新增剧情要求</small></summary>
+      <form method="POST" action="/webhook/novel-project-targets-update" data-confirm="确认保存项目目标与扩写计划？如果目标章节数增加，后续继续写作可能会先补齐大纲。">
         ${formHidden('project_id', row.id)}
         ${formHidden('reviewer', 'local_user')}
-        <div class="form-grid">
+        <p class="project-action-card-note">后续大纲和导演台会读取扩写计划；已经批准的正文不会被自动改写。</p>
+        <div class="form-grid project-target-grid">
           <label>
             <span>目标章节数</span>
             <input name="target_total_chapters" type="number" min="1" step="1" inputmode="numeric" value="${escapeHtml(row.target_total_chapters || 20)}" />
@@ -812,14 +855,29 @@ function projectTargetsForm(row) {
           <label>
             <span>每章目标字数</span>
             <select name="target_words_per_chapter">${renderWordCountOptions(row.target_words_per_chapter || 2000)}</select>
-            <small class="form-help">只影响后续章节生成和重写；已生成章节不会自动改写，运行中的模型调用也不会中途变更。</small>
+            <small class="form-help">字数越高，导演台分段数和生成耗时通常也会增加。</small>
           </label>
         </div>
+        <label class="expansion-request-field">
+          <span class="field-head"><span>新增剧情要求</span><button type="button" class="ai-assist" data-ai-expansion>AI创意</button></span>
+          <textarea name="expansion_request" data-expansion-request placeholder="例如：从第 21 章开始新增女主身世线，加入新反派商会，埋下男二背叛伏笔，结尾接回主线大战…">${escapeHtml(row.expansion_request || '')}</textarea>
+          <small class="form-help">写清要增加的人物线、冲突、反派、感情线或伏笔；留空则只按章节/字数目标推进。</small>
+          <p class="async-feedback expansion-ai-feedback" data-expansion-ai-feedback role="status" aria-live="polite"></p>
+        </label>
+        <label>
+          <span>扩写范围</span>
+          <select name="expansion_scope">${renderExpansionScopeOptions(row.expansion_scope)}</select>
+          <small class="form-help">“只追加新章节”最稳；重排未写章节会覆盖未生成/未批准的大纲；全大纲重排风险最高。</small>
+        </label>
+        <label>
+          <span>保留约束</span>
+          <textarea name="expansion_constraints" placeholder="例如：已批准正文不改；已激活事实不破坏；主角能力边界不升级过快…">${escapeHtml(defaultExpansionConstraints)}</textarea>
+        </label>
         <label>
           <span>修改说明</span>
-          <textarea name="comment" placeholder="例如：把第一季扩展到三十章…"></textarea>
+          <textarea name="comment" placeholder="例如：第一季扩展到三十章，并追加新反派线…"></textarea>
         </label>
-        <button type="submit">保存项目目标</button>
+        <button type="submit">保存目标与扩写计划</button>
       </form>
     </details>`;
 }
@@ -828,16 +886,18 @@ function projectPauseForms(row) {
   const isPaused = row.status === 'PAUSED';
   const action = isPaused ? 'RESUME' : 'PAUSE';
   const labelText = isPaused ? '恢复项目' : '暂停项目';
+  const helperText = isPaused ? '重新允许队列领取任务' : '保留任务但停止自动推进';
   const confirmText = isPaused
     ? '恢复后队列可以继续领取该项目任务，确认恢复？'
     : '暂停后待处理任务会保留，但队列会跳过该项目，确认暂停？';
   return `
-    <details class="action-detail management-detail">
-      <summary>${escapeHtml(labelText)}</summary>
+    <details class="action-detail management-detail project-action-card">
+      <summary><span>${escapeHtml(labelText)}</span><small>${escapeHtml(helperText)}</small></summary>
       <form method="POST" action="/webhook/novel-project-status-toggle" data-confirm="${escapeHtml(confirmText)}">
         ${formHidden('project_id', row.id)}
         ${formHidden('desired_action', action)}
         ${formHidden('reviewer', 'local_user')}
+        <p class="project-action-card-note">${escapeHtml(isPaused ? '恢复后不会立刻调用模型，只是让项目重新进入可领取队列。' : '暂停不会删除任务，适合等待人工调整设定、大纲或正文时使用。')}</p>
         <label>
           <span>${escapeHtml(isPaused ? '恢复说明' : '暂停说明')}</span>
           <textarea name="comment" placeholder="${escapeHtml(isPaused ? '例如：恢复生成第二卷…' : '例如：等待人工调整大纲，暂停队列领取…')}"></textarea>
@@ -851,12 +911,13 @@ function projectArchiveForms(row) {
   const isArchived = row.status === 'ARCHIVED';
   if (isArchived) {
     return `
-      <details class="action-detail danger-detail">
-        <summary>恢复归档项目</summary>
+      <details class="action-detail danger-detail project-action-card">
+        <summary><span>恢复归档项目</span><small>重新出现在管理列表</small></summary>
         <form method="POST" action="/webhook/novel-project-archive-toggle" data-confirm="恢复后项目会重新出现在可管理状态；已取消的旧任务不会自动恢复，需要手动继续写作。确认恢复？">
           ${formHidden('project_id', row.id)}
           ${formHidden('desired_action', 'RESTORE')}
           ${formHidden('reviewer', 'local_user')}
+          <p class="project-action-card-note">恢复只改变项目管理状态；旧的已取消队列不会自动恢复。</p>
           <label>
             <span>恢复说明</span>
             <textarea name="comment" placeholder="例如：重新打开项目，准备继续调整正文…"></textarea>
@@ -866,17 +927,18 @@ function projectArchiveForms(row) {
       </details>`;
   }
   return `
-    <details class="action-detail danger-detail">
-      <summary>归档项目</summary>
-      <form method="POST" action="/webhook/novel-project-archive-toggle" data-confirm="归档会取消待处理任务，并停止项目继续推进；项目数据仍保留。确认归档？">
+    <details class="action-detail danger-detail project-action-card">
+      <summary><span>归档项目</span><small>取消待处理任务</small></summary>
+      <form method="POST" action="/webhook/novel-project-archive-toggle" data-confirm="归档会取消待处理任务，并停止项目继续推进；项目数据仍保留。确认归档？" data-confirm-title="${escapeHtml(row.title || '')}">
         ${formHidden('project_id', row.id)}
         ${formHidden('desired_action', 'ARCHIVE')}
         ${formHidden('reviewer', 'local_user')}
-        <p class="muted">归档相当于软删除：不会物理删除设定集、大纲、章节和日志，但待处理任务会被取消。</p>
+        <p class="project-action-card-note">归档相当于软删除：不会物理删除设定集、大纲、章节和日志，但待处理任务会被取消。</p>
         <label>
           <span>输入项目名确认</span>
-          <input name="confirm_title" autocomplete="off" placeholder="请输入：${escapeHtml(row.title || '')}" />
+          <input name="confirm_title" autocomplete="off" required placeholder="请输入完整项目名：${escapeHtml(row.title || '')}" />
         </label>
+        <p class="async-feedback" data-async-feedback role="status" aria-live="polite">必须完整输入项目名，不能只保留占位提示。</p>
         <label>
           <span>归档说明</span>
           <textarea name="comment" placeholder="例如：测试项目不再继续写作…"></textarea>
@@ -884,6 +946,108 @@ function projectArchiveForms(row) {
         <button type="submit">归档项目</button>
       </form>
     </details>`;
+}
+
+const biblePatchStatusLabel = {
+  PENDING: '待确认',
+  APPROVED: '已确认',
+  REJECTED: '已拒绝',
+  APPLIED: '已应用',
+  FAILED: '生成失败',
+};
+
+function biblePatchActionForm(patch, action, labelText, options = {}) {
+  if (!patch?.id) return '';
+  const confirmText = options.confirm || `确认${labelText}？`;
+  const buttonClass = options.danger ? 'danger-submit' : (options.primary ? 'primary' : '');
+  return `
+    <form class="inline-form bible-patch-action-form" method="POST" action="/webhook/novel-bible-patch-action" data-confirm="${escapeHtml(confirmText)}">
+      ${formHidden('patch_id', patch.id)}
+      ${formHidden('patch_action', action)}
+      ${formHidden('reviewer', 'local_user')}
+      ${options.comment ? `<input type="hidden" name="comment" value="${escapeHtml(options.comment)}" />` : ''}
+      <button class="${escapeHtml(buttonClass)}" type="submit">${escapeHtml(labelText)}</button>
+    </form>`;
+}
+
+function biblePatchCard(patch) {
+  const payload = parseObject(patch.patch_payload);
+  const riskNotes = parseArray(patch.risk_notes || payload.risk_notes);
+  const status = String(patch.status || 'PENDING');
+  const canDecide = ['PENDING', 'APPROVED'].includes(status);
+  const summary = payload.summary || patch.expansion_request || '扩写设定补丁';
+  return `
+    <article class="bible-patch-card" id="bible-patch-${escapeHtml(patch.id || '')}">
+      <div class="bible-patch-head">
+        <div>
+          <span class="badge ${status === 'APPLIED' ? 'good' : (status === 'REJECTED' || status === 'FAILED' ? 'bad' : 'warn')}">${escapeHtml(label(biblePatchStatusLabel, status, status || '待确认'))}</span>
+          <h3>${escapeHtml(excerpt(summary, 80))}</h3>
+          <p class="muted">来源：${escapeHtml(patch.expansion_scope || 'append_only')}；创建时间 ${escapeHtml(formatLocalTime(patch.created_at))}</p>
+        </div>
+      </div>
+      <div class="bible-patch-grid">
+        <section>
+          <h4>新增人物</h4>
+          ${settingEntries(payload.new_characters, '人物')}
+        </section>
+        <section>
+          <h4>新增反派/阻力</h4>
+          ${settingEntries(payload.new_villains, '反派')}
+        </section>
+        <section>
+          <h4>组织/商会/家族</h4>
+          ${settingEntries(payload.new_organizations, '组织')}
+        </section>
+        <section>
+          <h4>关键地点</h4>
+          ${settingEntries(payload.new_locations, '地点')}
+        </section>
+        <section>
+          <h4>关系更新</h4>
+          ${settingEntries(payload.relationship_updates, '关系')}
+        </section>
+        <section>
+          <h4>剧情约束</h4>
+          ${settingEntries(payload.plot_constraints, '约束')}
+        </section>
+      </div>
+      ${riskNotes.length ? `<div class="bible-patch-risk"><strong>风险提示</strong>${settingEntries(riskNotes, '风险')}</div>` : ''}
+      ${canDecide ? `
+        <div class="bible-patch-actions">
+          ${biblePatchActionForm(patch, 'APPLY', '应用到设定集', {primary: true, confirm: '应用后会把新增人物、组织、地点、关系和约束合并进正式设定集；不会自动改正文。确认应用？'})}
+          ${biblePatchActionForm(patch, 'REGENERATE', '重新生成补丁', {comment: '重新生成扩写设定补丁', confirm: '这会重新排队生成一个设定集补丁，不会应用当前补丁。确认重新生成？'})}
+          ${biblePatchActionForm(patch, 'REJECT', '拒绝补丁', {danger: true, comment: '拒绝扩写设定补丁', confirm: '拒绝后不会写入正式设定集。确认拒绝？'})}
+        </div>` : ''}
+    </article>`;
+}
+
+function biblePatchSectionHtml(patches, pendingJob, runningJob) {
+  const visiblePatches = patches.slice().sort((a, b) =>
+    new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+  );
+  if (!visiblePatches.length && !pendingJob && !runningJob) return '';
+  return `
+    <section class="bible-workspace-section bible-patch-section" id="bible-patch-section" aria-label="扩写设定补丁">
+      <div class="bible-workspace-section-head">
+        <div>
+          <h2>扩写设定补丁</h2>
+          <p class="muted">扩写计划新增的人物、商会、家族、势力和地点先在这里确认，再进入正式设定集。</p>
+        </div>
+        ${pendingJob ? generationRunForm(projectId, 'GENERATE_BIBLE_PATCH') : (runningJob ? '<span class="disabled-action">补丁正在生成</span>' : '')}
+      </div>
+      <div class="bible-patch-list">
+        ${visiblePatches.length ? visiblePatches.map(biblePatchCard).join('') : '<article class="empty">补丁任务已排队，启动后会生成待确认设定。</article>'}
+      </div>
+    </section>`;
+}
+
+function renderExpansionScopeOptions(selectedValue) {
+  const selected = String(selectedValue || 'append_only');
+  return renderOptions([
+    ['append_only', '只追加新章节'],
+    ['rewrite_unwritten', '重排未写章节'],
+    ['regenerate_outline', '高风险重排全部大纲'],
+  ], selected);
 }
 
 function outlineEditForm(projectId, outline) {
@@ -1052,8 +1216,16 @@ function directorCardBadge(card, activeJob) {
   return `<span class="badge ${klass}">${escapeHtml(state.label)}</span>`;
 }
 
-function directorRegenerateForm(projectId, chapterNo, cardId = '') {
+function directorJobDisabledAction(activeJob, fallback = '导演台生成中') {
+  if (!['PENDING', 'RUNNING'].includes(String(activeJob?.status || ''))) return '';
+  const text = activeJob.status === 'PENDING' ? '导演台排队中' : fallback;
+  return `<span class="disabled-action">${escapeHtml(text)}</span>`;
+}
+
+function directorRegenerateForm(projectId, chapterNo, cardId = '', activeJob = null) {
   if (!projectId || !chapterNo) return '';
+  const disabledAction = directorJobDisabledAction(activeJob);
+  if (disabledAction) return disabledAction;
   return `
     <form class="inline-form" method="POST" action="/webhook/novel-director-card-regenerate" data-confirm="这会为本章重新排队导演台规划，不会删除旧版本。确认重新生成？">
       ${formHidden('project_id', projectId)}
@@ -1065,18 +1237,20 @@ function directorRegenerateForm(projectId, chapterNo, cardId = '') {
     </form>`;
 }
 
-function directorResolveBlockersForm(projectId, chapterNo, cardId, blockingIssues) {
+function directorResolveBlockersForm(projectId, chapterNo, cardId, blockingIssues, activeJob = null) {
   if (!projectId || !chapterNo || !parseArray(blockingIssues).length) return '';
+  const disabledAction = directorJobDisabledAction(activeJob, '导演台生成中');
+  if (disabledAction) return disabledAction;
   const issueSummary = directorValueText(blockingIssues).slice(0, 900);
   return `
-    <form class="inline-form action-repair" method="POST" action="/webhook/novel-director-card-regenerate" data-confirm="这会带着当前阻断清单重新生成导演台，新版本通过质量闸门后才会自动排正文。确认重跑解决阻断？">
+    <form class="inline-form action-repair" method="POST" action="/webhook/novel-director-card-regenerate" data-submitting-label="生成中..." data-confirm="这会带着当前阻断清单重新生成导演台，新版本通过质量闸门后才会自动排正文。确认重跑解决阻断？">
       ${formHidden('project_id', projectId)}
       ${formHidden('director_card_id', cardId || '')}
       ${formHidden('chapter_no', chapterNo)}
       ${formHidden('director_action', 'REGENERATE')}
       ${formHidden('reviewer', 'local_user')}
       ${formHidden('comment', `解决导演台阻断：${issueSummary}`)}
-      <button type="submit"><span>重跑解决阻断</span><small>带阻断清单</small></button>
+      <button type="submit" data-submitting-label="生成中..."><span>重跑解决阻断</span><small>带阻断清单</small></button>
     </form>`;
 }
 
@@ -1584,16 +1758,16 @@ function directorCardArticle(card, outline, activeJob, chapterJob = null, chapte
   const ops = parseArray(payload.foreshadowing_ops);
   const risks = parseArray(payload.abruptness_risks);
   const segments = parseArray(payload.segment_plan);
-  const repairAction = directorResolveBlockersForm(projectId, chapterNo, card?.id, blockingIssues);
+  const repairAction = directorResolveBlockersForm(projectId, chapterNo, card?.id, blockingIssues, activeJob);
   const actions = card?.id
     ? `
       ${directorStartChapterForm(projectId, card, chapterJob, chapter)}
-      ${directorRegenerateForm(projectId, chapterNo, card.id)}
+      ${directorRegenerateForm(projectId, chapterNo, card.id, activeJob)}
       ${directorSaveForm(projectId, card)}
       <a href="${escapeHtml(projectViewHref('facts', '#facts-section'))}">查看伏笔账本</a>
       <a href="${escapeHtml(projectViewHref('ops', '#ops-section'))}">查看 AI 调用</a>
     `
-    : `${directorRegenerateForm(projectId, chapterNo) || '<span class="disabled-action">等待大纲</span>'}`;
+    : `${directorRegenerateForm(projectId, chapterNo, '', activeJob) || '<span class="disabled-action">等待大纲</span>'}`;
   return `
     <details id="director-${escapeHtml(chapterNo)}" class="director-card director-chapter-panel"${chapterOpen ? ' open' : ''}>
       <summary class="director-chapter-summary">
@@ -1654,17 +1828,7 @@ function selectOptions(options, selected) {
 }
 
 function factTypeSelect(selected) {
-  return selectOptions([
-    ['character', '人物'],
-    ['item', '物品'],
-    ['location', '地点'],
-    ['ability', '能力'],
-    ['relationship', '关系'],
-    ['foreshadowing', '伏笔'],
-    ['timeline', '时间线'],
-    ['rule', '规则'],
-    ['other', '其他'],
-  ], selected || 'other');
+  return selectOptions(factTypeOptions, selected || 'other');
 }
 
 function factStatusSelect(selected) {
@@ -1749,9 +1913,33 @@ function factClearInactiveForm(projectId, inactiveCount) {
     </form>`;
 }
 
+function factTypeFilterControls(facts) {
+  const counts = facts.reduce((acc, fact) => {
+    const type = String(fact.fact_type || 'other');
+    acc.set(type, (acc.get(type) || 0) + 1);
+    return acc;
+  }, new Map());
+  const buttons = [
+    ['all', '全部', facts.length],
+    ...factTypeOptions.map(([type, text]) => [type, text, counts.get(type) || 0]),
+  ].map(([type, text, count]) => `
+      <button class="fact-filter-chip" type="button" data-fact-type-filter="${escapeHtml(type)}" aria-pressed="${type === 'all' ? 'true' : 'false'}">
+        <span>${escapeHtml(text)}</span><small>${escapeHtml(count)}</small>
+      </button>
+    `).join('');
+  return `
+    <div class="fact-filter-panel" data-fact-filter-panel>
+      <div>
+        <strong>按事实类型筛选</strong>
+        <p class="muted" data-fact-filter-count>当前显示 ${escapeHtml(facts.length)} 条事实</p>
+      </div>
+      <div class="fact-filter-chips" role="group" aria-label="按事实类型筛选">${buttons}</div>
+    </div>`;
+}
+
 function factCard(fact) {
   return `
-    <article class="fact-card">
+    <article class="fact-card" data-fact-card data-fact-type="${escapeHtml(fact.fact_type || 'other')}">
       <div class="item-head">
         <strong>${escapeHtml(fact.fact_key || label(factTypeLabel, fact.fact_type, '事实'))}</strong>
         ${badge(fact.status, factStatusLabel)}
@@ -1803,6 +1991,7 @@ const chapters = allChapters.filter((chapter) => !isStaleChapter(chapter));
 const staleChapters = allChapters.filter((chapter) => isStaleChapter(chapter));
 const facts = parseArray(row.facts);
 const plotThreads = parseArray(row.plot_threads);
+const biblePatches = parseArray(row.bible_patches);
 const jobs = parseArray(row.jobs);
 const aiRuns = parseArray(row.ai_runs);
 const projectEvents = parseArray(row.project_events);
@@ -1887,6 +2076,7 @@ const activeFacts = facts.filter((fact) => fact.status === 'ACTIVE').length;
 const inactiveFacts = facts.filter((fact) => fact.status === 'INACTIVE').length;
 const pendingHumanReviewChapter = latestChapters.find((chapter) => chapter.status === 'NEED_REVIEW');
 const pendingBibleJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE' && job.status === 'PENDING');
+const pendingBiblePatchJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE_PATCH' && job.status === 'PENDING');
 const pendingOutlineJob = jobs.find((job) => job.job_type === 'GENERATE_OUTLINE' && job.status === 'PENDING');
 const pendingDirectorJob = jobs.find((job) => job.job_type === 'PLAN_CHAPTER_DIRECTOR' && job.status === 'PENDING');
 const chapterJobHasReadyDirector = (job) => {
@@ -1896,6 +2086,7 @@ const chapterJobHasReadyDirector = (job) => {
 const pendingChapterJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'PENDING' && chapterJobHasReadyDirector(job));
 const pendingChapterWithoutReadyDirectorJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'PENDING' && !chapterJobHasReadyDirector(job));
 const runningBibleJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE' && job.status === 'RUNNING');
+const runningBiblePatchJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE_PATCH' && job.status === 'RUNNING');
 const runningOutlineJob = jobs.find((job) => job.job_type === 'GENERATE_OUTLINE' && job.status === 'RUNNING');
 const runningDirectorJob = jobs.find((job) => job.job_type === 'PLAN_CHAPTER_DIRECTOR' && job.status === 'RUNNING');
 const runningChapterJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'RUNNING');
@@ -1922,7 +2113,9 @@ const needsReviewDirector = directorCards
   .sort((a, b) => Number(a.chapter_no || 0) - Number(b.chapter_no || 0))[0] || null;
 const readyDirectorCount = directorCards.filter((card) => card.is_current !== false && card.status === 'READY').length;
 const needsReviewDirectorCount = directorCards.filter((card) => card.is_current !== false && card.status === 'NEEDS_REVIEW').length;
-const hasFrontStartJob = Boolean(pendingBibleJob || pendingOutlineJob || pendingDirectorJob || pendingChapterJob);
+const pendingBiblePatch = biblePatches.find((patch) => patch.status === 'PENDING' || patch.status === 'APPROVED');
+const appliedBiblePatchCount = biblePatches.filter((patch) => patch.status === 'APPLIED').length;
+const hasFrontStartJob = Boolean(pendingBibleJob || pendingBiblePatchJob || pendingOutlineJob || pendingDirectorJob || pendingChapterJob);
 const hasBibleAsset = Object.keys(bible).length > 0;
 const hasOutlineAsset = syntheticOutlines.length > 0;
 const canShowContinueForm = !hasFrontStartJob
@@ -1960,6 +2153,9 @@ function liveProjectStatusInfo() {
   }
   if (runningBibleJob) return withBase('RUNNING', '设定集生成中');
   if (pendingBibleJob) return withBase('PENDING', '设定集待启动');
+  if (runningBiblePatchJob) return withBase('RUNNING', '扩写设定补丁生成中');
+  if (pendingBiblePatchJob) return withBase('PENDING', '扩写设定补丁待启动');
+  if (pendingBiblePatch) return withBase('PENDING', '扩写设定补丁待确认');
   if (runningOutlineJob) return withBase('RUNNING', '大纲生成中');
   if (pendingOutlineJob) return withBase('PENDING', '大纲待启动');
   if (runningDirectorJob) {
@@ -2298,6 +2494,8 @@ function commandAssetCard(labelText, value, detail, href, tone = '') {
 
 function projectPrimaryAction() {
   if (pendingBibleJob) return generationRunForm(projectId, 'GENERATE_BIBLE');
+  if (pendingBiblePatchJob) return generationRunForm(projectId, 'GENERATE_BIBLE_PATCH');
+  if (pendingBiblePatch) return commandLink(projectViewHref('bible', '#bible-patch-section'), '确认设定补丁', '先合并新增设定');
   if (pendingOutlineJob) return generationRunForm(projectId, 'GENERATE_OUTLINE');
   if (pendingDirectorJob) return generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', pendingDirectorJob);
   if (pendingChapterJob) return generationRunForm(projectId, 'GENERATE_CHAPTER', pendingChapterJob);
@@ -2370,6 +2568,39 @@ const projectCommandCenterHtml = `
       </div>
       <div class="asset-status-grid" aria-label="项目资产状态条">${commandAssetHtml}</div>
     </section>`;
+
+const projectActionsDrawerHtml = `
+    <dialog class="side-dialog project-actions-dialog" id="project-actions-drawer" aria-label="项目操作抽屉">
+      <div class="drawer-panel project-actions-panel">
+        <div class="drawer-head">
+          <div>
+            <p class="ops-kicker">操作抽屉</p>
+            <h2>项目操作抽屉</h2>
+            <p class="muted">把低频管理动作集中在这里；所有写入仍通过 POST 表单并需要确认。</p>
+          </div>
+          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
+        </div>
+        <div class="project-action-stack">
+          <section class="project-action-section" aria-label="项目设置">
+            <div class="project-action-section-head">
+              <p class="ops-kicker">管理设置</p>
+              <h3>项目目标与推进状态</h3>
+              <p class="muted">目标修改和暂停恢复都只影响后续推进；需要填写原因的动作默认折叠，打开后再提交。</p>
+            </div>
+            ${projectTargetsForm(row)}
+            ${projectPauseForms(row)}
+          </section>
+          <section class="project-action-section project-action-danger-zone" aria-label="危险区">
+            <div class="project-action-section-head">
+              <p class="ops-kicker">危险区</p>
+              <h3>归档管理</h3>
+              <p class="muted">归档会停止项目继续推进并取消待处理任务，但不会物理删除正文、设定和日志。</p>
+            </div>
+            ${projectArchiveForms(row)}
+          </section>
+        </div>
+      </div>
+    </dialog>`;
 
 function overviewCard(title, value, detail, href, cta = '打开') {
   return `
@@ -2476,12 +2707,38 @@ const bibleCharacterCardsHtml = [
     ...bibleEditOptions('relationship_map_json', 'bible-edit-relationships'),
   }),
 ].join('');
+const bibleOrganizationCardsHtml = [
+  bibleCard('组织势力', settingEntries(bible.organizations, '组织'), {
+    drawerId: 'bible-card-organizations',
+    summary: excerpt(bible.organizations, 120),
+    meta: `${countStructuredItems(bible.organizations)} 个商会/家族/势力`,
+    ...bibleEditOptions('organizations_json', 'bible-edit-organizations'),
+  }),
+  bibleCard('关键地点', settingEntries(bible.locations, '地点'), {
+    drawerId: 'bible-card-locations',
+    summary: excerpt(bible.locations, 120),
+    meta: `${countStructuredItems(bible.locations)} 个地点/据点`,
+    ...bibleEditOptions('locations_json', 'bible-edit-locations'),
+  }),
+].join('');
 const bibleConstraintCardsHtml = [
   bibleCard('能力体系', settingText(bible.power_system), {
     drawerId: 'bible-card-power-system',
     summary: excerpt(bible.power_system, 120),
     meta: '能力、限制、升级或资源规则',
     ...bibleEditOptions('power_system', 'bible-edit-power-system'),
+  }),
+  bibleCard('剧情约束', settingEntries(bible.plot_constraints, '约束'), {
+    drawerId: 'bible-card-plot-constraints',
+    summary: excerpt(bible.plot_constraints, 120),
+    meta: `${countStructuredItems(bible.plot_constraints)} 条长期约束`,
+    ...bibleEditOptions('plot_constraints_json', 'bible-edit-plot-constraints'),
+  }),
+  bibleCard('扩写备注', settingText(bible.expansion_notes), {
+    drawerId: 'bible-card-expansion-notes',
+    summary: excerpt(bible.expansion_notes, 120),
+    meta: '扩写后沉淀的编辑备注',
+    ...bibleEditOptions('expansion_notes', 'bible-edit-expansion-notes'),
   }),
   bibleCard('禁忌规则', settingText(bible.forbidden_rules), {
     drawerId: 'bible-card-forbidden-rules',
@@ -2497,8 +2754,10 @@ const bibleConstraintCardsHtml = [
   }),
 ].join('');
 const bibleWorkspaceHtml = [
+  biblePatchSectionHtml(biblePatches, pendingBiblePatchJob, runningBiblePatchJob),
   bibleWorkspaceGroup('核心摘要', '先看故事气质、舞台和文风是否稳定。', bibleCoreCardsHtml),
   bibleWorkspaceGroup('人物设定', '对比主角、配角、反派与关系线，避免称呼和动机漂移。', bibleCharacterCardsHtml),
+  bibleWorkspaceGroup('势力版图', '新增商会、家族、组织和关键地点会在后续生成中作为正式来源。', bibleOrganizationCardsHtml),
   bibleWorkspaceGroup('生成约束', '后续大纲、导演台和正文会参考这些规则。', bibleConstraintCardsHtml),
 ].join('');
 
@@ -2598,7 +2857,11 @@ const factsSectionHtml = `
           ${factClearInactiveForm(projectId, inactiveFacts)}
         </div>
       </div>
-      <div class="fact-grid">${facts.length ? facts.map(factCard).join('') : '<article class="empty">暂无连续性事实。</article>'}</div>
+      ${factTypeFilterControls(facts)}
+      <div class="fact-grid">
+        ${facts.length ? facts.map(factCard).join('') : '<article class="empty">暂无连续性事实。</article>'}
+        <article class="empty fact-filter-empty" data-fact-filter-empty hidden>当前类型暂无事实。</article>
+      </div>
     </section>`;
 
 const opsSectionHtml = `
@@ -2835,7 +3098,8 @@ const html = `<!doctype html>
     .inline-form button small { display: block; font-size: 11px; line-height: 1.2; font-weight: 650; opacity: .8; }
     .inline-form.action-now button.primary, .action-bar .primary { color: #fff; background: var(--accent); border-color: var(--accent); }
     .inline-form.action-queue button { border-color: var(--line); color: #344054; }
-    button:disabled { opacity: .65; cursor: progress; }
+    button:disabled { opacity: .65; cursor: not-allowed; }
+    button.is-submitting:disabled { cursor: progress; }
     .disabled-action { color: var(--muted); border-color: var(--line); cursor: default; }
     .action-toast { position: fixed; right: 18px; bottom: 18px; z-index: 90; max-width: min(420px, calc(100vw - 36px)); border: 1px solid #b9e3d4; border-radius: 8px; padding: 12px 14px; background: #fff; color: var(--ink); box-shadow: 0 18px 44px rgba(16, 24, 40, .18); line-height: 1.55; }
     .action-toast strong { display: block; margin-bottom: 2px; }
@@ -2846,6 +3110,43 @@ const html = `<!doctype html>
     .danger-detail { border-top: 1px solid #f2b8b5; padding-top: 10px; }
     .danger-detail summary { color: var(--danger); }
     .danger-detail button { border-color: #f2b8b5; color: var(--danger); background: #fff; }
+    .project-actions-dialog { width: min(600px, calc(100vw - 24px)); }
+    .project-actions-panel { display: grid; align-content: start; gap: 14px; background: #fbfcfd; }
+    .project-actions-panel .drawer-head { position: sticky; top: -18px; z-index: 2; margin: -18px -18px 0; padding: 18px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, .96); backdrop-filter: blur(8px); }
+    .project-action-section-head h3 { margin: 0; color: var(--ink); font-size: 18px; line-height: 1.3; }
+    .project-action-section-head p:not(.ops-kicker) { margin: 6px 0 0; line-height: 1.55; }
+    .project-action-stack { display: grid; gap: 12px; }
+    .project-action-section { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: #fff; }
+    .project-action-danger-zone { border-color: #f2b8b5; background: #fffafa; }
+    .project-actions-panel .project-action-card { margin-top: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 0; background: #fff; overflow: hidden; }
+    .project-actions-panel .project-action-card.danger-detail { border-color: #f2b8b5; background: #fff; }
+    .project-action-card > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 11px 12px; cursor: pointer; list-style: none; color: var(--ink); }
+    .project-action-card > summary::-webkit-details-marker { display: none; }
+    .project-action-card > summary span { min-width: 0; font-weight: 850; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .project-action-card > summary small { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .project-action-card > summary::after { content: '打开'; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .project-action-card[open] > summary { border-bottom: 1px solid var(--line); background: #fbfcfd; }
+    .project-action-card[open] > summary::after { content: '收起'; color: var(--accent); border-color: #b9e3d4; background: var(--accent-soft); }
+    .project-action-card.danger-detail > summary span, .project-action-card.danger-detail[open] > summary::after { color: var(--danger); }
+    .project-action-card.danger-detail > summary::after { border-color: #f2b8b5; color: var(--danger); }
+    .project-actions-panel .project-action-card form { display: grid; gap: 10px; margin: 0; padding: 12px; }
+    .project-actions-panel .project-action-card label { display: grid; gap: 6px; margin: 0; color: var(--ink); font-weight: 700; }
+    .project-action-card-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .project-actions-panel .project-action-card button[type="submit"] { min-height: 40px; justify-content: center; font-weight: 800; }
+    .field-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+    .field-head > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ai-assist { min-width: 76px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #b9e3d4; border-radius: 8px; padding: 0 10px; background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .ai-assist:hover { border-color: var(--accent); background: #e2f3eb; }
+    .ai-assist:disabled { opacity: .72; cursor: wait; }
+    .ai-assist.is-loading { border-color: var(--accent); background: #fff; }
+    .expansion-ai-feedback { min-height: 20px; margin: 0; }
+    .expansion-ai-feedback.is-error { color: var(--danger); }
+    .expansion-ai-feedback.is-success { color: var(--accent); }
+    .project-actions-panel .form-grid { padding: 0; }
+    .project-target-grid { align-items: start; }
+    .project-target-grid label { grid-template-rows: auto 42px minmax(18px, auto); align-content: start; }
+    .project-target-grid input, .project-target-grid select { height: 42px; min-height: 42px; }
+    .project-target-grid .form-help { margin: 0; min-height: 18px; }
     .manual-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     .manual-edit-actions button[value="direct_save"] { border-color: var(--line); color: #344054; }
     .regenerate-panel { display: flex; flex-direction: column; gap: 12px; }
@@ -2874,6 +3175,21 @@ const html = `<!doctype html>
     .bible-workspace-section { background: transparent; border: 0; margin: 0; overflow: visible; }
     .bible-workspace-section .compact-title { padding-bottom: 10px; }
     .bible-workspace-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 0 16px; }
+    .bible-patch-section { border: 1px solid #f1ce96; border-radius: 8px; margin: 0 16px; padding: 14px; background: #fffaf0; }
+    .bible-patch-section .bible-workspace-section-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; }
+    .bible-patch-section h2, .bible-patch-section h3, .bible-patch-section h4 { margin: 0; }
+    .bible-patch-list { display: grid; gap: 12px; }
+    .bible-patch-card { border: 1px solid #ecd39c; border-radius: 8px; padding: 12px; background: #fff; }
+    .bible-patch-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; }
+    .bible-patch-head h3 { margin-top: 8px; color: var(--ink); font-size: 17px; line-height: 1.4; }
+    .bible-patch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .bible-patch-grid section, .bible-patch-risk { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fbfcfd; }
+    .bible-patch-grid h4 { margin-bottom: 8px; color: #344054; font-size: 13px; }
+    .bible-patch-risk { margin-top: 10px; border-color: #f2b8b5; background: #fff7f6; }
+    .bible-patch-risk > strong { display: block; margin-bottom: 8px; color: var(--danger); }
+    .bible-patch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .bible-patch-action-form { display: inline-flex; }
+    .bible-patch-action-form button { min-height: 36px; }
     .bible-work-card { min-height: 198px; display: flex; flex-direction: column; padding: 0; overflow: hidden; content-visibility: visible; contain-intrinsic-size: auto; }
     .bible-card-summary { flex: 1 1 auto; min-height: 132px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 14px; background: #fff; }
     .bible-card-summary span { color: var(--muted); font-size: 12px; font-weight: 850; letter-spacing: .04em; }
@@ -2939,6 +3255,12 @@ const html = `<!doctype html>
     .fact-toolbar { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin: 0 16px 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #f8fafb; }
     .fact-maintenance-actions { display: grid; gap: 10px; min-width: min(100%, 520px); }
     .fact-create-trigger { width: fit-content; border-color: #b9e3d4; color: var(--accent); background: #fff; }
+    .fact-filter-panel { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 0 16px 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .fact-filter-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .fact-filter-chip { min-height: 34px; display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 999px; padding: 0 12px; color: #344054; background: #fff; cursor: pointer; font: inherit; font-weight: 750; }
+    .fact-filter-chip small { min-width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 999px; background: #eef4f2; color: #40665a; font-size: 12px; }
+    .fact-filter-chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+    .fact-filter-chip[aria-pressed="true"] small { background: #fff; color: var(--accent); }
     .fact-create-form, .fact-edit form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
     .fact-create-form label, .fact-edit label { display: grid; gap: 5px; font-weight: 700; color: var(--ink); }
     .fact-create-form input, .fact-create-form select, .fact-create-form textarea, .fact-edit input, .fact-edit select, .fact-edit textarea { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; color: var(--ink); font: inherit; }
@@ -3065,6 +3387,13 @@ const html = `<!doctype html>
       .next-action-primary { justify-content: stretch; }
       .next-action-primary .inline-form { max-width: none; }
       .asset-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .project-actions-dialog { width: min(100vw, 620px); }
+      .project-action-card > summary { grid-template-columns: minmax(0, 1fr) auto; }
+      .project-action-card > summary small { grid-column: 1 / -1; white-space: normal; }
+      .project-actions-panel .form-grid { grid-template-columns: 1fr; padding: 0; }
+      .bible-patch-section { margin: 0 12px; }
+      .bible-patch-section .bible-workspace-section-head, .bible-patch-head { display: grid; }
+      .bible-patch-grid { grid-template-columns: 1fr; }
       .metric-grid, .catalog-grid, .chapter-grid, .fact-grid, .bible-grid, .bible-workspace-grid, .overview-grid, .form-grid, .risk-grid, .director-grid, .outline-dashboard { grid-template-columns: 1fr; padding: 0 12px 12px; }
       .director-card > .row-actions { padding: 0 12px 12px; }
       .director-chapter-summary { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; }
@@ -3080,6 +3409,8 @@ const html = `<!doctype html>
       .director-panel-trigger small { grid-column: 1 / -1; }
       .director-list { padding: 0 12px 12px; }
       .fact-toolbar { display: grid; margin-left: 12px; margin-right: 12px; }
+      .fact-filter-panel { display: grid; margin-left: 12px; margin-right: 12px; }
+      .fact-filter-chips { justify-content: flex-start; }
       .stale-history-toolbar { display: grid; }
       .stale-cleanup-form button { width: 100%; }
       .fact-maintenance-actions { min-width: 0; }
@@ -3119,26 +3450,7 @@ const html = `<!doctype html>
 
     ${projectCommandCenterHtml}
 
-    <dialog class="side-dialog" id="project-actions-drawer" aria-label="项目操作抽屉">
-      <div class="drawer-panel">
-        <div class="drawer-head">
-          <div>
-            <p class="ops-kicker">操作抽屉</p>
-            <h2>项目操作抽屉</h2>
-            <p class="muted">低频管理动作从首屏移到这里；所有写入仍通过 POST 表单。</p>
-          </div>
-          <button class="drawer-close" type="button" data-close-dialog>关闭</button>
-        </div>
-        <section class="drawer-section">
-          <h3>队列推进</h3>
-          <p class="muted">用于补齐缺失的下一步任务；如果当前有待审核、失败或运行中的任务，后台会返回阻断原因。</p>
-          ${hasFrontStartJob || activeQueueCount > 0 ? '<p class="muted">当前已有可启动或运行中的任务，先处理首屏推荐动作。</p>' : continueForm(projectId, rejectedRetryContinueOptions || {})}
-        </section>
-        ${projectTargetsForm(row)}
-        ${projectPauseForms(row)}
-        ${projectArchiveForms(row)}
-      </div>
-    </dialog>
+    ${projectActionsDrawerHtml}
 
     ${projectViewShell}
   </main>
@@ -3366,6 +3678,7 @@ const html = `<!doctype html>
       const restoreButton = (button, originalText) => {
         if (!button) return;
         button.disabled = false;
+        button.classList.remove('is-submitting');
         button.textContent = originalText || button.dataset.originalText || '提交';
       };
 
@@ -3384,6 +3697,134 @@ const html = `<!doctype html>
         }
       };
 
+      const navigateOrReload = (nextUrl) => {
+        const currentUrl = new URL(window.location.href);
+        const sameDocument = currentUrl.origin === nextUrl.origin
+          && currentUrl.pathname === nextUrl.pathname
+          && currentUrl.search === nextUrl.search;
+        const targetHref = nextUrl.toString();
+        window.setTimeout(() => {
+          if (sameDocument) {
+            if (targetHref !== window.location.href) {
+              window.history.replaceState({}, '', targetHref);
+            }
+            window.location.reload();
+            return;
+          }
+          window.location.assign(targetHref);
+        }, 650);
+      };
+
+      const setupFactFilters = () => {
+        const panel = document.querySelector('[data-fact-filter-panel]');
+        if (!panel) return;
+        const buttons = Array.from(panel.querySelectorAll('[data-fact-type-filter]'));
+        const cards = Array.from(document.querySelectorAll('[data-fact-card]'));
+        const empty = document.querySelector('[data-fact-filter-empty]');
+        const countLabel = document.querySelector('[data-fact-filter-count]');
+        const params = new URLSearchParams(window.location.search);
+        const knownTypes = new Set(buttons.map((button) => button.dataset.factTypeFilter));
+        const initialType = knownTypes.has(params.get('fact_type')) ? params.get('fact_type') : 'all';
+
+        const applyFilter = (type, updateUrl = true) => {
+          const selected = knownTypes.has(type) ? type : 'all';
+          let visibleCount = 0;
+          buttons.forEach((button) => {
+            button.setAttribute('aria-pressed', button.dataset.factTypeFilter === selected ? 'true' : 'false');
+          });
+          cards.forEach((card) => {
+            const visible = selected === 'all' || card.dataset.factType === selected;
+            card.hidden = !visible;
+            if (visible) visibleCount += 1;
+          });
+          if (empty) empty.hidden = visibleCount > 0;
+          if (countLabel) {
+            const label = selected === 'all'
+              ? '全部类型'
+              : (buttons.find((button) => button.dataset.factTypeFilter === selected)?.querySelector('span')?.textContent || '当前类型');
+            countLabel.textContent = '当前显示 ' + visibleCount + ' 条事实 / ' + label;
+          }
+          if (updateUrl) {
+            const url = new URL(window.location.href);
+            if (selected === 'all') url.searchParams.delete('fact_type');
+            else url.searchParams.set('fact_type', selected);
+            window.history.replaceState({}, '', url.toString());
+          }
+        };
+
+        buttons.forEach((button) => {
+          button.addEventListener('click', () => applyFilter(button.dataset.factTypeFilter || 'all'));
+        });
+        applyFilter(initialType, false);
+      };
+
+      setupFactFilters();
+
+      document.querySelectorAll('[data-ai-expansion]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const form = button.closest('form');
+          const textarea = form?.querySelector('textarea[name="expansion_request"]');
+          const feedback = form?.querySelector('[data-expansion-ai-feedback]');
+          if (!form || !textarea) return;
+
+          const originalText = button.textContent || 'AI创意';
+          if (feedback) {
+            feedback.textContent = textarea.value.trim()
+              ? '正在根据当前要求生成后续剧情设计...'
+              : '正在读取项目上下文生成后续剧情设计...';
+            feedback.classList.remove('is-error', 'is-success');
+          }
+          button.disabled = true;
+          button.dataset.originalText = originalText;
+          button.classList.add('is-loading');
+          button.textContent = '生成中...';
+
+          try {
+            const body = new FormData(form);
+            body.set('assist_nonce', String(Date.now()) + '-' + Math.random().toString(16).slice(2));
+            const response = await fetch('/webhook/novel-project-expansion-ai-assist', {
+              method: 'POST',
+              body,
+              credentials: 'same-origin',
+              headers: {'X-Requested-With': 'fetch'},
+            });
+            const raw = await response.text();
+            let payload = {};
+            try {
+              payload = raw ? JSON.parse(raw) : {};
+            } catch (error) {
+              throw new Error(resultMessageFromHtml(raw, 'AI创意返回内容格式异常。'));
+            }
+            if (!response.ok || payload.ok === false) {
+              throw new Error(payload.message || 'AI创意生成失败，请稍后重试。');
+            }
+            if (!payload.expansion_request) {
+              throw new Error('AI创意没有返回可填入的剧情要求。');
+            }
+            textarea.value = payload.expansion_request;
+            textarea.dispatchEvent(new Event('input', {bubbles: true}));
+            if (feedback) {
+              feedback.textContent = payload.message || '已生成后续剧情设计，可继续微调后保存。';
+              feedback.classList.add('is-success');
+            }
+            showToast('AI创意已生成', '已填入新增剧情要求，确认后再保存。');
+          } catch (error) {
+            if (feedback) {
+              feedback.textContent = error.message || 'AI创意生成失败，请稍后重试。';
+              feedback.classList.add('is-error');
+            }
+            showToast('AI创意未完成', error.message || 'AI创意生成失败，请稍后重试。', true);
+          } finally {
+            button.classList.remove('is-loading');
+            restoreButton(button, originalText);
+          }
+        });
+      });
+
+      document.querySelectorAll('form[data-confirm-title] [name="confirm_title"]').forEach((input) => {
+        input.addEventListener('input', () => input.setCustomValidity(''));
+      });
+
       document.querySelectorAll('form[method="POST"], form[method="post"]').forEach((form) => {
         form.addEventListener('submit', async (event) => {
           const fields = Array.from(form.querySelectorAll('textarea[data-json-field]'));
@@ -3392,6 +3833,28 @@ const html = `<!doctype html>
             event.preventDefault();
             invalidField.focus();
             return;
+          }
+          const expectedTitle = String(form.dataset.confirmTitle || '').trim();
+          if (expectedTitle) {
+            const titleInput = form.querySelector('[name="confirm_title"]');
+            const actualTitle = String(titleInput?.value || '').trim();
+            if (actualTitle !== expectedTitle) {
+              event.preventDefault();
+              if (titleInput) {
+                titleInput.setCustomValidity('请输入完整项目名：' + expectedTitle);
+                titleInput.reportValidity();
+                titleInput.focus();
+              }
+              const feedback = form.querySelector('[data-async-feedback]');
+              if (feedback) {
+                feedback.textContent = '归档确认项目名不匹配，请完整输入：' + expectedTitle;
+                feedback.classList.add('is-error');
+                feedback.classList.remove('is-success');
+              }
+              showToast('归档未提交', '请完整输入项目名后再归档。', true);
+              return;
+            }
+            if (titleInput) titleInput.setCustomValidity('');
           }
           const button = event.submitter || form.querySelector('button[type="submit"]');
           const message = button?.dataset.confirm || form.dataset.confirm || '确认执行？';
@@ -3411,7 +3874,10 @@ const html = `<!doctype html>
           if (button) {
             button.disabled = true;
             button.dataset.originalText = originalText;
-            button.textContent = form.classList.contains('action-now') ? '正在启动后台任务...' : '提交中...';
+            button.classList.add('is-submitting');
+            button.textContent = button.dataset.submittingLabel
+              || form.dataset.submittingLabel
+              || (form.classList.contains('action-now') ? '正在启动后台任务...' : '提交中...');
           }
 
           try {
@@ -3427,13 +3893,23 @@ const html = `<!doctype html>
             if (!response.ok) {
               throw new Error(resultMessageFromHtml(html, '操作失败：HTTP ' + response.status));
             }
+            const resultMessage = resultMessageFromHtml(html, '操作已完成');
             if (feedback) {
-              feedback.textContent = '已提交，正在刷新页面...';
+              feedback.textContent = resultMessage + '，正在刷新页面...';
               feedback.classList.add('is-success');
             }
             if (dialog && typeof dialog.close === 'function') dialog.close();
-            showToast('操作已完成', '正在刷新当前页面...');
-            window.setTimeout(() => window.location.reload(), 450);
+            showToast('操作已完成', resultMessage);
+            const nextUrl = new URL(window.location.href);
+            if (form.action.includes('/webhook/novel-project-fact-action')) {
+              nextUrl.searchParams.set('view', 'facts');
+              const action = String(body.get('fact_action') || '');
+              const factType = String(body.get('fact_type') || '');
+              if (['CREATE', 'UPDATE'].includes(action) && factType) nextUrl.searchParams.set('fact_type', factType);
+              if (action === 'CLEAR_INACTIVE') nextUrl.searchParams.delete('fact_type');
+              nextUrl.hash = 'facts-section';
+            }
+            navigateOrReload(nextUrl);
           } catch (error) {
             if (feedback) {
               feedback.textContent = error.message || '操作失败，请稍后重试。';

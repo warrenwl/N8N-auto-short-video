@@ -34,10 +34,6 @@ if (!['ARCHIVE', 'RESTORE'].includes(desiredAction)) {
   throw new Error('项目归档操作无效。');
 }
 
-if (desiredAction === 'ARCHIVE' && !confirmTitle) {
-  throw new Error('归档项目时必须输入项目名确认。');
-}
-
 return [{
   json: {
     project_id: projectId,

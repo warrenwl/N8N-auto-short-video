@@ -196,6 +196,84 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function jsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === '') return [];
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function maxChapterNo(value) {
+  return jsonArray(value).reduce((max, item) => {
+    const chapterNo = number(item?.chapter_no, 0);
+    return chapterNo > max ? Math.round(chapterNo) : max;
+  }, 0);
+}
+
+function assertOutlineCoverage(chapters, response) {
+  const runType = text(response.run_type || response.job_type).toUpperCase();
+  if (runType !== 'GENERATE_OUTLINE') return;
+  const targetTotal = Math.round(number(response.target_total_chapters, 0));
+  if (!targetTotal) return;
+
+  const scope = text(response.expansion_scope || 'append_only');
+  const approvedMax = maxChapterNo(response.approved_chapters);
+  const existingMax = maxChapterNo(response.existing_outlines);
+  const expectedStart = scope === 'regenerate_outline'
+    ? 1
+    : (scope === 'rewrite_unwritten'
+      ? Math.max(1, approvedMax + 1)
+      : Math.max(1, existingMax + 1));
+  if (expectedStart > targetTotal) return;
+
+  const chapterNumbers = new Set(chapters
+    .map((chapter) => Math.round(number(chapter.chapter_no, 0)))
+    .filter((chapterNo) => chapterNo > 0));
+  const missing = [];
+  for (let chapterNo = expectedStart; chapterNo <= targetTotal; chapterNo += 1) {
+    if (!chapterNumbers.has(chapterNo)) missing.push(chapterNo);
+  }
+  if (missing.length) {
+    const sample = missing.slice(0, 12).join('、');
+    throw new Error(`大纲章节覆盖不足：目标总章数为 ${targetTotal}，扩写范围 ${scope} 必须覆盖第 ${expectedStart}-${targetTotal} 章；缺少第 ${sample}${missing.length > 12 ? ' 等' : ''}章。`);
+  }
+}
+
+function assertNoPrematureFinale(chapters, response) {
+  const runType = text(response.run_type || response.job_type).toUpperCase();
+  if (runType !== 'GENERATE_OUTLINE') return;
+  const targetTotal = Math.round(number(response.target_total_chapters, 0));
+  if (!targetTotal || targetTotal <= 1) return;
+
+  const finalePattern = /(大结局|全书完|全文完|全书完结|全剧终|主线收束|全书收束|故事落幕|落下帷幕|全书高潮收尾)/;
+  const offenders = chapters
+    .map((chapter) => {
+      const chapterNo = Math.round(number(chapter.chapter_no, 0));
+      const content = [
+        chapter.title,
+        chapter.summary,
+        chapter.chapter_goal,
+        chapter.conflict_point,
+        chapter.emotional_point,
+        chapter.hook,
+      ].map((value) => text(value)).join('\n');
+      return {chapterNo, content};
+    })
+    .filter((item) => item.chapterNo > 0 && item.chapterNo < targetTotal && finalePattern.test(item.content));
+
+  if (offenders.length) {
+    const sample = offenders.slice(0, 8).map((item) => `第 ${item.chapterNo} 章`).join('、');
+    throw new Error(`大纲提前完结风险：目标总章数为 ${targetTotal}，但 ${sample} 出现终局式表达；除最后一章外不得写“大结局、全书完、主线收束、故事落幕”等提前完结信号。`);
+  }
+}
+
 function score(value, fallback = 0, options = {}) {
   const parsed = number(value, fallback);
   const scaled = options.scaleTenPoint && parsed > 0 && parsed <= 10
@@ -255,6 +333,16 @@ const bibleTopLevelAlias = {
   能力体系: 'power_system',
   人物关系: 'relationship_map',
   关系图谱: 'relationship_map',
+  组织: 'organizations',
+  组织势力: 'organizations',
+  势力: 'organizations',
+  商会: 'organizations',
+  家族势力: 'organizations',
+  地点: 'locations',
+  关键地点: 'locations',
+  剧情约束: 'plot_constraints',
+  长期约束: 'plot_constraints',
+  扩写备注: 'expansion_notes',
   文风规则: 'tone_rules',
   禁忌规则: 'forbidden_rules',
   禁止事项: 'forbidden_rules',
@@ -265,6 +353,7 @@ const bibleTopLevelAlias = {
 const bibleCharacterAlias = {
   姓名: 'name',
   名字: 'name',
+  名称: 'name',
   主名: 'name',
   别名: 'aliases',
   昵称: 'aliases',
@@ -315,6 +404,18 @@ const bibleCharacterAlias = {
   目标角色: 'to',
   原因: 'reason',
   内容: 'value',
+  类型: 'type',
+  负责人: 'leader',
+  代表人物: 'leader',
+  利益诉求: 'interest',
+  初次触达建议: 'first_touch_suggestion',
+  所属方: 'owner',
+  所属: 'owner',
+  剧情功能: 'story_function',
+  约束: 'constraint',
+  生效原因: 'reason',
+  截止章节: 'until_chapter',
+  揭露章节: 'until_chapter',
   备注: 'note',
 };
 
@@ -340,6 +441,30 @@ function normalizeBiblePayload(payload) {
     normalized[canonicalKey] = normalizeBibleStructuredValue(value);
   }
   return normalized;
+}
+
+function normalizeBiblePatchPayload(payload) {
+  const source = payload?.patch_payload && typeof payload.patch_payload === 'object'
+    ? payload.patch_payload
+    : payload;
+  const normalizedSource = normalizeBibleStructuredValue(source || {});
+  const arrayField = (names) => {
+    for (const name of names) {
+      if (Array.isArray(normalizedSource[name])) return normalizedSource[name];
+    }
+    return [];
+  };
+  return {
+    summary: text(normalizedSource.summary || normalizedSource.摘要),
+    new_characters: arrayField(['new_characters', 'new_supporting_characters', '新增人物', '新增角色']),
+    new_villains: arrayField(['new_villains', 'villain_updates', '新增反派', '反派更新']),
+    new_organizations: arrayField(['new_organizations', 'organizations', '新增组织', '新增势力', '新增商会', '新增家族']),
+    new_locations: arrayField(['new_locations', 'locations', '新增地点', '关键地点']),
+    relationship_updates: arrayField(['relationship_updates', '关系更新', '人物关系更新']),
+    plot_constraints: arrayField(['plot_constraints', '剧情约束', '长期约束']),
+    expansion_notes: text(normalizedSource.expansion_notes || normalizedSource.扩写备注 || normalizedSource.notes),
+    risk_notes: arrayField(['risk_notes', '风险点', '风险提示']),
+  };
 }
 
 const chapterPayloadKeys = new Set([
@@ -541,8 +666,20 @@ const normalized = {
   new_facts_json: JSON.stringify(newFacts),
 };
 
+if (runType === 'GENERATE_BIBLE_PATCH') {
+  const patchPayload = normalizeBiblePatchPayload(parsed);
+  Object.assign(normalized, {
+    run_type: 'GENERATE_BIBLE_PATCH',
+    parsed_payload: patchPayload,
+    parsed_payload_json: JSON.stringify(patchPayload),
+    patch_payload: patchPayload,
+    patch_payload_json: JSON.stringify(patchPayload),
+    risk_notes_json: JSON.stringify(asArray(patchPayload.risk_notes)),
+  });
+}
+
 const biblePayload = normalizeBiblePayload(parsed);
-if (biblePayload.world_setting || biblePayload.story_core || biblePayload.main_character) {
+if (runType !== 'GENERATE_BIBLE_PATCH' && (biblePayload.world_setting || biblePayload.story_core || biblePayload.main_character)) {
   Object.assign(normalized, {
     run_type: runType || 'GENERATE_BIBLE',
     parsed_payload: biblePayload,
@@ -552,6 +689,10 @@ if (biblePayload.world_setting || biblePayload.story_core || biblePayload.main_c
     main_character_json: JSON.stringify(biblePayload.main_character || {}),
     supporting_characters_json: JSON.stringify(asArray(biblePayload.supporting_characters)),
     villain_setting_json: JSON.stringify(asArray(biblePayload.villain_setting)),
+    organizations_json: JSON.stringify(asArray(biblePayload.organizations)),
+    locations_json: JSON.stringify(asArray(biblePayload.locations)),
+    plot_constraints_json: JSON.stringify(asArray(biblePayload.plot_constraints)),
+    expansion_notes: text(biblePayload.expansion_notes),
     power_system: text(biblePayload.power_system),
     relationship_map_json: JSON.stringify(asArray(biblePayload.relationship_map)),
     tone_rules: text(biblePayload.tone_rules),
@@ -565,6 +706,8 @@ if (Array.isArray(parsed.chapters)) {
     ...chapter,
     title: normalizeChapterTitle(chapter.title),
   }));
+  assertOutlineCoverage(chapters, response);
+  assertNoPrematureFinale(chapters, response);
   Object.assign(normalized, {
     run_type: runType || 'GENERATE_OUTLINE',
     parsed_payload: {...parsed, chapters},

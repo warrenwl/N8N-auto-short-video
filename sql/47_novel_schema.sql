@@ -20,6 +20,13 @@ CREATE TABLE IF NOT EXISTS novel_projects (
   premise TEXT,
   target_total_chapters INTEGER NOT NULL DEFAULT 20 CHECK (target_total_chapters > 0),
   target_words_per_chapter INTEGER NOT NULL DEFAULT 2000 CHECK (target_words_per_chapter > 0),
+  expansion_request TEXT,
+  expansion_scope TEXT NOT NULL DEFAULT 'append_only' CHECK (expansion_scope IN (
+    'append_only',
+    'rewrite_unwritten',
+    'regenerate_outline'
+  )),
+  expansion_constraints TEXT,
   current_chapter_no INTEGER NOT NULL DEFAULT 0 CHECK (current_chapter_no >= 0),
   status TEXT NOT NULL DEFAULT 'CREATED' CHECK (status IN (
     'CREATED',
@@ -56,6 +63,10 @@ CREATE TABLE IF NOT EXISTS novel_bibles (
   villain_setting JSONB NOT NULL DEFAULT '[]'::jsonb,
   power_system TEXT,
   relationship_map JSONB NOT NULL DEFAULT '[]'::jsonb,
+  organizations JSONB NOT NULL DEFAULT '[]'::jsonb,
+  locations JSONB NOT NULL DEFAULT '[]'::jsonb,
+  plot_constraints JSONB NOT NULL DEFAULT '[]'::jsonb,
+  expansion_notes TEXT,
   tone_rules TEXT,
   forbidden_rules TEXT,
   selling_points JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -285,6 +296,7 @@ CREATE TABLE IF NOT EXISTS novel_generation_jobs (
   chapter_id UUID REFERENCES novel_chapters(id) ON DELETE SET NULL,
   job_type TEXT NOT NULL CHECK (job_type IN (
     'GENERATE_BIBLE',
+    'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
     'PLAN_CHAPTER_DIRECTOR',
     'GENERATE_CHAPTER',
@@ -349,6 +361,7 @@ CREATE TABLE IF NOT EXISTS novel_ai_runs (
   job_id UUID REFERENCES novel_generation_jobs(id) ON DELETE SET NULL,
   run_type TEXT NOT NULL CHECK (run_type IN (
     'GENERATE_BIBLE',
+    'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
     'PLAN_CHAPTER_DIRECTOR',
     'GENERATE_CHAPTER',
@@ -378,6 +391,46 @@ CREATE INDEX IF NOT EXISTS idx_novel_ai_runs_chapter_created_at
 
 CREATE INDEX IF NOT EXISTS idx_novel_ai_runs_job_id
   ON novel_ai_runs(job_id);
+
+CREATE TABLE IF NOT EXISTS novel_bible_patches (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
+  job_id UUID REFERENCES novel_generation_jobs(id) ON DELETE SET NULL,
+  ai_run_id UUID REFERENCES novel_ai_runs(id) ON DELETE SET NULL,
+  source TEXT NOT NULL DEFAULT 'AI' CHECK (source IN ('AI', 'MANUAL')),
+  expansion_request TEXT,
+  expansion_scope TEXT,
+  expansion_constraints TEXT,
+  patch_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  risk_notes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN (
+    'PENDING',
+    'APPROVED',
+    'REJECTED',
+    'APPLIED',
+    'FAILED'
+  )),
+  reviewer TEXT,
+  comment TEXT,
+  applied_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_novel_bible_patches_project_status
+  ON novel_bible_patches(project_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_novel_bible_patches_job_id
+  ON novel_bible_patches(job_id);
+
+CREATE INDEX IF NOT EXISTS idx_novel_bible_patches_ai_run_id
+  ON novel_bible_patches(ai_run_id);
+
+DROP TRIGGER IF EXISTS trg_novel_bible_patches_updated_at ON novel_bible_patches;
+CREATE TRIGGER trg_novel_bible_patches_updated_at
+BEFORE UPDATE ON novel_bible_patches
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
 
 CREATE TABLE IF NOT EXISTS novel_review_reports (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -612,6 +665,10 @@ CREATE TABLE IF NOT EXISTS novel_project_events (
   chapter_id UUID REFERENCES novel_chapters(id) ON DELETE SET NULL,
   event_type TEXT NOT NULL CHECK (event_type IN (
     'BIBLE_UPDATED',
+    'BIBLE_PATCH_CREATED',
+    'BIBLE_PATCH_APPLIED',
+    'BIBLE_PATCH_REJECTED',
+    'BIBLE_PATCH_REGENERATE_REQUESTED',
     'OUTLINE_UPDATED',
     'DIRECTOR_CARD_UPDATED',
     'DIRECTOR_CARD_REGENERATE_REQUESTED',
@@ -625,7 +682,12 @@ CREATE TABLE IF NOT EXISTS novel_project_events (
     'BIBLE_REGENERATE_REQUESTED',
     'OUTLINE_REGENERATE_REQUESTED',
     'PROJECT_ARCHIVED',
-    'PROJECT_RESTORED'
+    'PROJECT_RESTORED',
+    'FACT_CREATED',
+    'FACT_UPDATED',
+    'FACT_ACTIVATED',
+    'FACT_DEACTIVATED',
+    'FACTS_CLEARED'
   )),
   actor TEXT NOT NULL DEFAULT 'local_user',
   comment TEXT,
@@ -669,6 +731,15 @@ CREATE INDEX IF NOT EXISTS idx_novel_daily_report_snapshots_captured_at
   ON novel_daily_report_snapshots(captured_at DESC);
 
 ALTER TABLE novel_projects
+  ADD COLUMN IF NOT EXISTS expansion_request TEXT;
+
+ALTER TABLE novel_projects
+  ADD COLUMN IF NOT EXISTS expansion_scope TEXT NOT NULL DEFAULT 'append_only';
+
+ALTER TABLE novel_projects
+  ADD COLUMN IF NOT EXISTS expansion_constraints TEXT;
+
+ALTER TABLE novel_projects
   DROP CONSTRAINT IF EXISTS novel_projects_status_check;
 
 ALTER TABLE novel_projects
@@ -683,6 +754,28 @@ ALTER TABLE novel_projects
     'COMPLETED',
     'FAILED'
   ));
+
+ALTER TABLE novel_projects
+  DROP CONSTRAINT IF EXISTS novel_projects_expansion_scope_check;
+
+ALTER TABLE novel_projects
+  ADD CONSTRAINT novel_projects_expansion_scope_check CHECK (expansion_scope IN (
+    'append_only',
+    'rewrite_unwritten',
+    'regenerate_outline'
+  ));
+
+ALTER TABLE novel_bibles
+  ADD COLUMN IF NOT EXISTS organizations JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE novel_bibles
+  ADD COLUMN IF NOT EXISTS locations JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE novel_bibles
+  ADD COLUMN IF NOT EXISTS plot_constraints JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE novel_bibles
+  ADD COLUMN IF NOT EXISTS expansion_notes TEXT;
 
 ALTER TABLE novel_chapters
   DROP CONSTRAINT IF EXISTS novel_chapters_status_check;
@@ -708,6 +801,7 @@ ALTER TABLE novel_generation_jobs
 ALTER TABLE novel_generation_jobs
   ADD CONSTRAINT novel_generation_jobs_job_type_check CHECK (job_type IN (
     'GENERATE_BIBLE',
+    'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
     'PLAN_CHAPTER_DIRECTOR',
     'GENERATE_CHAPTER',
@@ -723,6 +817,7 @@ ALTER TABLE novel_ai_runs
 ALTER TABLE novel_ai_runs
   ADD CONSTRAINT novel_ai_runs_run_type_check CHECK (run_type IN (
     'GENERATE_BIBLE',
+    'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
     'PLAN_CHAPTER_DIRECTOR',
     'GENERATE_CHAPTER',
@@ -750,6 +845,10 @@ ALTER TABLE novel_project_events
 ALTER TABLE novel_project_events
   ADD CONSTRAINT novel_project_events_event_type_check CHECK (event_type IN (
     'BIBLE_UPDATED',
+    'BIBLE_PATCH_CREATED',
+    'BIBLE_PATCH_APPLIED',
+    'BIBLE_PATCH_REJECTED',
+    'BIBLE_PATCH_REGENERATE_REQUESTED',
     'OUTLINE_UPDATED',
     'DIRECTOR_CARD_UPDATED',
     'DIRECTOR_CARD_REGENERATE_REQUESTED',
@@ -763,5 +862,10 @@ ALTER TABLE novel_project_events
     'BIBLE_REGENERATE_REQUESTED',
     'OUTLINE_REGENERATE_REQUESTED',
     'PROJECT_ARCHIVED',
-    'PROJECT_RESTORED'
+    'PROJECT_RESTORED',
+    'FACT_CREATED',
+    'FACT_UPDATED',
+    'FACT_ACTIVATED',
+    'FACT_DEACTIVATED',
+    'FACTS_CLEARED'
   ));

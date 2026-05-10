@@ -166,11 +166,15 @@ WHERE id = $1::uuid;
 -- $6 villain_setting_json
 -- $7 power_system
 -- $8 relationship_map_json
--- $9 tone_rules
--- $10 forbidden_rules
--- $11 selling_points_json
--- $12 generation_model
--- $13 raw_payload_json
+-- $9 organizations_json
+-- $10 locations_json
+-- $11 plot_constraints_json
+-- $12 expansion_notes
+-- $13 tone_rules
+-- $14 forbidden_rules
+-- $15 selling_points_json
+-- $16 generation_model
+-- $17 raw_payload_json
 WITH bible AS (
   INSERT INTO novel_bibles (
     project_id,
@@ -181,6 +185,10 @@ WITH bible AS (
     villain_setting,
     power_system,
     relationship_map,
+    organizations,
+    locations,
+    plot_constraints,
+    expansion_notes,
     tone_rules,
     forbidden_rules,
     selling_points,
@@ -196,11 +204,15 @@ WITH bible AS (
     COALESCE(NULLIF($6, '')::jsonb, '[]'::jsonb),
     $7,
     COALESCE(NULLIF($8, '')::jsonb, '[]'::jsonb),
-    $9,
-    $10,
+    COALESCE(NULLIF($9, '')::jsonb, '[]'::jsonb),
+    COALESCE(NULLIF($10, '')::jsonb, '[]'::jsonb),
     COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
-    $12,
-    COALESCE(NULLIF($13, '')::jsonb, '{}'::jsonb)
+    NULLIF($12, ''),
+    $13,
+    $14,
+    COALESCE(NULLIF($15, '')::jsonb, '[]'::jsonb),
+    $16,
+    COALESCE(NULLIF($17, '')::jsonb, '{}'::jsonb)
   )
   ON CONFLICT (project_id) DO UPDATE
   SET
@@ -211,6 +223,10 @@ WITH bible AS (
     villain_setting = EXCLUDED.villain_setting,
     power_system = EXCLUDED.power_system,
     relationship_map = EXCLUDED.relationship_map,
+    organizations = EXCLUDED.organizations,
+    locations = EXCLUDED.locations,
+    plot_constraints = EXCLUDED.plot_constraints,
+    expansion_notes = EXCLUDED.expansion_notes,
     tone_rules = EXCLUDED.tone_rules,
     forbidden_rules = EXCLUDED.forbidden_rules,
     selling_points = EXCLUDED.selling_points,
@@ -245,6 +261,10 @@ SELECT
   b.villain_setting,
   b.power_system,
   b.relationship_map,
+  b.organizations,
+  b.locations,
+  b.plot_constraints,
+  b.expansion_notes,
   b.tone_rules,
   b.forbidden_rules,
   b.selling_points

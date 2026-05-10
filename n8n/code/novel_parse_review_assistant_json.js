@@ -91,6 +91,29 @@ function normalizeAction(item) {
   };
 }
 
+function uniqueActions(actions) {
+  const byType = new Map();
+  actions.forEach((action) => {
+    if (!action?.action_type || action.action_type === 'none') return;
+    const existing = byType.get(action.action_type);
+    if (!existing) {
+      byType.set(action.action_type, {...action});
+      return;
+    }
+
+    const instructions = [existing.instruction, action.instruction]
+      .map((value) => text(value))
+      .filter(Boolean);
+    existing.instruction = Array.from(new Set(instructions)).join('\n');
+    existing.label = existing.label || action.label;
+    existing.payload = {
+      ...(action.payload && typeof action.payload === 'object' ? action.payload : {}),
+      ...(existing.payload && typeof existing.payload === 'object' ? existing.payload : {}),
+    };
+  });
+  return Array.from(byType.values()).slice(0, 5);
+}
+
 function failurePayload(errorMessage) {
   return {
     ok: false,
@@ -125,7 +148,7 @@ const payload = parseError
     findings: cleanObjectArray(parsed.findings || parsed.issues || [], normalizeFinding, 8),
     suggestions: cleanObjectArray(parsed.suggestions || parsed.advice || [], normalizeSuggestion, 8),
     source_refs: cleanObjectArray(parsed.source_refs || parsed.sources || [], normalizeSourceRef, 8),
-    suggested_actions: cleanObjectArray(parsed.suggested_actions || parsed.actions || [], normalizeAction, 5),
+    suggested_actions: uniqueActions(cleanObjectArray(parsed.suggested_actions || parsed.actions || [], normalizeAction, 8)),
   };
 
 const success = payload.ok === true;

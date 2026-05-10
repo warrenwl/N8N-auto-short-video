@@ -305,7 +305,12 @@ SELECT
     'main_character', b.main_character,
     'supporting_characters', b.supporting_characters,
     'villain_setting', b.villain_setting,
+    'organizations', b.organizations,
+    'locations', b.locations,
     'power_system', b.power_system,
+    'relationship_map', b.relationship_map,
+    'plot_constraints', b.plot_constraints,
+    'expansion_notes', b.expansion_notes,
     'tone_rules', b.tone_rules,
     'forbidden_rules', b.forbidden_rules,
     'selling_points', b.selling_points

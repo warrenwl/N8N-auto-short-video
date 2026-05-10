@@ -37,6 +37,7 @@ function normalizeAssistType(value) {
 const assistType = normalizeAssistType(body.assist_type || body.type || body.action);
 const title = text(body.title);
 const premise = text(body.premise);
+const creativeDirection = text(body.creative_direction || body.idea_direction || body.direction);
 const previousAiTitle = text(body.previous_ai_title);
 const previousAiPremise = text(body.previous_ai_premise);
 const genre = text(body.genre || '都市逆袭');
@@ -56,6 +57,7 @@ return [{
     assist_nonce: assistNonce.slice(0, 120),
     title,
     premise,
+    creative_direction: creativeDirection.slice(0, 1000),
     previous_ai_title: previousAiTitle,
     previous_ai_premise: previousAiPremise.slice(0, 800),
     title_is_ai_generated: bool(body.title_is_ai_generated),

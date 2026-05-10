@@ -44,7 +44,7 @@ function visibleText(html) {
 
 function assertNoGetWriteLinks(html, label) {
   assert(
-    !/href=["'][^"']*(novel-project-create|novel-project-continue|novel-project-regenerate|novel-generate-bible-now|novel-generate-outline-now|novel-generate-chapter-now|novel-chapter-rewrite-request|novel-rewrite-start|novel-review-remind|novel-bible-update|novel-outline-update|novel-project-targets-update|novel-project-status-toggle|novel-chapter-manual-edit|novel-project-archive-toggle|novel-project-fact-action|novel-stale-chapters-cleanup|novel-review-action|novel-review-manual-edit)/i.test(html),
+    !/href=["'][^"']*(novel-project-create|novel-project-continue|novel-project-regenerate|novel-generate-bible-now|novel-generate-outline-now|novel-generate-chapter-now|novel-chapter-rewrite-request|novel-rewrite-start|novel-review-remind|novel-bible-update|novel-outline-update|novel-project-targets-update|novel-project-status-toggle|novel-chapter-manual-edit|novel-project-archive-toggle|novel-archived-projects-cleanup|novel-project-fact-action|novel-stale-chapters-cleanup|novel-review-action|novel-review-manual-edit)/i.test(html),
     `${label} must not expose write actions as GET links`
   );
 }
@@ -161,12 +161,13 @@ assertNoGetWriteLinks(centerHtml, 'workbench');
 
 const projectListHtml = runCodeNode('n8n/code/novel_render_project_list_html.js', projectRows)[0].json.response_html;
 const projectListText = visibleText(projectListHtml);
-for (const expected of ['小说项目管理', '下一步', '处理审核', '排查失败', '已暂停', '看日志', '打开项目']) {
+for (const expected of ['小说项目管理', '下一步', '处理审核', '排查失败', '已暂停', '看日志', '打开项目', '一键清理已归档项目']) {
   assert(projectListText.includes(expected), `project list should include management marker: ${expected}`);
 }
 assert(projectListText.includes('重写中'), 'project list status badge should prefer an active rewrite job over the base review status');
 assert(!projectListText.includes('重写中项目 古言 / 中文读者 进度 3 / 20 / 待处理 0 / 运行中 1 / 失败任务 0 待人工审核'), 'running rewrite projects should not show the base pending-review badge');
 assert(projectListHtml.includes('data-project-filter="paused"'), 'project list should expose paused filter');
+assert(projectListHtml.includes('method="POST" action="/webhook/novel-archived-projects-cleanup"'), 'project list archived cleanup should use POST');
 for (const expected of ['app-sidebar', 'th-help', '“打开项目”就是查看控制台，可继续查看设定、大纲、正文、事实、日志和导出。', '查看概览与运行细节']) {
   assert(projectListHtml.includes(expected), `project list should reduce default layout with: ${expected}`);
 }
@@ -212,7 +213,11 @@ const detailRow = {
       latest_review_report: {id: 'r22', total_score: 72, verdict: 'MANUAL_REVIEW'},
     },
   ]),
-  facts: JSON.stringify([]),
+  facts: JSON.stringify([
+    {id: '22000000-0000-0000-0000-000000000071', fact_type: 'character', fact_key: '主角身份', fact_value: '陆明隐藏真实身份。', status: 'ACTIVE', source: 'human', confidence: 1, chapter_no: 1, created_at: '2026-05-04T01:40:00.000Z'},
+    {id: '22000000-0000-0000-0000-000000000072', fact_type: 'item', fact_key: '旧城账本', fact_value: '旧城账本仍藏在柜台暗格。', status: 'PENDING', source: 'ai', confidence: 0.7, chapter_no: 1, created_at: '2026-05-04T01:39:00.000Z'},
+    {id: '22000000-0000-0000-0000-000000000073', fact_type: 'rule', fact_key: '过期规则', fact_value: '这条规则已经不再适用。', status: 'INACTIVE', source: 'human', confidence: 1, chapter_no: null, created_at: '2026-05-04T01:38:00.000Z'},
+  ]),
   jobs: JSON.stringify([
     {id: '22000000-0000-0000-0000-000000000041', job_type: 'REWRITE_CHAPTER', status: 'PENDING', chapter_no: 2, attempt_count: 1, max_attempts: 3, error_message: '上次网络错误', updated_at: '2026-05-04T01:35:00.000Z'},
     {job_type: 'REVIEW_CHAPTER', status: 'FAILED', chapter_no: 1, attempt_count: 1, error_message: '测试失败', updated_at: '2026-05-04T01:30:00.000Z'},
@@ -228,8 +233,14 @@ assertFullWidthShell(detailOverviewHtml, 'project detail');
 for (const expected of ['下一步动作区', '项目资产入口', '关键风险与资产完成度', '项目二级视图']) {
   assert(detailOverviewText.includes(expected), `project overview should include command marker: ${expected}`);
 }
-for (const expected of ['project-actions-drawer', '项目操作抽屉', 'project-command-center', 'asset-status-grid', 'data-open-dialog="project-actions-drawer"']) {
+for (const expected of ['project-actions-drawer', '项目操作抽屉', 'project-command-center', 'asset-status-grid', 'data-open-dialog="project-actions-drawer"', 'project-action-danger-zone']) {
   assert(detailOverviewHtml.includes(expected), `project overview should expose drawer/collapsed interaction: ${expected}`);
+}
+for (const removed of ['project-action-summary', 'project-action-queue', '操作前确认', '推荐推进']) {
+  assert(!detailOverviewHtml.includes(removed), `project operation drawer should not expose removed queue/confirmation section: ${removed}`);
+}
+for (const expected of ['项目目标与推进状态', '项目目标与扩写计划', '归档管理']) {
+  assert(detailOverviewText.includes(expected), `project operation drawer should expose organized sections: ${expected}`);
 }
 for (const expected of ['action="/webhook/novel-rewrite-start"', '启动第 2 章重写', '恢复/重试模型调用', 'name="job_id"']) {
   assert(detailOverviewHtml.includes(expected), `project overview should expose pending rewrite recovery: ${expected}`);
@@ -245,7 +256,19 @@ const detailRunningRewriteHtml = runCodeNode('n8n/code/novel_render_project_deta
 for (const expected of ['第 2 章重写中', '检查并恢复第 2 章重写', '超时则重排并重试', '只有运行超过 6 分钟']) {
   assert(detailRunningRewriteHtml.includes(expected), `project overview should expose stale-running rewrite recovery: ${expected}`);
 }
-for (const expected of ['select name="target_words_per_chapter"', '深度长章 4000 字', '只影响后续章节生成和重写']) {
+for (const expected of [
+  'select name="target_words_per_chapter"',
+  'textarea name="expansion_request"',
+  'select name="expansion_scope"',
+  '新增剧情要求',
+  '保留约束',
+  '只追加新章节',
+  '重排未写章节',
+  '高风险重排全部大纲',
+  '深度长章 4000 字',
+  '字数越高，导演台分段数和生成耗时通常也会增加',
+  'project-target-grid',
+]) {
   assert(detailOverviewHtml.includes(expected), `project operation drawer should keep target word controls consistent with create page: ${expected}`);
 }
 for (const expected of ['.project-command-center { display: grid; gap: 10px;', '.project-identity-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto;', '.next-action-strip { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, auto);', '.asset-status-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));']) {
@@ -254,6 +277,33 @@ for (const expected of ['.project-command-center { display: grid; gap: 10px;', '
 assert(!detailOverviewHtml.includes('class="project-info"'), 'project overview should no longer render the old tall left project card');
 assert(!detailOverviewText.includes('第一章正文不应出现在默认总览'), 'project overview should not render long body text');
 assertNoGetWriteLinks(detailOverviewHtml, 'project overview');
+
+const detailFactsHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'facts'}])[0].json.response_html;
+for (const expected of [
+  '按事实类型筛选',
+  'data-fact-type-filter="all"',
+  'data-fact-type-filter="character"',
+  'data-fact-type-filter="item"',
+  'data-fact-type-filter="rule"',
+  'data-fact-card data-fact-type="character"',
+  'data-fact-card data-fact-type="item"',
+  'data-fact-card data-fact-type="rule"',
+  '当前类型暂无事实',
+  '清理失效事实</span><small>1 条可清理',
+  'const navigateOrReload = (nextUrl) =>',
+  'const sameDocument = currentUrl.origin === nextUrl.origin',
+  "window.history.replaceState({}, '', targetHref);",
+  'window.location.reload();',
+  'button.is-submitting:disabled { cursor: progress; }',
+  'button.classList.add(\'is-submitting\');',
+  'button.classList.remove(\'is-submitting\');',
+  "if (action === 'CLEAR_INACTIVE') nextUrl.searchParams.delete('fact_type');",
+  '主角身份',
+  '旧城账本',
+  '过期规则',
+]) {
+  assert(detailFactsHtml.includes(expected), `project facts view should expose type filtering: ${expected}`);
+}
 
 const detailBibleHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html;
 const detailBibleText = visibleText(detailBibleHtml);
@@ -381,7 +431,33 @@ const detailDirectorBlockedHtml = runCodeNode('n8n/code/novel_render_project_det
 assert(detailDirectorBlockedHtml.includes('重跑解决阻断'), 'blocked director cards should expose a focused blocker-repair regeneration button');
 assert(detailDirectorBlockedHtml.includes('带阻断清单'), 'blocker repair button should make its behavior clear');
 assert(detailDirectorBlockedHtml.includes('解决导演台阻断'), 'blocker repair form should send the current blocker summary as the regeneration comment');
+assert(detailDirectorBlockedHtml.includes('data-submitting-label="生成中..."'), 'blocker repair button should immediately show a generation state after submit');
 assert(!detailDirectorBlockedHtml.includes('<li>{&quot;'), 'blocked director issues should not show embedded JSON strings as raw list items');
+
+const detailDirectorBlockedRunningHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  ...detailRow,
+  requested_view: 'director',
+  chapters: JSON.stringify([]),
+  outlines: JSON.stringify([{chapter_no: 5, title: '宫宴下马威', summary: '太后刁难，顾南辞护短。', status: 'READY'}]),
+  jobs: JSON.stringify([{id: '22000000-0000-0000-0000-000000000074', job_type: 'PLAN_CHAPTER_DIRECTOR', status: 'PENDING', chapter_no: 5}]),
+  director_cards: JSON.stringify([{
+    id: '22000000-0000-0000-0000-000000000066',
+    chapter_no: 5,
+    version: 2,
+    is_current: true,
+    status: 'NEEDS_REVIEW',
+    source: 'AI',
+    card_payload: {
+      quality_gate: {
+        pass: false,
+        blocking_issues: ['事实来源不足：宫宴名为“赏花宴”'],
+      },
+      segment_plan: [{segment_no: 1}],
+    },
+  }]),
+}])[0].json.response_html;
+assert(detailDirectorBlockedRunningHtml.includes('导演台排队中'), 'blocked director repair should become read-only while a director job is pending');
+assert(!detailDirectorBlockedRunningHtml.includes('重跑解决阻断'), 'blocked director repair should not be clickable while a director job is pending');
 
 const detailDirectorWithChapterJobHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
   ...detailRow,

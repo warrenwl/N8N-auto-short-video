@@ -1,5 +1,5 @@
-// n8n Code node: Parse Novel Project AI Assist GLM Response
-// Returns browser-friendly JSON for the create-page AI helper buttons.
+// n8n Code node: Parse Novel Project Expansion AI Assist GLM Response
+// Returns browser-friendly JSON for the project expansion AI helper button.
 
 function extractText(json) {
   if (!json || typeof json !== 'object') return '';
@@ -31,18 +31,10 @@ function asArray(value) {
   return [value];
 }
 
-function cleanTitle(value) {
-  return text(value)
-    .replace(/[《》「」『』“”"']/g, '')
-    .replace(/^书名[:：]\s*/i, '')
-    .replace(/^小说标题[:：]\s*/i, '')
-    .replace(/^第\s*(?:[0-9０-９]+|[一二三四五六七八九十百千万零〇两]+)\s*章\s*[：:、，,.．。-]?\s*/, '')
-    .trim()
-    .slice(0, 20);
-}
-
-function cleanPremise(value) {
-  return text(value).replace(/\s+/g, ' ').slice(0, 600);
+function cleanText(value, limit) {
+  const normalized = text(value).replace(/\s+/g, ' ');
+  if (!limit || normalized.length <= limit) return normalized;
+  return normalized.slice(0, limit);
 }
 
 const response = $input.first().json || $json || {};
@@ -53,29 +45,38 @@ let parsed;
 try {
   parsed = JSON.parse(cleaned);
 } catch (error) {
-  throw new Error(`创建页 AI 助手 GLM 输出不是合法 JSON：${error.message}`);
+  throw new Error(`扩写剧情 AI 创意输出不是合法 JSON：${error.message}`);
 }
 
-const alternatives = asArray(parsed.alternatives || parsed.titles || parsed.title_options)
-  .map(cleanTitle)
-  .filter(Boolean)
-  .slice(0, 4);
-const title = cleanTitle(parsed.title || parsed.book_title || parsed.project_title || alternatives[0] || response.title);
-const premise = cleanPremise(parsed.premise || parsed.core_idea || parsed.idea || parsed.story_core || response.premise);
+const beatDesign = asArray(parsed.beat_design || parsed.beats || parsed.plot_beats)
+  .filter((item) => item !== undefined && item !== null)
+  .slice(0, 8);
+const settingAdditions = asArray(parsed.setting_additions || parsed.settings || parsed.new_settings)
+  .filter((item) => item !== undefined && item !== null)
+  .slice(0, 8);
+const riskNotes = asArray(parsed.risk_notes || parsed.risks)
+  .filter((item) => item !== undefined && item !== null)
+  .slice(0, 8);
 
-if (!title && !premise) {
-  throw new Error('创建页 AI 助手没有返回可用标题或创意。');
+let expansionRequest = cleanText(parsed.expansion_request || parsed.request || parsed.plan || parsed.summary, 1400);
+if (!expansionRequest && beatDesign.length) {
+  expansionRequest = cleanText(beatDesign.map((item) => {
+    if (typeof item === 'string') return item;
+    return [item.chapter_range, item.purpose, item.conflict, item.hook].filter(Boolean).join('：');
+  }).join('；'), 1400);
+}
+
+if (!expansionRequest) {
+  throw new Error('扩写剧情 AI 创意没有返回可用设计。');
 }
 
 const payload = {
   ok: true,
-  assist_type: response.assist_type || 'idea',
-  title,
-  premise,
-  alternatives,
-  rationale: text(parsed.rationale || parsed.reason || ''),
-  message: text(parsed.message || 'GLM 已生成'),
-  creative_direction_applied: Boolean(response.creative_direction_applied),
+  expansion_request: expansionRequest,
+  beat_design: beatDesign,
+  setting_additions: settingAdditions,
+  risk_notes: riskNotes,
+  message: cleanText(parsed.message || '已生成后续剧情设计，可继续微调后保存。', 80),
   model: response.llm_request_body?.model || response.model || '',
 };
 

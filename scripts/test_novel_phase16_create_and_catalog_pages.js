@@ -15,10 +15,11 @@ function readJson(relativePath) {
   return JSON.parse(read(relativePath));
 }
 
-function runCodeNode(relativePath, rows) {
+function runCodeNode(relativePath, rows, json = {}) {
   const source = read(relativePath);
   const script = new vm.Script(`(function() {\n${source}\n})()`, {filename: relativePath});
   const sandbox = {
+    $json: json,
     $input: {
       all: () => rows.map((json) => ({json})),
     },
@@ -62,6 +63,7 @@ assert.strictEqual(workflowNodes.get('Webhook - 创建小说项目')?.parameters
 
 const centerCode = read('n8n/code/novel_render_center_html.js');
 const createCode = read('n8n/code/novel_render_project_create_html.js');
+const createAssistValidateCode = read('n8n/code/novel_validate_project_ai_assist.js');
 const createAssistBuildCode = read('n8n/code/novel_build_project_ai_assist_glm_request.js');
 const projectListCode = read('n8n/code/novel_render_project_list_html.js');
 const detailCode = read('n8n/code/novel_render_project_detail_html.js');
@@ -83,7 +85,7 @@ for (const [name, code, markers] of [
 
 assert(!centerCode.includes('method="POST"'), 'workbench should no longer contain the create project POST form');
 assert(createCode.includes('method="POST"'), 'create page should contain the POST create form');
-assert(!projectListCode.includes('method="POST"'), 'project list must stay read-only');
+assert(projectListCode.includes('action="/webhook/novel-archived-projects-cleanup"'), 'project list should expose archived project cleanup through POST');
 assert(detailCode.includes('method="POST"'), 'project detail/catalog now includes safe project action POST forms');
 assert(!/href=["'][^"']*(novel-project-continue|novel-project-regenerate|novel-chapter-rewrite-request|novel-review-remind)/i.test(detailCode), 'project detail must not expose project actions as GET links');
 assert(!queueCode.includes('method="POST"'), 'queue status must stay read-only');
@@ -119,17 +121,42 @@ assert(!rawVisibleEnums.test(centerText), `workbench visible text should not exp
 
 const createHtml = runCodeNode('n8n/code/novel_render_project_create_html.js', [])[0].json.response_html;
 const createText = visibleText(createHtml);
-for (const expected of ['创建新小说项目', '小说标题', 'AI标题', '核心创意', 'AI创意', '提交创建', '返回工作台', '查看项目列表']) {
+for (const expected of ['创建新小说项目', '小说标题', 'AI标题', '创意建议方向', '核心创意', 'AI创意', '提交创建', '返回工作台', '查看项目列表']) {
   assert(createText.includes(expected), `create page visible text should include: ${expected}`);
 }
 assert(createHtml.includes('method="POST" action="/webhook/novel-project-create"'), 'create page should submit to POST action');
 assert(createHtml.includes('type="button" data-ai-title'), 'AI title helper should be a non-submit button');
 assert(createHtml.includes('type="button" data-ai-idea'), 'AI idea helper should be a non-submit button');
+assert(createHtml.includes('textarea name="creative_direction"'), 'create page should expose optional creative direction above premise');
 assert(createHtml.includes('/webhook/novel-project-ai-assist') && createHtml.includes('fetch(assistUrl'), 'create page AI buttons should call the GLM assist webhook');
 assert(!createHtml.includes('buildIdea()') && !createHtml.includes('buildTitle()'), 'create page should not fake AI with local title/idea builders');
 assert(createHtml.includes('data-ai-feedback'), 'create page should show GLM assist request feedback');
-assert(createHtml.includes('assist_nonce') && createHtml.includes('previous_ai_title') && createHtml.includes('aiGenerated'), 'create page should vary GLM requests and avoid anchoring on previous AI output');
-assert(createAssistBuildCode.includes('genreInstruction') && createAssistBuildCode.includes('diversityBrief') && createAssistBuildCode.includes('top_p'), 'create-page GLM assist prompt should inject genre-specific diversity controls');
+assert(createHtml.includes('directionInput') && createHtml.includes('creative_direction') && createHtml.includes('assist_nonce') && createHtml.includes('previous_ai_title') && createHtml.includes('aiGenerated'), 'create page should send creative direction, vary GLM requests, and avoid anchoring on previous AI output');
+assert(createAssistValidateCode.includes('creative_direction'), 'create-page AI assist validator should preserve creative direction');
+assert(createAssistBuildCode.includes('creativeDirection') && createAssistBuildCode.includes('【创意建议方向】') && createAssistBuildCode.includes('genreInstruction') && createAssistBuildCode.includes('diversityBrief') && createAssistBuildCode.includes('top_p'), 'create-page GLM assist prompt should inject optional direction and genre-specific diversity controls');
+const directedAssist = runCodeNode('n8n/code/novel_validate_project_ai_assist.js', [], {
+  body: {
+    assist_type: 'idea',
+    creative_direction: '一女主三男主，甜宠开头，虐恋结尾，身世线缓慢揭示。',
+    genre: '现代言情',
+  },
+})[0].json;
+assert.strictEqual(directedAssist.creative_direction, '一女主三男主，甜宠开头，虐恋结尾，身世线缓慢揭示。', 'validator should return creative direction');
+const directedPromptJson = runCodeNode('n8n/code/novel_build_project_ai_assist_glm_request.js', [], directedAssist)[0].json;
+const directedPrompt = JSON.parse(directedPromptJson.prompt_messages_json).find((message) => message.role === 'user').content;
+assert(directedPrompt.includes('【创意建议方向】') && directedPrompt.includes('一女主三男主'), 'idea prompt should include non-empty creative direction');
+assert(directedPrompt.includes('最高内容约束') && directedPrompt.includes('最终自检'), 'idea prompt should treat creative direction as a hard priority');
+assert.strictEqual(directedPromptJson.creative_direction_applied, true, 'directed idea prompt should mark creative direction as applied');
+assert.strictEqual(directedPromptJson.llm_request_body.temperature, 0.72, 'directed idea prompt should lower temperature for adherence');
+const randomPromptJson = runCodeNode('n8n/code/novel_build_project_ai_assist_glm_request.js', [], {...directedAssist, creative_direction: ''})[0].json;
+const randomPrompt = JSON.parse(randomPromptJson.prompt_messages_json).find((message) => message.role === 'user').content;
+assert(!randomPrompt.includes('【创意建议方向】'), 'idea prompt without creative direction should keep the random-generation prompt clean');
+assert.strictEqual(randomPromptJson.creative_direction_applied, false, 'random idea prompt should not mark creative direction as applied');
+assert.strictEqual(randomPromptJson.llm_request_body.temperature, 0.98, 'random idea prompt should keep high-temperature idea generation');
+const titlePromptJson = runCodeNode('n8n/code/novel_build_project_ai_assist_glm_request.js', [], {...directedAssist, assist_type: 'title'})[0].json;
+const titlePrompt = JSON.parse(titlePromptJson.prompt_messages_json).find((message) => message.role === 'user').content;
+assert(!titlePrompt.includes('【创意建议方向】'), 'title assist should not be constrained by creative direction');
+assert.strictEqual(titlePromptJson.creative_direction_applied, false, 'title assist should not mark creative direction as applied');
 for (const expected of [
   'select name="genre"',
   'select name="audience"',
@@ -149,9 +176,11 @@ assert(!rawVisibleEnums.test(createText), `create page visible text should not e
 const projectListHtml = runCodeNode('n8n/code/novel_render_project_list_html.js', projectRows)[0].json.response_html;
 const projectListText = visibleText(projectListHtml);
 assert(projectListText.includes('打开项目'), 'project list should expose project console action');
+assert(projectListText.includes('一键清理已归档项目'), 'project list should expose archived project cleanup action');
 assert(projectListHtml.includes('“打开项目”就是查看控制台，可继续查看设定、大纲、正文、事实、日志和导出。'), 'project list should explain the project console action in the operation header tooltip');
 assert(projectListHtml.includes('/webhook/novel-project-detail?project_id=11111111-1111-1111-1111-111111111111'), 'project list should link to project detail/catalog');
-assert(!projectListHtml.includes('method="POST"'), 'project list should not contain POST forms');
+assert(projectListHtml.includes('method="POST" action="/webhook/novel-archived-projects-cleanup"'), 'project list archived cleanup should submit through POST');
+assert(!/href=["'][^"']*novel-archived-projects-cleanup/i.test(projectListHtml), 'project list archived cleanup must not be a GET link');
 assert(!rawVisibleEnums.test(projectListText), `project list visible text should not expose internal enums: ${projectListText}`);
 
 const detailRow = {

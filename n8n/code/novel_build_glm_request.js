@@ -82,6 +82,7 @@ function readConfig() {
 function normalizeRunType(value) {
   const raw = String(value || '').trim().toUpperCase();
   if (['GENERATE_BIBLE', 'BIBLE'].includes(raw)) return 'GENERATE_BIBLE';
+  if (['GENERATE_BIBLE_PATCH', 'BIBLE_PATCH', 'PATCH_BIBLE'].includes(raw)) return 'GENERATE_BIBLE_PATCH';
   if (['GENERATE_OUTLINE', 'OUTLINE'].includes(raw)) return 'GENERATE_OUTLINE';
   if (['PLAN_CHAPTER_DIRECTOR', 'DIRECTOR', 'DIRECTOR_CARD'].includes(raw)) return 'PLAN_CHAPTER_DIRECTOR';
   if (['GENERATE_CHAPTER', 'CHAPTER'].includes(raw)) return 'GENERATE_CHAPTER';
@@ -93,6 +94,7 @@ function normalizeRunType(value) {
 function promptKey(runType) {
   return {
     GENERATE_BIBLE: 'bible',
+    GENERATE_BIBLE_PATCH: 'bible_patch',
     GENERATE_OUTLINE: 'outline',
     PLAN_CHAPTER_DIRECTOR: 'director',
     GENERATE_CHAPTER: 'chapter',
@@ -105,6 +107,27 @@ function stringifyForPrompt(value) {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
   return JSON.stringify(value, null, 2);
+}
+
+function jsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === '') return [];
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  }
+  return [];
+}
+
+function maxChapterNo(value) {
+  return jsonArray(value).reduce((max, item) => {
+    const chapterNo = Number(item?.chapter_no);
+    return Number.isFinite(chapterNo) && chapterNo > max ? Math.round(chapterNo) : max;
+  }, 0);
 }
 
 function renderTemplate(template, values) {
@@ -343,6 +366,68 @@ function buildJsonSafetyInstruction(runType) {
   ].join('\n');
 }
 
+function expansionScopeLabel(value) {
+  return {
+    append_only: '只追加新章节',
+    rewrite_unwritten: '重排未写章节',
+    regenerate_outline: '高风险重排全部大纲',
+  }[String(value || 'append_only')] || '只追加新章节';
+}
+
+function buildExpansionInstruction(runType, values) {
+  if (!['GENERATE_OUTLINE', 'PLAN_CHAPTER_DIRECTOR'].includes(runType)) return '';
+  const request = String(values.expansion_request || '').trim();
+  if (!request) return '';
+  const constraints = String(values.expansion_constraints || '').trim()
+    || '已批准正文不改；已激活事实不破坏；新增剧情必须承接现有大纲、连续性事实和人物动机。';
+  const shared = [
+    '【项目扩写计划】',
+    `新增剧情要求：${request}`,
+    `扩写范围：${expansionScopeLabel(values.expansion_scope)}`,
+    `保留约束：${constraints}`,
+  ];
+  if (runType === 'GENERATE_OUTLINE') {
+    const targetTotal = Number(values.target_total_chapters || 0);
+    const scope = String(values.expansion_scope || 'append_only');
+    const approvedMax = maxChapterNo(values.approved_chapters_raw);
+    const existingMax = maxChapterNo(values.existing_outlines_raw);
+    const outlineRequestComment = String(values.outline_request_comment || '').trim();
+    const expectedStart = scope === 'regenerate_outline'
+      ? 1
+      : (scope === 'rewrite_unwritten'
+        ? Math.max(1, approvedMax + 1)
+        : Math.max(1, existingMax + 1));
+    const coverageRule = Number.isFinite(targetTotal) && targetTotal > 0 && expectedStart <= targetTotal
+      ? [
+          '【大纲覆盖范围规则】',
+          `系统根据目标章节数、扩写范围、已批准正文和已有大纲动态计算出本次需要生成：第 ${expectedStart} 章到第 ${Math.round(targetTotal)} 章。`,
+          `chapters[].chapter_no 必须覆盖这个范围内的每一个整数；最大 chapter_no 必须等于当前目标总章数 ${Math.round(targetTotal)}。`,
+          '不要沿用旧目标章节数停在旧大纲最后一章；如果目标章节数变化，必须按当前目标补齐。',
+          '如果已有大纲、设定备注或旧草稿在小于当前目标总章数的章节出现“大结局、全书完、主线收束、全书收束、故事落幕”等旧结局表述，必须视为旧版本参考或阶段性误导，不得在该章节提前完结；真正终局只能安排在当前目标最后一章。',
+          '除最后一章外，chapters[].title、summary、chapter_goal、conflict_point、emotional_point、hook 不得使用“大结局、全书完、全书完结、主线收束、全书收束、故事落幕、落下帷幕”等终局式表达。',
+        ].join('\n')
+      : '';
+    return [
+      ...shared,
+      outlineRequestComment ? `本次大纲请求备注：${outlineRequestComment}` : '',
+      coverageRule,
+      `已有大纲：${values.existing_outlines || '[]'}`,
+      `已批准章节摘要：${values.approved_chapters || '[]'}`,
+      '扩写执行规则：',
+      '1. 如果扩写范围是“只追加新章节”，必须保留已有大纲的章节编号、标题和已批准章节事实；新增章节从现有大纲之后自然延展，不要重写已经存在的章节。',
+      '2. 如果扩写范围是“重排未写章节”，可以调整尚未生成/尚未批准章节的大纲，但必须把已批准章节当作硬事实。',
+      '3. 如果扩写范围是“高风险重排全部大纲”，也不能要求修改已批准正文；需要把已批准正文转化为新大纲的既定前史。',
+      '4. 新增剧情要求必须具体落到章节 summary、chapter_goal、conflict_point、emotional_point 或 hook 中，不要只在总述里提到。',
+      '5. 重大秘密、身世、幕后真相、感情确认、反派底牌等信息必须按“新增剧情要求”和“本次大纲请求备注”里的节奏分层释放；如果用户要求缓慢揭示、后期揭露或先甜后虐，前段只能安排线索、误导、局部证据和情绪铺垫，不得直接写成“真相大白/身份大白/全部揭露”。',
+      '6. 当最新项目扩写要求与旧大纲、旧扩写备注或设定建议冲突时，以最新项目扩写要求和本次大纲请求备注为准；旧内容只作为连续性参考。',
+    ].join('\n');
+  }
+  return [
+    ...shared,
+    '导演台执行规则：当前章如果属于扩写新增/重排范围，必须落实新增剧情要求；如果当前章已经受已批准正文约束，优先保证连续性和保留约束。',
+  ].join('\n');
+}
+
 function includesAny(value, markers) {
   return markers.some((marker) => String(value || '').includes(marker));
 }
@@ -370,7 +455,18 @@ const baseValues = {
   supporting_characters: stringifyForPrompt(source.supporting_characters),
   villain_setting: stringifyForPrompt(source.villain_setting),
   relationship_map: stringifyForPrompt(source.relationship_map),
+  organizations: stringifyForPrompt(source.organizations),
+  locations: stringifyForPrompt(source.locations),
+  plot_constraints: stringifyForPrompt(source.plot_constraints),
+  expansion_notes: String(source.expansion_notes || ''),
   selling_points: stringifyForPrompt(source.selling_points),
+  existing_outlines: stringifyForPrompt(source.existing_outlines),
+  existing_outlines_raw: source.existing_outlines,
+  approved_chapters: stringifyForPrompt(source.approved_chapters),
+  approved_chapters_raw: source.approved_chapters,
+  expansion_request: String(source.expansion_request || ''),
+  expansion_scope: String(source.expansion_scope || 'append_only'),
+  expansion_constraints: String(source.expansion_constraints || ''),
   continuity_facts: stringifyForPrompt(source.continuity_facts || source.facts),
   director_repair_context: stringifyForPrompt(source.director_repair_context),
   director_request_comment: String(source.director_request_comment || ''),
@@ -415,8 +511,13 @@ const userPromptWithTitle = appendInstructionOnce(
   '【章节标题规则】',
   buildChapterTitleInstruction(runType)
 );
-const userPromptWithOutlineContinuity = appendInstructionOnce(
+const userPromptWithExpansion = appendInstructionOnce(
   userPromptWithTitle,
+  '【项目扩写计划】',
+  buildExpansionInstruction(runType, values)
+);
+const userPromptWithOutlineContinuity = appendInstructionOnce(
+  userPromptWithExpansion,
   '【章节连续性与镜头转换】',
   buildOutlineContinuityInstruction(runType)
 );

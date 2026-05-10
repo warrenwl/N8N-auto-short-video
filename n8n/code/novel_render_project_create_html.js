@@ -195,6 +195,10 @@ const html = `<!doctype html>
         <label>章节数<input name="target_total_chapters" type="number" inputmode="numeric" min="1" max="500" value="20" autocomplete="off" /></label>
         <label>每章字数<select name="target_words_per_chapter">${renderOptions(wordCountOptions, '2000')}</select></label>
         <label class="wide">
+          <span class="field-head"><span>创意建议方向</span></span>
+          <textarea name="creative_direction" placeholder="可选。比如：一女主三男主、甜宠开头虐恋结尾、女主身世缓慢揭示、增加商会/家族/势力线…" autocomplete="off"></textarea>
+        </label>
+        <label class="wide">
           <span class="field-head"><span>核心创意</span><button class="ai-assist" type="button" data-ai-idea>AI创意</button></span>
           <textarea name="premise" required placeholder="例如：主角、目标、主要冲突和爽点…" autocomplete="off"></textarea>
         </label>
@@ -213,6 +217,7 @@ const html = `<!doctype html>
       const form = document.querySelector('form[action="/webhook/novel-project-create"]');
       if (!form) return;
       const titleInput = form.querySelector('[name="title"]');
+      const directionInput = form.querySelector('[name="creative_direction"]');
       const premiseInput = form.querySelector('[name="premise"]');
       const genreSelect = form.querySelector('[name="genre"]');
       const audienceSelect = form.querySelector('[name="audience"]');
@@ -281,6 +286,7 @@ const html = `<!doctype html>
           assist_nonce: String(Date.now()) + '-' + Math.random().toString(16).slice(2),
           title: assistType === 'title' && titleIsAi ? '' : titleValue,
           premise: assistType === 'idea' && premiseIsAi ? '' : premiseValue,
+          creative_direction: assistType === 'idea' ? valueOf(directionInput) : '',
           previous_ai_title: titleIsAi ? titleValue : '',
           previous_ai_premise: premiseIsAi ? premiseValue : '',
           title_is_ai_generated: titleIsAi ? 'true' : 'false',

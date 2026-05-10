@@ -19,6 +19,7 @@ function text(value) {
 function normalizeStep(value) {
   const raw = text(value).toUpperCase();
   if (['BIBLE', 'GENERATE_BIBLE', '设定集'].includes(raw)) return 'GENERATE_BIBLE';
+  if (['BIBLE_PATCH', 'GENERATE_BIBLE_PATCH', '设定集补丁', '扩写设定补丁'].includes(raw)) return 'GENERATE_BIBLE_PATCH';
   if (['OUTLINE', 'GENERATE_OUTLINE', '大纲'].includes(raw)) return 'GENERATE_OUTLINE';
   if (['DIRECTOR', 'DIRECTOR_CARD', 'PLAN_CHAPTER_DIRECTOR', '导演台', '导演卡'].includes(raw)) return 'PLAN_CHAPTER_DIRECTOR';
   if (['CHAPTER', 'GENERATE_CHAPTER', '章节', '正文'].includes(raw)) return 'GENERATE_CHAPTER';

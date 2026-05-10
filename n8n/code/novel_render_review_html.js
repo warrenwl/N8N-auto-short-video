@@ -64,6 +64,7 @@ function formatDuration(value) {
 
 const jobTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -431,7 +432,7 @@ function blockRevisionCard(revision, row) {
     </form>` : '';
 
   return `
-    <article class="block-revision-card ${escapeHtml(statusClass(status))}" data-block-status="${escapeHtml(status)}">
+    <article class="block-revision-card ${escapeHtml(statusClass(status))}" data-block-status="${escapeHtml(status)}" data-block-card-paragraph="${escapeHtml(revision.paragraph_start || '')}">
       <div class="block-card-head">
         <strong>${action}</strong>
         ${badge(status, '未知状态')}
@@ -488,8 +489,18 @@ function blockRevisionPanel(row, id) {
   const token = escapeHtml(row.review_token || '');
   const chapterId = escapeHtml(row.chapter_id || row.id || '');
   const panelId = `block-revision-panel-${id}`;
+  const liveRevisionCount = revisions.filter((revision) => ['PENDING', 'RUNNING'].includes(String(revision.status || '').toUpperCase())).length;
+  const readyRevisionCount = revisions.filter((revision) => String(revision.status || '').toUpperCase() === 'SUGGESTED').length;
+  const failedRevisionCount = revisions.filter((revision) => String(revision.status || '').toUpperCase() === 'FAILED').length;
   const activeRevisionCount = revisions.filter((revision) => ['PENDING', 'RUNNING', 'SUGGESTED', 'FAILED'].includes(String(revision.status || '').toUpperCase())).length;
-  const panelStateClass = activeRevisionCount ? ' is-open has-active-revisions' : '';
+  const initialPanelOpen = activeRevisionCount > 0;
+  const panelStateClass = [
+    activeRevisionCount ? 'has-active-revisions' : '',
+    initialPanelOpen ? 'is-open' : '',
+  ].filter(Boolean).map((name) => ` ${name}`).join('');
+  const panelStateText = liveRevisionCount
+    ? `生成中 ${liveRevisionCount}`
+    : (readyRevisionCount ? `待确认 ${readyRevisionCount}` : (failedRevisionCount ? `需处理 ${failedRevisionCount}` : '未选择'));
   return `
     <section
       class="block-revision-panel${panelStateClass}"
@@ -498,13 +509,13 @@ function blockRevisionPanel(row, id) {
       data-workbench-id="${escapeHtml(id)}"
       aria-label="局部修订工作台"
     >
-      <div class="block-panel-head" data-block-panel-toggle role="button" tabindex="0" aria-expanded="${activeRevisionCount ? 'true' : 'false'}">
+      <div class="block-panel-head" data-block-panel-toggle role="button" tabindex="0" aria-expanded="${initialPanelOpen ? 'true' : 'false'}">
         <div>
           <p class="ops-kicker">局部修订工作台</p>
           <strong>选区建议</strong>
         </div>
         <div class="block-panel-head-actions">
-          <span data-block-panel-state>${activeRevisionCount ? `待处理 ${activeRevisionCount}` : '未选择'}</span>
+          <span data-block-panel-state>${escapeHtml(panelStateText)}</span>
           <button class="block-panel-close" type="button" data-close-block-panel aria-label="收起局部修订工作台">收起</button>
         </div>
       </div>
@@ -2120,7 +2131,8 @@ const html = `<!doctype html>
         }
         if (state) {
           const actionName = blockActionNames[payload.actionType || 'modify'] || '局部修订';
-          state.textContent = actionName;
+          const scope = payload.paragraphStart ? 'P' + payload.paragraphStart + (payload.paragraphEnd && payload.paragraphEnd !== payload.paragraphStart ? '-P' + payload.paragraphEnd : '') : '';
+          state.textContent = selectedText && scope ? '已选 ' + scope + ' / ' + actionName : actionName;
         }
         if (options.open !== false) openBlockPanel(panel);
         const instruction = form.querySelector('textarea[name="instruction"]');
@@ -2218,11 +2230,15 @@ const html = `<!doctype html>
           record_human_note: '记录为人工意见',
           create_fact_draft: '复制事实草稿',
         };
-        const actions = Array.isArray(payload.suggested_actions)
-          ? payload.suggested_actions
-            .filter((item) => bridgeLabels[item.action_type])
-            .slice(0, 3)
-          : [];
+        const seenAssistantActionTypes = new Set();
+        const actions = [];
+        if (Array.isArray(payload.suggested_actions)) {
+          payload.suggested_actions.forEach((item) => {
+            if (!bridgeLabels[item.action_type] || seenAssistantActionTypes.has(item.action_type)) return;
+            seenAssistantActionTypes.add(item.action_type);
+            actions.push(item);
+          });
+        }
         if (actions.length) {
           const row = document.createElement('div');
           row.className = 'assistant-action-row';
@@ -2718,9 +2734,13 @@ const html = `<!doctype html>
               feedback.textContent = '局部修订任务已创建，正在刷新建议列表...';
               feedback.classList.add('is-success');
             }
+            const targetHref = window.location.pathname + window.location.search;
+            rememberReviewSaveScroll(targetHref, {
+              paragraphNo: form.querySelector('[data-block-paragraph-start]')?.value || '',
+            });
             showToast('局部修订已提交', '正在刷新审核详情...');
             window.setTimeout(() => {
-              window.location.href = window.location.pathname + window.location.search;
+              window.location.href = targetHref;
             }, 650);
           } catch (error) {
             if (feedback) {
@@ -2815,7 +2835,8 @@ const html = `<!doctype html>
             const detailHref = resultPrimaryHrefFromHtml(html, currentHref);
             const targetHref = action === 'request_rewrite' ? '/webhook/novel-review-list' : detailHref;
             const keepsEditing = action === 'apply' || action === 'apply_edited';
-            if (keepsEditing) rememberReviewSaveScroll(targetHref);
+            const cardParagraphNo = form.closest('[data-block-status]')?.dataset?.blockCardParagraph || '';
+            if (targetHref !== '/webhook/novel-review-list') rememberReviewSaveScroll(targetHref, {paragraphNo: cardParagraphNo});
             showToast('局部修订已处理', keepsEditing ? '正在打开新的候选稿继续修改...' : (action === 'request_rewrite' ? '正在返回审核列表...' : '正在刷新审核详情...'));
             window.setTimeout(() => {
               window.location.href = targetHref;
@@ -2830,6 +2851,8 @@ const html = `<!doctype html>
 
       const liveBlockCards = Array.from(document.querySelectorAll('[data-block-status="PENDING"], [data-block-status="RUNNING"]'));
       if (liveBlockCards.length) {
+        Array.from(new Set(liveBlockCards.map((card) => card.closest('[data-block-revision-panel]')).filter(Boolean)))
+          .forEach((panel) => openBlockPanel(panel));
         let secondsLeft = 4;
         const updateLiveCountdown = () => {
           liveBlockCards.forEach((card) => {

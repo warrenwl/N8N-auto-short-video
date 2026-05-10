@@ -121,26 +121,206 @@ assert(
   builtBible.llm_request_body.messages[1].content.includes('角色命名必须建立唯一主名') &&
     builtBible.llm_request_body.messages[1].content.includes('aliases') &&
     builtBible.llm_request_body.messages[1].content.includes('public_name') &&
+    builtBible.llm_request_body.messages[1].content.includes('organizations') &&
+    builtBible.llm_request_body.messages[1].content.includes('locations') &&
+    builtBible.llm_request_body.messages[1].content.includes('plot_constraints') &&
     builtBible.llm_request_body.messages[1].content.includes('所有字段值、描述、角色设定内容必须使用中文'),
   'bible prompt should force canonical names, registered aliases, and Chinese-readable values'
 );
+
+const builtBiblePatch = runCodeNode('n8n/code/novel_build_glm_request.js', {
+  json: {
+    ...buildInput,
+    run_type: 'GENERATE_BIBLE_PATCH',
+    title: '逆光回响',
+    expansion_request: '新增反派商会、女主家族和城市禁区。',
+    expansion_scope: 'rewrite_unwritten',
+    expansion_constraints: '已批准正文不改；已激活事实不破坏。',
+    novel_bible: {story_core: '修表师卷入旧城事件。'},
+    existing_outlines: [{chapter_no: 1, title: '旧钟表店'}],
+    approved_chapters: [{chapter_no: 1, summary: '林昼发现怀表异常。'}],
+    continuity_facts: [{fact_key: '怀表', fact_value: '会在危险前响起'}],
+  },
+  env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
+})[0].json;
+assert.strictEqual(builtBiblePatch.prompt_key, 'bible_patch');
+assert(
+  builtBiblePatch.llm_request_body.messages[1].content.includes('设定集补丁') &&
+    builtBiblePatch.llm_request_body.messages[1].content.includes('新增反派商会') &&
+    builtBiblePatch.llm_request_body.messages[1].content.includes('不要重写完整 Bible') &&
+    builtBiblePatch.llm_request_body.messages[1].content.includes('risk_notes'),
+  'bible patch prompt should create a confirmable patch instead of rewriting the whole Bible'
+);
+
+const expansionAssistValidation = runCodeNode('n8n/code/novel_validate_project_expansion_ai_assist.js', {
+  json: {
+    body: {
+      project_id: '22222222-2222-2222-2222-222222222222',
+      expansion_request: '新增女主家族线，加入反派商会和第12章前的背叛伏笔。',
+      expansion_scope: '重排未写章节',
+      expansion_constraints: '已批准正文不改；已激活事实不破坏。',
+      target_total_chapters: '36',
+      target_words_per_chapter: '2500',
+    },
+  },
+})[0].json;
+assert.strictEqual(expansionAssistValidation.expansion_scope, 'rewrite_unwritten');
+assert.strictEqual(expansionAssistValidation.target_total_chapters, 36);
+assert(expansionAssistValidation.expansion_request.includes('女主家族线'), 'project expansion AI assist validator should preserve user requirements');
+
+const builtExpansionAssist = runCodeNode('n8n/code/novel_build_project_expansion_ai_assist_glm_request.js', {
+  json: {
+    ...expansionAssistValidation,
+    title: '逆光回响',
+    genre: '都市奇幻',
+    audience: '中文网文读者',
+    style: '强冲突、强钩子',
+    novel_bible: {story_core: '林昼追查父亲失踪。', organizations: [{name: '沈氏商会'}]},
+    existing_outlines: [{chapter_no: 8, title: '旧钟表店', summary: '林昼接近真相。'}],
+    approved_chapters: [{chapter_no: 1, title: '旧钟表店', summary: '林昼发现怀表异常。'}],
+    continuity_facts: [{fact_key: '怀表', fact_value: '会在危险前响起'}],
+  },
+})[0].json;
+assert.strictEqual(builtExpansionAssist.run_type, 'PROJECT_EXPANSION_ASSIST');
+assert(
+  builtExpansionAssist.llm_request_body.messages[1].content.includes('【用户粗略要求】') &&
+    builtExpansionAssist.llm_request_body.messages[1].content.includes('【当前设定集】') &&
+    builtExpansionAssist.llm_request_body.messages[1].content.includes('【已有大纲】') &&
+    builtExpansionAssist.llm_request_body.messages[1].content.includes('expansion_request'),
+  'project expansion AI assist prompt should include user request, Bible, outline, and strict JSON schema'
+);
+
+const parsedExpansionAssist = runCodeNode('n8n/code/novel_parse_project_expansion_ai_assist_glm_response.js', {
+  json: {
+    llm_request_body: {model: 'glm-5.1'},
+    llm_response: {
+      choices: [{message: {content: JSON.stringify({
+        expansion_request: '从第9章开始新增沈氏商会线：先让女主家族旧账牵出商会货仓，再用男二一次迟疑埋下背叛伏笔；第12章前只暴露商会外围，保留父亲失踪核心真相。',
+        beat_design: [{chapter_range: '9-12', purpose: '引出商会压力', conflict: '家族旧账逼近女主', hook: '男二隐瞒一张旧票据'}],
+        setting_additions: [{type: 'organization', name: '沈氏商会'}],
+        risk_notes: [{risk: '提前揭露父亲真相', fix: '只写外围账本'}],
+        message: '已生成扩写设计。',
+      })}}],
+    },
+  },
+})[0].json.response_json;
+assert(JSON.parse(parsedExpansionAssist).expansion_request.includes('沈氏商会线'), 'project expansion AI assist parser should return fillable expansion request');
 
 const builtOutline = runCodeNode('n8n/code/novel_build_glm_request.js', {
   json: {
     ...buildInput,
     run_type: 'GENERATE_OUTLINE',
     title: '逆光回响',
+    expansion_request: '新增女主身世线、反派商会和第8章前的背叛伏笔。',
+    expansion_scope: 'append_only',
+    expansion_constraints: '已批准正文不改；已激活事实不破坏。',
+    existing_outlines: [{chapter_no: 1, title: '旧钟表店', summary: '林昼发现旧钟表店线索。'}],
+    approved_chapters: [{chapter_no: 1, title: '旧钟表店', summary: '林昼发现旧钟表店线索。'}],
   },
   env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
 })[0].json;
 assert(
   builtOutline.llm_request_body.messages[1].content.includes('角色名必须只使用 Bible 中已登记的 name、aliases 或 public_name') &&
     builtOutline.llm_request_body.messages[1].content.includes('不得写“X（实为Y）”') &&
+    builtOutline.llm_request_body.messages[1].content.includes('【组织势力】') &&
+    builtOutline.llm_request_body.messages[1].content.includes('【剧情约束】') &&
     builtOutline.llm_request_body.messages[1].content.includes('chapters[].title 只写标题本身') &&
     builtOutline.llm_request_body.messages[1].content.includes('【章节连续性与镜头转换】') &&
     builtOutline.llm_request_body.messages[1].content.includes('不要让读者感觉上一章刚离开 A 地，下一章突然已在 B 地执行新任务'),
   'outline prompt should not invent alias-style double names or frequent cross-chapter breaks'
 );
+assert(
+  builtOutline.llm_request_body.messages[1].content.includes('【项目扩写计划】') &&
+    builtOutline.llm_request_body.messages[1].content.includes('新增女主身世线、反派商会') &&
+    builtOutline.llm_request_body.messages[1].content.includes('扩写范围：只追加新章节') &&
+    builtOutline.llm_request_body.messages[1].content.includes('已有大纲') &&
+    builtOutline.llm_request_body.messages[1].content.includes('已批准章节摘要') &&
+    builtOutline.llm_request_body.messages[1].content.includes('不要重写已经存在的章节'),
+  'outline prompt should carry the project expansion plan, existing outlines, and approved-chapter guardrails'
+);
+
+const builtExpandedOutline = runCodeNode('n8n/code/novel_build_glm_request.js', {
+  json: {
+    ...buildInput,
+    run_type: 'GENERATE_OUTLINE',
+    title: '天命之星',
+    target_total_chapters: 40,
+    expansion_request: '从第七章起全面接入女主真实身世主线与商业权谋线。',
+    expansion_scope: 'rewrite_unwritten',
+    expansion_constraints: '已批准正文不改；已激活事实不破坏。',
+    existing_outlines: Array.from({length: 20}, (_, index) => ({chapter_no: index + 1, title: `旧章${index + 1}`})),
+    approved_chapters: Array.from({length: 6}, (_, index) => ({chapter_no: index + 1, summary: `已批准第${index + 1}章`})),
+  },
+  env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
+})[0].json;
+assert(
+  builtExpandedOutline.llm_request_body.messages[1].content.includes('系统根据目标章节数、扩写范围、已批准正文和已有大纲动态计算') &&
+    builtExpandedOutline.llm_request_body.messages[1].content.includes('第 7 章到第 40 章') &&
+    builtExpandedOutline.llm_request_body.messages[1].content.includes('最大 chapter_no 必须等于当前目标总章数 40') &&
+    builtExpandedOutline.llm_request_body.messages[1].content.includes('不要沿用旧目标章节数') &&
+    builtExpandedOutline.llm_request_body.messages[1].content.includes('旧结局表述') &&
+    builtExpandedOutline.llm_request_body.messages[1].content.includes('按“新增剧情要求”和“本次大纲请求备注”里的节奏分层释放'),
+  'expanded outline prompt should compute coverage from confirmed chapters and protect target-length pacing'
+);
+
+assertThrowsMessage(() => {
+  runCodeNode('n8n/code/novel_parse_glm_json.js', {
+    json: {
+      run_type: 'GENERATE_OUTLINE',
+      target_total_chapters: 40,
+      expansion_scope: 'rewrite_unwritten',
+      approved_chapters: Array.from({length: 6}, (_, index) => ({chapter_no: index + 1})),
+      existing_outlines: Array.from({length: 20}, (_, index) => ({chapter_no: index + 1})),
+      choices: [{message: {content: JSON.stringify({
+        chapters: Array.from({length: 13}, (_, index) => ({
+          chapter_no: index + 7,
+          title: `新章${index + 7}`,
+          summary: '扩写剧情',
+        })),
+      })}}],
+    },
+  });
+}, '大纲章节覆盖不足');
+
+assertThrowsMessage(() => {
+  runCodeNode('n8n/code/novel_parse_glm_json.js', {
+    json: {
+      run_type: 'GENERATE_OUTLINE',
+      target_total_chapters: 40,
+      expansion_scope: 'rewrite_unwritten',
+      approved_chapters: Array.from({length: 6}, (_, index) => ({chapter_no: index + 1})),
+      existing_outlines: Array.from({length: 20}, (_, index) => ({chapter_no: index + 1})),
+      choices: [{message: {content: JSON.stringify({
+        chapters: Array.from({length: 34}, (_, index) => {
+          const chapterNo = index + 7;
+          return {
+            chapter_no: chapterNo,
+            title: chapterNo === 20 ? '天命之星（大结局）' : `新章${chapterNo}`,
+            summary: chapterNo === 20 ? '主线收束，故事落幕。' : '扩写剧情',
+          };
+        }),
+      })}}],
+    },
+  });
+}, '大纲提前完结风险');
+
+const parsedExpandedOutline = runCodeNode('n8n/code/novel_parse_glm_json.js', {
+  json: {
+    run_type: 'GENERATE_OUTLINE',
+    target_total_chapters: 9,
+    expansion_scope: 'rewrite_unwritten',
+    approved_chapters: Array.from({length: 6}, (_, index) => ({chapter_no: index + 1})),
+    existing_outlines: Array.from({length: 6}, (_, index) => ({chapter_no: index + 1})),
+    choices: [{message: {content: JSON.stringify({
+      chapters: [7, 8, 9].map((chapterNo) => ({
+        chapter_no: chapterNo,
+        title: `新章${chapterNo}`,
+        summary: '扩写剧情',
+      })),
+    })}}],
+  },
+})[0].json;
+assert.strictEqual(JSON.parse(parsedExpandedOutline.chapters_json).at(-1).chapter_no, 9, 'outline parser should accept complete rewrite-unwritten coverage');
 
 const builtReview = runCodeNode('n8n/code/novel_build_glm_request.js', {
   json: {
@@ -237,6 +417,9 @@ const builtDirector = runCodeNode('n8n/code/novel_build_glm_request.js', {
     plot_threads: [{thread_key: '第10章身份揭露', status: 'ACTIVE', do_not_reveal_before: 10}],
     recent_review_issues: [{chapter_no: 1, issues: ['角色突然相信陌生人']}],
     director_request_comment: '解决导演台阻断',
+    expansion_request: '让女主身世线在本章出现第一枚证据。',
+    expansion_scope: 'rewrite_unwritten',
+    expansion_constraints: '已批准正文不改；主角能力边界不升级过快。',
     director_repair_context: {
       current_status: 'NEEDS_REVIEW',
       expected_segment_count: 4,
@@ -270,8 +453,11 @@ assert(
     directorPrompt.includes('【导演台阻断修复】') &&
     directorPrompt.includes('赏花宴') &&
     directorPrompt.includes('current_blocking_issues') &&
-    directorPrompt.includes('如果上一版段数不足，本版必须补齐对应段计划'),
-  'director prompt should include segment count, plot ledger, recent review issues, transition planning, and blocker repair context'
+    directorPrompt.includes('如果上一版段数不足，本版必须补齐对应段计划') &&
+    directorPrompt.includes('【项目扩写计划】') &&
+    directorPrompt.includes('让女主身世线在本章出现第一枚证据') &&
+    directorPrompt.includes('扩写范围：重排未写章节'),
+  'director prompt should include segment count, plot ledger, recent review issues, transition planning, blocker repair context, and expansion plan'
 );
 
 const parsedDirector = runCodeNode('n8n/code/novel_parse_director_card_json.js', {
@@ -1111,6 +1297,10 @@ const parsedChineseBible = runCodeNode('n8n/code/novel_parse_glm_json.js', {
           主角设定: {姓名: '陆明', 身份: '修表师', 目标: '翻身', 身份说明: '真实身份暂时隐藏'},
           配角设定: [{姓名: '许青', 与主角关系: '盟友'}],
           反派设定: [{姓名: '赵衡', 与主角冲突: '争夺旧城控制权', 威胁等级: '高'}],
+          组织势力: [{名称: '万衡商会', 类型: '商会', 负责人: '赵衡', 利益: '垄断旧城资源'}],
+          关键地点: [{名称: '旧钟楼', 类型: '禁区', 所属: '万衡商会', 剧情功能: '伏笔汇合点'}],
+          剧情约束: [{约束: '第4章前不能揭露钟楼真相', 原因: '保留悬念', 揭露章节: 4}],
+          扩写备注: '新增商会线只影响后续章节。',
           能力体系: '信息差与资本博弈。',
           人物关系: [{来源角色: '陆明', 目标角色: '许青', 关系: '互相信任'}],
           文风规则: '节奏快。',
@@ -1126,6 +1316,35 @@ assert.strictEqual(JSON.parse(parsedChineseBible.main_character_json).identity_n
 assert.strictEqual(JSON.parse(parsedChineseBible.supporting_characters_json)[0].relationship_with_mc, '盟友');
 assert.strictEqual(JSON.parse(parsedChineseBible.villain_setting_json)[0].conflict_with_mc, '争夺旧城控制权');
 assert.strictEqual(JSON.parse(parsedChineseBible.villain_setting_json)[0].threat_level, '高');
+assert.strictEqual(JSON.parse(parsedChineseBible.organizations_json)[0].leader, '赵衡');
+assert.strictEqual(JSON.parse(parsedChineseBible.locations_json)[0].story_function, '伏笔汇合点');
+assert.strictEqual(JSON.parse(parsedChineseBible.plot_constraints_json)[0].constraint, '第4章前不能揭露钟楼真相');
+assert.strictEqual(parsedChineseBible.expansion_notes, '新增商会线只影响后续章节。');
+
+const parsedBiblePatch = runCodeNode('n8n/code/novel_parse_glm_json.js', {
+  json: {
+    run_type: 'GENERATE_BIBLE_PATCH',
+    choices: [{
+      message: {
+        content: JSON.stringify({
+          summary: '为扩写增加商会和家族阻力。',
+          new_characters: [{姓名: '苏棠', 身份: '女主表姐', 与主角关系: '暂时敌对'}],
+          new_organizations: [{名称: '万衡商会', 类型: '商会', 负责人: '赵衡', 与主角冲突: '争夺旧城控制权'}],
+          new_locations: [{名称: '旧钟楼', 类型: '禁区', 剧情功能: '伏笔汇合点'}],
+          relationship_updates: [{from: '陆明', to: '苏棠', relationship: '先敌后友'}],
+          plot_constraints: [{约束: '第4章前不能揭露钟楼真相', 原因: '保留悬念'}],
+          risk_notes: [{risk: '女主线可能挤压主线', suggested_fix: '只放后续章节'}],
+        }),
+      },
+    }],
+  },
+})[0].json;
+const patchPayload = JSON.parse(parsedBiblePatch.patch_payload_json);
+assert.strictEqual(parsedBiblePatch.run_type, 'GENERATE_BIBLE_PATCH');
+assert.strictEqual(patchPayload.new_characters[0].name, '苏棠');
+assert.strictEqual(patchPayload.new_organizations[0].leader, '赵衡');
+assert.strictEqual(patchPayload.plot_constraints[0].constraint, '第4章前不能揭露钟楼真相');
+assert.strictEqual(JSON.parse(parsedBiblePatch.risk_notes_json)[0].risk, '女主线可能挤压主线');
 
 const validatedChineseBibleUpdate = runCodeNode('n8n/code/novel_validate_bible_update.js', {
   json: {
@@ -1137,6 +1356,10 @@ const validatedChineseBibleUpdate = runCodeNode('n8n/code/novel_validate_bible_u
       supporting_characters_json: JSON.stringify([{姓名: '许青', 与主角关系: '盟友'}]),
       villain_setting_json: JSON.stringify([{姓名: '赵衡', 与主角冲突: '争夺旧城控制权', 威胁等级: '高'}]),
       relationship_map_json: JSON.stringify([{来源角色: '陆明', 目标角色: '许青', 关系: '互相信任'}]),
+      organizations_json: JSON.stringify([{名称: '万衡商会', 类型: '商会', 负责人: '赵衡'}]),
+      locations_json: JSON.stringify([{名称: '旧钟楼', 剧情功能: '伏笔汇合点'}]),
+      plot_constraints_json: JSON.stringify([{约束: '第4章前不能揭露钟楼真相'}]),
+      expansion_notes: '扩写只影响后续章节。',
       selling_points_json: JSON.stringify(['逆袭']),
     },
   },
@@ -1144,6 +1367,23 @@ const validatedChineseBibleUpdate = runCodeNode('n8n/code/novel_validate_bible_u
 assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.main_character_json).identity_note, '真实身份暂时隐藏');
 assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.supporting_characters_json)[0].relationship_with_mc, '盟友');
 assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.villain_setting_json)[0].conflict_with_mc, '争夺旧城控制权');
+assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.organizations_json)[0].leader, '赵衡');
+assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.locations_json)[0].story_function, '伏笔汇合点');
+assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.plot_constraints_json)[0].constraint, '第4章前不能揭露钟楼真相');
+assert.strictEqual(validatedChineseBibleUpdate.expansion_notes, '扩写只影响后续章节。');
+
+const biblePatchAction = runCodeNode('n8n/code/novel_validate_bible_patch_action.js', {
+  json: {
+    body: {
+      patch_id: '33333333-3333-3333-3333-333333333333',
+      patch_action: '确认',
+      comment: '通过',
+      reviewer: 'phase2_test',
+    },
+  },
+})[0].json;
+assert.strictEqual(biblePatchAction.patch_action, 'APPLY');
+assert.strictEqual(biblePatchAction.reviewer, 'phase2_test');
 
 assertThrowsMessage(() => {
   runCodeNode('n8n/code/novel_parse_glm_json.js', {

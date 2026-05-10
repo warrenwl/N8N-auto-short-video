@@ -244,13 +244,18 @@ const detailExportText = visibleText(runCodeNode('n8n/code/novel_render_project_
 assert(detailExportText.includes('导出全文 Markdown'), 'project console export view should include Markdown export');
 
 for (const action of [
-  'action="/webhook/novel-project-continue"',
   'action="/webhook/novel-chapter-rewrite-request"',
   'action="/webhook/novel-review-remind"',
 ]) {
   assert(detailHtml.includes('method="POST"'), 'project console should include POST forms');
   assert(detailHtml.includes(action), `project console should include ${action}`);
 }
+const detailIdleHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  ...detailRow,
+  jobs: JSON.stringify([]),
+  chapters: JSON.stringify([JSON.parse(detailRow.chapters)[0]]),
+}])[0].json.response_html;
+assert(detailIdleHtml.includes('action="/webhook/novel-project-continue"'), 'project console should show continue form when no review/failure/running blocker exists');
 assert(!/\b(APPROVED|NEED_REVIEW|GENERATE_CHAPTER|REVIEW_CHAPTER|PENDING|ACTIVE|MANUAL_REVIEW|PASS)\b/.test([detailText, detailBibleText, detailFactsText, detailOpsText, detailExportText].join(' ')), 'project console visible text should not expose internal enums');
 
 const resultHtml = runCodeNode('n8n/code/novel_render_project_action_result.js', [], {

@@ -50,6 +50,7 @@ const projectStatusLabel = {
 
 const jobTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -68,6 +69,7 @@ const jobStatusLabel = {
 
 const runTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -127,6 +129,7 @@ function liveProjectBadge(row) {
   if (!active || !['RUNNING', 'PENDING'].includes(jobStatus)) return projectBadge(base);
   const labels = {
     GENERATE_BIBLE: jobStatus === 'RUNNING' ? '设定集生成中' : '设定集待启动',
+    GENERATE_BIBLE_PATCH: jobStatus === 'RUNNING' ? '扩写设定补丁生成中' : '扩写设定补丁待确认',
     GENERATE_OUTLINE: jobStatus === 'RUNNING' ? '大纲生成中' : '大纲待启动',
     PLAN_CHAPTER_DIRECTOR: jobStatus === 'RUNNING' ? '导演台规划中' : '导演台待启动',
     GENERATE_CHAPTER: jobStatus === 'RUNNING' ? '章节生成中' : '章节待启动',

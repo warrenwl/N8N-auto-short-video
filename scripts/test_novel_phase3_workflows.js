@@ -98,12 +98,21 @@ const center = workflows['n8n/workflow/11_novel_center_workflow.json'];
 const centerNodes = nodesByName(center);
 assert(centerNodes.has('Webhook - 小说工作台'), '11 should expose novel workbench page');
 assert(centerNodes.has('Webhook - 小说项目列表'), '11 should expose novel project list page');
+assert(centerNodes.has('Webhook - 小说已归档项目清理'), '11 should expose archived project cleanup endpoint');
 assert(centerNodes.has('Webhook - 创建小说项目'), '11 should expose project create endpoint');
 assert(centerNodes.has('Webhook - 小说创建页GLM助手'), '11 should expose create-page GLM assist endpoint');
+assert(centerNodes.has('Webhook - 项目扩写剧情AI创意'), '11 should expose project expansion AI idea endpoint');
 assert.strictEqual(centerNodes.get('Webhook - 小说工作台').parameters.httpMethod, 'GET');
 assert.strictEqual(centerNodes.get('Webhook - 小说工作台').parameters.path, 'novel-center');
 assert.strictEqual(centerNodes.get('Webhook - 小说项目列表').parameters.httpMethod, 'GET');
 assert.strictEqual(centerNodes.get('Webhook - 小说项目列表').parameters.path, 'novel-project-list');
+assert.strictEqual(centerNodes.get('Webhook - 小说已归档项目清理').parameters.httpMethod, 'POST');
+assert.strictEqual(centerNodes.get('Webhook - 小说已归档项目清理').parameters.path, 'novel-archived-projects-cleanup');
+assert(
+  centerNodes.get('代码 - 校验已归档项目清理').parameters.jsCode.includes('CLEAR_ARCHIVED_PROJECTS') &&
+    centerNodes.get('数据库 - 清理已归档项目').parameters.query.includes('clear_novel_archived_projects'),
+  '11 archived project cleanup should validate POST and call the cleanup SQL function'
+);
 assert(
   centerNodes.get('数据库 - 查询小说项目列表').parameters.query.includes("WHEN j.status = 'RUNNING' THEN 0") &&
     centerNodes.get('数据库 - 查询小说项目列表').parameters.query.includes("WHEN j.status = 'PENDING' THEN 1"),
@@ -118,6 +127,8 @@ assert.strictEqual(centerNodes.get('Webhook - 创建小说项目').parameters.ht
 assert.strictEqual(centerNodes.get('Webhook - 创建小说项目').parameters.path, 'novel-project-create');
 assert.strictEqual(centerNodes.get('Webhook - 小说创建页GLM助手').parameters.httpMethod, 'POST');
 assert.strictEqual(centerNodes.get('Webhook - 小说创建页GLM助手').parameters.path, 'novel-project-ai-assist');
+assert.strictEqual(centerNodes.get('Webhook - 项目扩写剧情AI创意').parameters.httpMethod, 'POST');
+assert.strictEqual(centerNodes.get('Webhook - 项目扩写剧情AI创意').parameters.path, 'novel-project-expansion-ai-assist');
 assert.strictEqual(centerNodes.get('HTTP请求 - 调用GLM生成创建页灵感').parameters.method, 'POST');
 assert(
   String(centerNodes.get('HTTP请求 - 调用GLM生成创建页灵感').parameters.headerParameters.parameters[0].value).includes('GLM_API_KEY'),
@@ -128,16 +139,42 @@ assert.strictEqual(centerNodes.get('代码 - 解析创建页GLM助手响应').on
 assert(
   centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('diversityBrief') &&
     centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('genreInstruction') &&
-    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('previous_ai_premise'),
-  '11 create-page GLM assist should include diversity and previous-output avoidance in the prompt'
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('previous_ai_premise') &&
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('creative_direction') &&
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('【创意建议方向】') &&
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('最高内容约束') &&
+    centerNodes.get('代码 - 构建创建页 GLM助手请求').parameters.jsCode.includes('creative_direction_applied'),
+  '11 create-page GLM assist should include direction lock, diversity, and previous-output avoidance in the prompt'
 );
 assert.strictEqual(
   centerNodes.get('响应Webhook - 返回创建页GLM助手结果').parameters.options.responseHeaders.entries[0].value,
   'application/json; charset=utf-8',
   '11 create-page GLM assist should return JSON'
 );
+assert.strictEqual(centerNodes.get('HTTP请求 - 调用GLM生成扩写剧情设计').parameters.method, 'POST');
+assert.strictEqual(centerNodes.get('HTTP请求 - 调用GLM生成扩写剧情设计').onError, 'continueErrorOutput');
+assert.strictEqual(centerNodes.get('代码 - 解析扩写剧情AI响应').onError, 'continueErrorOutput');
+assert(
+  centerNodes.get('数据库 - 读取扩写剧情AI创意上下文').parameters.query.includes('novel_bibles') &&
+    centerNodes.get('数据库 - 读取扩写剧情AI创意上下文').parameters.query.includes('approved_chapters') &&
+    centerNodes.get('数据库 - 读取扩写剧情AI创意上下文').parameters.query.includes('continuity_facts'),
+  '11 project expansion AI idea should read Bible, approved chapters, and active facts'
+);
+assert(
+  centerNodes.get('代码 - 构建扩写剧情 AI创意请求').parameters.jsCode.includes('PROJECT_EXPANSION_ASSIST') &&
+    centerNodes.get('代码 - 构建扩写剧情 AI创意请求').parameters.jsCode.includes('【用户粗略要求】') &&
+    centerNodes.get('代码 - 构建扩写剧情 AI创意请求').parameters.jsCode.includes('【当前设定集】'),
+  '11 project expansion AI idea should build a project-aware creative prompt'
+);
+assert.strictEqual(
+  centerNodes.get('响应Webhook - 返回扩写剧情AI结果').parameters.options.responseHeaders.entries[0].value,
+  'application/json; charset=utf-8',
+  '11 project expansion AI idea should return JSON'
+);
 assert.strictEqual(centerNodes.get('Webhook - 小说事实库操作').parameters.httpMethod, 'POST');
 assert.strictEqual(centerNodes.get('Webhook - 小说事实库操作').parameters.path, 'novel-project-fact-action');
+assert.strictEqual(centerNodes.get('Webhook - 小说设定集补丁操作').parameters.httpMethod, 'POST');
+assert.strictEqual(centerNodes.get('Webhook - 小说设定集补丁操作').parameters.path, 'novel-bible-patch-action');
 assert.strictEqual(centerNodes.get('Webhook - 小说过期历史章节清理').parameters.httpMethod, 'POST');
 assert.strictEqual(centerNodes.get('Webhook - 小说过期历史章节清理').parameters.path, 'novel-stale-chapters-cleanup');
 assert(
@@ -157,6 +194,11 @@ assert(
   centerNodes.get('数据库 - 保存小说事实库操作').parameters.query.includes('manage_novel_project_fact') &&
     centerNodes.get('数据库 - 保存小说事实库操作').parameters.options.queryReplacement.includes('$json.fact_action'),
   '11 fact management should validate and persist project facts through POST'
+);
+assert(
+  centerNodes.get('数据库 - 处理小说设定集补丁').parameters.query.includes('manage_novel_bible_patch') &&
+    centerNodes.get('数据库 - 处理小说设定集补丁').parameters.options.queryReplacement.includes('$json.patch_action'),
+  '11 Bible patch management should apply, reject, or regenerate patches through POST'
 );
 assert(
   centerNodes.get('数据库 - 清理过期历史章节').parameters.query.includes('clear_novel_stale_chapters') &&
@@ -192,8 +234,9 @@ assert(
 );
 assert(
   centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("'is_stale'") &&
-    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('c.created_at < co.updated_at'),
-  '11 project detail should mark chapters generated before the current outline update as stale'
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('c.created_at < co.updated_at') &&
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('novel_bible_patches'),
+  '11 project detail should mark stale chapters and read pending Bible patches'
 );
 assert(
   centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("j.job_type = 'NOTIFY_REVIEW'") &&
@@ -211,7 +254,7 @@ assert(
 
 const bible = workflows['n8n/workflow/12_novel_bible_workflow.json'];
 const bibleNodes = nodesByName(bible);
-assert(nodesByType(bible, 'n8n-nodes-base.manualTrigger').length >= 1, '12 should have manual trigger');
+assert(nodesByType(bible, 'n8n-nodes-base.manualTrigger').length >= 2, '12 should have manual triggers for Bible and Bible patch queues');
 assert(
   bibleNodes.get('数据库 - 领取GENERATE_BIBLE任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
   '12 should claim jobs with FOR UPDATE SKIP LOCKED'
@@ -240,8 +283,30 @@ assert(
   '12 should enqueue GENERATE_OUTLINE'
 );
 assert(
+  bibleNodes.get('数据库 - 写入Bible并创建大纲任务').parameters.query.includes('organizations') &&
+    bibleNodes.get('数据库 - 写入Bible并创建大纲任务').parameters.query.includes('plot_constraints') &&
+    bibleNodes.get('数据库 - 写入Bible并创建大纲任务').parameters.options.queryReplacement.includes('organizations_json'),
+  '12 should persist generated organizations, locations, plot constraints, and expansion notes into Bible'
+);
+assert(
   bibleNodes.get('数据库 - 标记Bible任务成功').parameters.query.includes('SUCCEEDED'),
   '12 should mark job succeeded'
+);
+assert(
+  bibleNodes.get('数据库 - 领取GENERATE_BIBLE_PATCH任务').parameters.query.includes('GENERATE_BIBLE_PATCH') &&
+    bibleNodes.get('数据库 - 读取Bible补丁生成上下文').parameters.query.includes('approved_chapters') &&
+    bibleNodes.get('数据库 - 读取Bible补丁生成上下文').parameters.query.includes('continuity_facts') &&
+    bibleNodes.get('代码 - 构建Bible补丁 GLM请求').parameters.jsCode.includes('bible_patch') &&
+    bibleNodes.get('数据库 - 保存Bible补丁待确认').parameters.query.includes('novel_bible_patches') &&
+    bibleNodes.get('数据库 - 保存Bible补丁待确认').parameters.query.includes('BIBLE_PATCH_CREATED'),
+  '12 should generate confirmable expansion Bible patches with approved text and active facts as guardrails'
+);
+assert.strictEqual(bibleNodes.get('Webhook - 前端立即生成设定集补丁').parameters.httpMethod, 'POST');
+assert.strictEqual(bibleNodes.get('Webhook - 前端立即生成设定集补丁').parameters.path, 'novel-generate-bible-patch-now');
+assert(
+  bibleNodes.get('数据库 - 前端保存Bible补丁待确认').parameters.query.includes('novel_bible_patches') &&
+    bibleNodes.get('代码 - 生成前端设定集补丁结果页').parameters.jsCode.includes('扩写设定补丁'),
+  '12 front-end Bible patch trigger should save a pending patch and return a localized result page'
 );
 
 const outline = workflows['n8n/workflow/13_novel_outline_workflow.json'];
@@ -257,6 +322,29 @@ assert(
 );
 assert.strictEqual(outlineNodes.get('HTTP请求 - 调用GLM生成大纲').parameters.method, 'POST');
 assert(
+  outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('expansion_request') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('existing_outlines') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('approved_chapters') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('organizations') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('plot_constraints') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('outline_request_comment'),
+  '13 should pass expansion plan, new Bible fields, existing outlines, and approved chapter summaries into outline generation'
+);
+assert(
+  outlineNodes.get('代码 - 构建大纲 GLM请求').parameters.jsCode.includes('【项目扩写计划】') &&
+    outlineNodes.get('代码 - 构建大纲 GLM请求').parameters.jsCode.includes('不要重写已经存在的章节') &&
+    outlineNodes.get('代码 - 构建大纲 GLM请求').parameters.jsCode.includes('【大纲覆盖范围规则】') &&
+    outlineNodes.get('代码 - 构建大纲 GLM请求').parameters.jsCode.includes('旧结局表述') &&
+    outlineNodes.get('代码 - 构建大纲 GLM请求').parameters.jsCode.includes('节奏分层释放'),
+  '13 outline prompt builder should include expansion-plan guardrails'
+);
+assert(
+  outlineNodes.get('代码 - 解析大纲 GLM响应').parameters.jsCode.includes('大纲章节覆盖不足') &&
+    outlineNodes.get('代码 - 解析大纲 GLM响应').parameters.jsCode.includes('target_total_chapters') &&
+    outlineNodes.get('代码 - 解析大纲 GLM响应').parameters.jsCode.includes('大纲提前完结风险'),
+  '13 outline parser should reject expansion outputs that do not reach the target chapter count or end early'
+);
+assert(
   outlineNodes.get('数据库 - 记录大纲 AI调用').parameters.query.includes('novel_ai_runs'),
   '13 should record AI run'
 );
@@ -265,8 +353,18 @@ assert(
   '13 should bulk upsert outline chapters from JSON'
 );
 assert(
+  outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('expansion_scope') &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("i.expansion_scope <> 'append_only'") &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("approved.status IN ('APPROVED', 'PUBLISHED')"),
+  '13 should prevent append-only expansion from overwriting existing outlines or approved chapters'
+);
+assert(
   outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('PLAN_CHAPTER_DIRECTOR'),
   '13 should enqueue first PLAN_CHAPTER_DIRECTOR job'
+);
+assert(
+  outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('MIN(chapter_no) AS first_chapter_no'),
+  '13 should start director planning from the first chapter actually written by the expansion scope'
 );
 assert(
   outlineNodes.get('数据库 - 标记大纲任务成功').parameters.query.includes('SUCCEEDED'),
@@ -300,6 +398,15 @@ assert(
   directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('previous_chapter_ending') &&
     directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('previous_transition_modes'),
   '13B should read previous chapter ending and recent transition modes into director planning'
+);
+assert(
+  directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('expansion_request') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('expansion_scope') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('expansion_constraints') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('organizations') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('plot_constraints') &&
+    directorNodes.get('代码 - 构建导演台 GLM请求').parameters.jsCode.includes('【项目扩写计划】'),
+  '13B should pass the project expansion plan and expanded Bible fields into director planning prompts'
 );
 assert.strictEqual(directorNodes.get('HTTP请求 - 调用GLM生成导演台').parameters.method, 'POST');
 assert(
@@ -341,5 +448,6 @@ console.log(JSON.stringify({
   centerWebhook: 'GET /webhook/novel-center',
   projectCreateWebhook: 'POST /webhook/novel-project-create',
   bibleClaim: 'GENERATE_BIBLE + FOR UPDATE SKIP LOCKED',
+  biblePatchClaim: 'GENERATE_BIBLE_PATCH + FOR UPDATE SKIP LOCKED',
   outlineClaim: 'GENERATE_OUTLINE + FOR UPDATE SKIP LOCKED',
 }, null, 2));

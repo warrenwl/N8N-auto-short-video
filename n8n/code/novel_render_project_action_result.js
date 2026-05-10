@@ -39,6 +39,13 @@ const resultLabel = {
   NOTIFY_JOB_ALREADY_EXISTS: '已有审核提醒任务',
   NO_MATCH_OR_INVALID_STATE: '状态不允许执行',
   BIBLE_UPDATED: '设定集已保存',
+  BIBLE_PATCH_APPLIED: '扩写设定补丁已应用',
+  BIBLE_PATCH_REJECTED: '扩写设定补丁已拒绝',
+  BIBLE_PATCH_REGENERATE_QUEUED: '已创建补丁重生成任务',
+  BIBLE_PATCH_REGENERATE_ALREADY_EXISTS: '已有补丁生成任务',
+  BIBLE_PATCH_NOT_FOUND: '设定集补丁不存在',
+  BIBLE_PATCH_NOT_APPLICABLE: '设定集补丁不可应用',
+  INVALID_BIBLE_PATCH_ACTION: '设定集补丁操作无效',
   OUTLINE_UPDATED: '大纲已保存',
   PROJECT_TARGET_UPDATED: '项目目标已保存',
   PROJECT_PAUSED: '项目已暂停',
@@ -76,6 +83,8 @@ const resultLabel = {
   STALE_CHAPTERS_CLEARED: '过期历史章节已清理',
   STALE_CHAPTERS_NONE: '没有过期历史章节',
   RUNNING_STALE_CHAPTER_JOB_BLOCKED: '过期章节仍有关联任务运行',
+  ARCHIVED_PROJECTS_CLEARED: '已清理归档项目',
+  ARCHIVED_PROJECTS_NONE: '没有已归档项目',
   FACT_NOT_FOUND: '事实不存在',
   INVALID_FACT_ACTION: '事实操作无效',
   INVALID_FACT_INPUT: '事实内容无效',
@@ -92,6 +101,7 @@ const actionLabel = {
   START_CHAPTER_FROM_DIRECTOR: '按导演台生成正文',
   RESEND_REVIEW_NOTIFICATION: '重新发送审核提醒',
   UPDATE_BIBLE: '编辑设定集',
+  MANAGE_BIBLE_PATCH: '处理扩写设定补丁',
   UPDATE_OUTLINE: '编辑大纲',
   UPDATE_PROJECT_TARGET: '修改项目目标',
   PAUSE_PROJECT: '暂停项目',
@@ -107,6 +117,7 @@ const actionLabel = {
   DEACTIVATE_FACT: '设为失效事实',
   CLEAR_INACTIVE_FACTS: '清理失效事实',
   CLEAR_STALE_CHAPTERS: '清理过期历史章节',
+  CLEAR_ARCHIVED_PROJECTS: '清理已归档项目',
   MANAGE_FACT: '事实库操作',
 };
 
@@ -124,6 +135,7 @@ const projectStatusLabel = {
 
 const jobTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -161,7 +173,9 @@ const reviewHref = chapterId && reviewToken
   : '/webhook/novel-review-list';
 const queueHref = projectId ? `/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}` : '/webhook/novel-queue-status';
 const primaryHref = success && resultCode === 'MANUAL_REVIEW_DRAFT_SAVED' ? reviewHref : detailHref;
-const primaryLabel = success && resultCode === 'MANUAL_REVIEW_DRAFT_SAVED' ? '继续修改正文' : '返回项目控制台';
+const primaryLabel = success && resultCode === 'MANUAL_REVIEW_DRAFT_SAVED'
+  ? '继续修改正文'
+  : (projectId ? '返回项目控制台' : '返回项目列表');
 
 const rows = [
   ['操作', label(actionLabel, action, '项目操作')],
@@ -175,10 +189,13 @@ const rows = [
   ['任务类型', label(jobTypeLabel, row.job_type, row.job_type || '未创建任务')],
   ['任务编号', row.job_id || '-'],
   ['设定集编号', row.bible_id || '-'],
+  ['设定补丁编号', row.bible_patch_id || '-'],
   ['大纲编号', row.outline_id || '-'],
   ['章节编号', chapterId || '-'],
   ['取消任务数', row.cancelled_job_count || '-'],
   ['清理章节数', row.deleted_chapter_count || '-'],
+  ['清理项目数', row.deleted_project_count === 0 ? '0' : (row.deleted_project_count || '-')],
+  ['清理项目', row.deleted_project_titles || '-'],
   ['失效事实数', row.inactivated_fact_count || '-'],
 ].map(([key, value]) => `
   <dt>${escapeHtml(key)}</dt>

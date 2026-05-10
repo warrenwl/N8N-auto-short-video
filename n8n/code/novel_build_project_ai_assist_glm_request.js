@@ -16,6 +16,7 @@ function compact(value, limit) {
 const assistType = text(source.assist_type) === 'title' ? 'title' : 'idea';
 const title = compact(source.title, 80);
 const premise = compact(source.premise, 800);
+const creativeDirection = compact(source.creative_direction, 1000);
 const previousAiTitle = compact(source.previous_ai_title, 80);
 const previousAiPremise = compact(source.previous_ai_premise, 800);
 const genre = text(source.genre || '都市逆袭');
@@ -25,6 +26,7 @@ const targetTotalChapters = Number(source.target_total_chapters || 20);
 const targetWordsPerChapter = Number(source.target_words_per_chapter || 2000);
 const taskLabel = assistType === 'title' ? '小说标题' : '核心创意';
 const assistNonce = text(source.assist_nonce || source.requested_at || new Date().toISOString());
+const hasCreativeDirection = assistType === 'idea' && Boolean(creativeDirection);
 
 function hash(value) {
   let result = 0;
@@ -122,16 +124,28 @@ function diversityBrief(seed) {
   ].join('；');
 }
 
-const diversitySeed = hash([assistNonce, assistType, genre, audience, style, title, premise, previousAiTitle, previousAiPremise].join('|'));
+const diversitySeed = hash([assistNonce, assistType, genre, audience, style, title, premise, creativeDirection, previousAiTitle, previousAiPremise].join('|'));
 const avoidPrevious = [
   previousAiTitle ? `上一轮 AI 标题：${previousAiTitle}` : '',
   previousAiPremise ? `上一轮 AI 创意：${previousAiPremise}` : '',
 ].filter(Boolean).join('\n');
+const creativeDirectionBlock = assistType === 'idea' && creativeDirection
+  ? [
+    '【创意建议方向】',
+    creativeDirection,
+    '这是本次生成的最高内容约束，优先级高于类型/读者/文风差异化、请求随机种子和上一轮避重要求。',
+    '必须从以上方向中提取人物关系、情绪走向、伏笔/势力/冲突等硬要素，并把这些硬要素明确写进 premise 正文。',
+    '如果创意建议方向与类型/读者/文风存在冲突，以创意建议方向为准，再把类型要求改写成兼容表达。',
+    '可以补全结构、商业钩子和差异化细节，但不得反向违背、弱化、跳过或只在 rationale/message 中提到这些方向。',
+    '',
+  ]
+  : [];
 
 const systemPrompt = [
   '你是一名成熟的中文商业网文策划编辑。',
   '你只输出严格 JSON，不要 Markdown，不要解释，不要代码块。',
   '生成内容必须适合创建小说项目，避免未成年人不当内容、高风险违法教学、现实个人隐私和露骨内容。',
+  '当用户提供创意建议方向时，必须优先服从该方向；随机性只能用于补充细节，不能覆盖方向。',
 ].join('\n');
 
 const outputSchema = [
@@ -155,6 +169,7 @@ const userPrompt = [
   `已有核心创意：${premise || '未填写'}`,
   `请求随机种子：${assistNonce}`,
   '',
+  ...creativeDirectionBlock,
   '【类型/读者/文风差异化硬约束】',
   genreInstruction(genre),
   audienceInstruction(audience),
@@ -164,8 +179,11 @@ const userPrompt = [
   '',
   assistType === 'title'
     ? '【本次任务】优先生成 title；如果已有核心创意为空，请同时补一条与标题匹配的 premise。'
-    : '【本次任务】优先生成 premise；如果已有标题为空，请同时给出一个 title。',
+    : hasCreativeDirection
+      ? '【本次任务】优先生成 premise；premise 必须显式落实“创意建议方向”的关键要求，如果已有标题为空，请同时给出一个 title。'
+      : '【本次任务】优先生成 premise；如果已有标题为空，请同时给出一个 title。',
   '生成结果要有商业网文的明确钩子，不能只是抽象口号。不同类型之间必须明显不同：主角身份、冲突系统、爽点兑现和开篇压力都要随类型变化。',
+  hasCreativeDirection ? '最终自检：premise 正文里必须能看出创意建议方向，不允许只在解释字段里说“已遵循”。' : '',
   outputSchema,
 ].join('\n');
 
@@ -179,14 +197,15 @@ return [{
     ...source,
     run_type: 'PROJECT_CREATE_ASSIST',
     prompt_key: `project_create_${assistType}`,
-    prompt_version: 'novel-create-assist-v1-20260506',
+    prompt_version: 'novel-create-assist-v1-20260510-direction-lock',
     diversity_seed: diversitySeed,
+    creative_direction_applied: hasCreativeDirection,
     prompt_messages_json: JSON.stringify(messages),
     ai_run_started_at: new Date().toISOString(),
     llm_request_body: {
       model: source.model || 'glm-5.1',
-      temperature: 0.98,
-      top_p: 0.92,
+      temperature: hasCreativeDirection ? 0.72 : 0.98,
+      top_p: hasCreativeDirection ? 0.86 : 0.92,
       max_tokens: 900,
       thinking: {type: 'disabled'},
       response_format: {type: 'json_object'},

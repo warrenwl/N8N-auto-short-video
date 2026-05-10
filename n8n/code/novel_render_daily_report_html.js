@@ -58,6 +58,7 @@ function formatDuration(value) {
 
 const jobTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',
@@ -76,6 +77,7 @@ const jobStatusLabel = {
 
 const runTypeLabel = {
   GENERATE_BIBLE: '生成设定集',
+  GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '生成章节',

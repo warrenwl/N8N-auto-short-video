@@ -29,6 +29,7 @@ function parseJsonField(value, fallback, label) {
 const bibleFieldAlias = {
   姓名: 'name',
   名字: 'name',
+  名称: 'name',
   主名: 'name',
   别名: 'aliases',
   昵称: 'aliases',
@@ -70,7 +71,21 @@ const bibleFieldAlias = {
   阵营: 'faction',
   家族: 'family',
   组织: 'organization',
+  组织名称: 'name',
+  势力名称: 'name',
+  商会名称: 'name',
   状态: 'status',
+  类型: 'type',
+  负责人: 'leader',
+  代表人物: 'leader',
+  利益诉求: 'interest',
+  初次触达建议: 'first_touch_suggestion',
+  所属方: 'owner',
+  所属: 'owner',
+  剧情功能: 'story_function',
+  约束: 'constraint',
+  截止章节: 'until_chapter',
+  揭露章节: 'until_chapter',
   人物线: 'arc',
   情感线: 'emotional_arc',
   威胁等级: 'threat_level',
@@ -105,6 +120,9 @@ const mainCharacter = normalizeBibleKeys(parseJsonField(body.main_character_json
 const supportingCharacters = normalizeBibleKeys(parseJsonField(body.supporting_characters_json || body.supporting_characters, [], '配角设定'));
 const villainSetting = normalizeBibleKeys(parseJsonField(body.villain_setting_json || body.villain_setting, [], '反派设定'));
 const relationshipMap = normalizeBibleKeys(parseJsonField(body.relationship_map_json || body.relationship_map, [], '人物关系'));
+const organizations = normalizeBibleKeys(parseJsonField(body.organizations_json || body.organizations, [], '组织势力'));
+const locations = normalizeBibleKeys(parseJsonField(body.locations_json || body.locations, [], '关键地点'));
+const plotConstraints = normalizeBibleKeys(parseJsonField(body.plot_constraints_json || body.plot_constraints, [], '剧情约束'));
 const sellingPoints = normalizeBibleKeys(parseJsonField(body.selling_points_json || body.selling_points, [], '卖点'));
 
 return [{
@@ -117,6 +135,10 @@ return [{
     villain_setting_json: JSON.stringify(villainSetting),
     power_system: text(body.power_system),
     relationship_map_json: JSON.stringify(relationshipMap),
+    organizations_json: JSON.stringify(organizations),
+    locations_json: JSON.stringify(locations),
+    plot_constraints_json: JSON.stringify(plotConstraints),
+    expansion_notes: text(body.expansion_notes),
     tone_rules: text(body.tone_rules),
     forbidden_rules: text(body.forbidden_rules),
     selling_points_json: JSON.stringify(sellingPoints),

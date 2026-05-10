@@ -1792,6 +1792,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS update_novel_bible_manual(UUID, TEXT, TEXT, JSONB, JSONB, JSONB, TEXT, JSONB, TEXT, TEXT, JSONB, TEXT, TEXT);
+
 CREATE OR REPLACE FUNCTION update_novel_bible_manual(
   p_project_id UUID,
   p_world_setting TEXT DEFAULT NULL,
@@ -1805,7 +1807,11 @@ CREATE OR REPLACE FUNCTION update_novel_bible_manual(
   p_forbidden_rules TEXT DEFAULT NULL,
   p_selling_points JSONB DEFAULT '[]'::jsonb,
   p_comment TEXT DEFAULT NULL,
-  p_reviewer TEXT DEFAULT 'local_user'
+  p_reviewer TEXT DEFAULT 'local_user',
+  p_organizations JSONB DEFAULT '[]'::jsonb,
+  p_locations JSONB DEFAULT '[]'::jsonb,
+  p_plot_constraints JSONB DEFAULT '[]'::jsonb,
+  p_expansion_notes TEXT DEFAULT NULL
 )
 RETURNS TABLE (
   success BOOLEAN,
@@ -1859,6 +1865,10 @@ BEGIN
     villain_setting,
     power_system,
     relationship_map,
+    organizations,
+    locations,
+    plot_constraints,
+    expansion_notes,
     tone_rules,
     forbidden_rules,
     selling_points,
@@ -1874,6 +1884,10 @@ BEGIN
     COALESCE(p_villain_setting, '[]'::jsonb),
     NULLIF(p_power_system, ''),
     COALESCE(p_relationship_map, '[]'::jsonb),
+    COALESCE(p_organizations, '[]'::jsonb),
+    COALESCE(p_locations, '[]'::jsonb),
+    COALESCE(p_plot_constraints, '[]'::jsonb),
+    NULLIF(p_expansion_notes, ''),
     NULLIF(p_tone_rules, ''),
     NULLIF(p_forbidden_rules, ''),
     COALESCE(p_selling_points, '[]'::jsonb),
@@ -1888,6 +1902,10 @@ BEGIN
     villain_setting = EXCLUDED.villain_setting,
     power_system = EXCLUDED.power_system,
     relationship_map = EXCLUDED.relationship_map,
+    organizations = EXCLUDED.organizations,
+    locations = EXCLUDED.locations,
+    plot_constraints = EXCLUDED.plot_constraints,
+    expansion_notes = EXCLUDED.expansion_notes,
     tone_rules = EXCLUDED.tone_rules,
     forbidden_rules = EXCLUDED.forbidden_rules,
     selling_points = EXCLUDED.selling_points,
@@ -2077,12 +2095,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS update_novel_project_targets(UUID, INTEGER, INTEGER, TEXT, TEXT);
+
 CREATE OR REPLACE FUNCTION update_novel_project_targets(
   p_project_id UUID,
   p_target_total_chapters INTEGER,
   p_target_words_per_chapter INTEGER,
   p_comment TEXT DEFAULT NULL,
-  p_reviewer TEXT DEFAULT 'local_user'
+  p_reviewer TEXT DEFAULT 'local_user',
+  p_expansion_request TEXT DEFAULT NULL,
+  p_expansion_scope TEXT DEFAULT 'append_only',
+  p_expansion_constraints TEXT DEFAULT NULL
 )
 RETURNS TABLE (
   success BOOLEAN,
@@ -2102,6 +2125,10 @@ DECLARE
   v_before JSONB := '{}'::jsonb;
   v_after JSONB := '{}'::jsonb;
   v_actor TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
+  v_expansion_request TEXT := NULLIF(trim(COALESCE(p_expansion_request, '')), '');
+  v_expansion_scope TEXT := COALESCE(NULLIF(trim(COALESCE(p_expansion_scope, '')), ''), 'append_only');
+  v_expansion_constraints TEXT := NULLIF(trim(COALESCE(p_expansion_constraints, '')), '');
+  v_bible_patch_job_id UUID;
 BEGIN
   SELECT *
   INTO v_project
@@ -2173,12 +2200,31 @@ BEGIN
     RETURN;
   END IF;
 
+  IF v_expansion_scope NOT IN ('append_only', 'rewrite_unwritten', 'regenerate_outline') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'INVALID_PROJECT_TARGET'::text,
+      'UPDATE_PROJECT_TARGET'::text,
+      p_project_id,
+      v_project.status,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      v_project.target_total_chapters,
+      v_project.target_words_per_chapter,
+      '扩写范围无效。'::text;
+    RETURN;
+  END IF;
+
   v_before := to_jsonb(v_project);
 
   UPDATE novel_projects
   SET
     target_total_chapters = p_target_total_chapters,
     target_words_per_chapter = p_target_words_per_chapter,
+    expansion_request = v_expansion_request,
+    expansion_scope = v_expansion_scope,
+    expansion_constraints = v_expansion_constraints,
     status = CASE
       WHEN status = 'COMPLETED' AND current_chapter_no < p_target_total_chapters THEN 'WRITING'
       ELSE status
@@ -2187,6 +2233,31 @@ BEGIN
   RETURNING * INTO v_project;
 
   v_after := to_jsonb(v_project);
+
+  IF v_expansion_request IS NOT NULL
+     AND EXISTS (SELECT 1 FROM novel_bibles b WHERE b.project_id = p_project_id) THEN
+    INSERT INTO novel_generation_jobs (
+      project_id,
+      job_type,
+      payload,
+      status
+    )
+    VALUES (
+      p_project_id,
+      'GENERATE_BIBLE_PATCH',
+      jsonb_build_object(
+        'trigger_source', 'expansion_plan',
+        'requested_by', v_actor,
+        'comment', NULLIF(p_comment, ''),
+        'expansion_request', v_expansion_request,
+        'expansion_scope', v_expansion_scope,
+        'expansion_constraints', v_expansion_constraints
+      ),
+      'PENDING'
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id INTO v_bible_patch_job_id;
+  END IF;
 
   INSERT INTO novel_project_events (
     project_id,
@@ -2202,7 +2273,12 @@ BEGIN
     v_actor,
     NULLIF(p_comment, ''),
     v_before,
-    v_after
+    v_after || jsonb_build_object(
+      'expansion_request', v_expansion_request,
+      'expansion_scope', v_expansion_scope,
+      'expansion_constraints', v_expansion_constraints,
+      'bible_patch_job_id', v_bible_patch_job_id
+    )
   );
 
   RETURN QUERY SELECT
@@ -2214,9 +2290,422 @@ BEGIN
     NULL::uuid,
     NULL::uuid,
     NULL::integer,
-	    v_project.target_total_chapters,
-	    v_project.target_words_per_chapter,
-	    '项目目标已保存；新字数只影响后续章节生成和重写，已生成章节不会自动改写。'::text;
+    v_project.target_total_chapters,
+    v_project.target_words_per_chapter,
+    CASE
+      WHEN v_expansion_request IS NOT NULL AND v_bible_patch_job_id IS NOT NULL THEN '项目目标与扩写计划已保存；已创建扩写设定补丁任务，确认补丁后再生成后续大纲更稳。'
+      WHEN v_expansion_request IS NOT NULL THEN '项目目标与扩写计划已保存；后续大纲和导演台会读取扩写要求，已批准正文仍不会自动改写。'
+      ELSE '项目目标已保存；新字数只影响后续章节生成和重写，已生成章节不会自动改写。'
+    END::text;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION manage_novel_bible_patch(
+  p_patch_id UUID,
+  p_patch_action TEXT DEFAULT 'APPLY',
+  p_comment TEXT DEFAULT NULL,
+  p_reviewer TEXT DEFAULT 'local_user'
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  action TEXT,
+  project_id UUID,
+  project_status TEXT,
+  bible_id UUID,
+  outline_id UUID,
+  chapter_no INTEGER,
+  job_type TEXT,
+  job_id UUID,
+  bible_patch_id UUID,
+  message TEXT
+) AS $$
+DECLARE
+  v_patch novel_bible_patches%ROWTYPE;
+  v_project novel_projects%ROWTYPE;
+  v_bible novel_bibles%ROWTYPE;
+  v_before JSONB := '{}'::jsonb;
+  v_after JSONB := '{}'::jsonb;
+  v_payload JSONB := '{}'::jsonb;
+  v_new_characters JSONB := '[]'::jsonb;
+  v_new_villains JSONB := '[]'::jsonb;
+  v_new_organizations JSONB := '[]'::jsonb;
+  v_new_locations JSONB := '[]'::jsonb;
+  v_relationship_updates JSONB := '[]'::jsonb;
+  v_plot_constraints JSONB := '[]'::jsonb;
+  v_expansion_note TEXT;
+  v_actor TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
+  v_action TEXT := UPPER(COALESCE(NULLIF(p_patch_action, ''), 'APPLY'));
+  v_job_id UUID;
+  v_outline_job_id UUID;
+  v_existing_outline_job_id UUID;
+  v_cancelled_job_count INTEGER := 0;
+  v_rewrite_from_chapter INTEGER := NULL;
+BEGIN
+  SELECT *
+  INTO v_patch
+  FROM novel_bible_patches
+  WHERE id = p_patch_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BIBLE_PATCH_NOT_FOUND'::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      NULL::uuid,
+      NULL::text,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      p_patch_id,
+      '设定集补丁不存在。'::text;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_project
+  FROM novel_projects
+  WHERE id = v_patch.project_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'PROJECT_NOT_FOUND'::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      v_patch.project_id,
+      NULL::text,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      v_patch.id,
+      '项目不存在，无法处理设定集补丁。'::text;
+    RETURN;
+  END IF;
+
+  IF v_action NOT IN ('APPLY', 'REJECT', 'REGENERATE') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'INVALID_BIBLE_PATCH_ACTION'::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      v_project.id,
+      v_project.status,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      v_patch.id,
+      '设定集补丁操作无效。'::text;
+    RETURN;
+  END IF;
+
+  IF v_action = 'REJECT' THEN
+    UPDATE novel_bible_patches
+    SET
+      status = 'REJECTED',
+      reviewer = v_actor,
+      comment = NULLIF(p_comment, '')
+    WHERE id = v_patch.id
+    RETURNING * INTO v_patch;
+
+    INSERT INTO novel_project_events (
+      project_id,
+      event_type,
+      actor,
+      comment,
+      before_payload,
+      after_payload
+    )
+    VALUES (
+      v_project.id,
+      'BIBLE_PATCH_REJECTED',
+      v_actor,
+      NULLIF(p_comment, ''),
+      '{}'::jsonb,
+      to_jsonb(v_patch)
+    );
+
+    RETURN QUERY SELECT
+      TRUE,
+      'BIBLE_PATCH_REJECTED'::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      v_project.id,
+      v_project.status,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      v_patch.id,
+      '扩写设定补丁已拒绝，不会写入正式设定集。'::text;
+    RETURN;
+  END IF;
+
+  IF v_action = 'REGENERATE' THEN
+    INSERT INTO novel_generation_jobs (
+      project_id,
+      job_type,
+      payload,
+      status
+    )
+    VALUES (
+      v_project.id,
+      'GENERATE_BIBLE_PATCH',
+      jsonb_build_object(
+        'trigger_source', 'bible_patch_regenerate',
+        'source_patch_id', v_patch.id,
+        'requested_by', v_actor,
+        'comment', NULLIF(p_comment, '')
+      ),
+      'PENDING'
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id INTO v_job_id;
+
+    INSERT INTO novel_project_events (
+      project_id,
+      event_type,
+      actor,
+      comment,
+      before_payload,
+      after_payload
+    )
+    VALUES (
+      v_project.id,
+      'BIBLE_PATCH_REGENERATE_REQUESTED',
+      v_actor,
+      NULLIF(p_comment, ''),
+      to_jsonb(v_patch),
+      jsonb_build_object('job_id', v_job_id)
+    );
+
+    RETURN QUERY SELECT
+      TRUE,
+      CASE WHEN v_job_id IS NULL THEN 'BIBLE_PATCH_REGENERATE_ALREADY_EXISTS' ELSE 'BIBLE_PATCH_REGENERATE_QUEUED' END::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      v_project.id,
+      v_project.status,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      'GENERATE_BIBLE_PATCH'::text,
+      v_job_id,
+      v_patch.id,
+      CASE
+        WHEN v_job_id IS NULL THEN '已有扩写设定补丁生成任务在队列中。'
+        ELSE '已创建扩写设定补丁重生成任务。'
+      END::text;
+    RETURN;
+  END IF;
+
+  IF v_patch.status NOT IN ('PENDING', 'APPROVED') THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BIBLE_PATCH_NOT_APPLICABLE'::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      v_project.id,
+      v_project.status,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      v_patch.id,
+      '该设定集补丁当前状态不可应用。'::text;
+    RETURN;
+  END IF;
+
+  SELECT *
+  INTO v_bible
+  FROM novel_bibles b
+  WHERE b.project_id = v_project.id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT
+      FALSE,
+      'BIBLE_REQUIRED'::text,
+      'MANAGE_BIBLE_PATCH'::text,
+      v_project.id,
+      v_project.status,
+      NULL::uuid,
+      NULL::uuid,
+      NULL::integer,
+      NULL::text,
+      NULL::uuid,
+      v_patch.id,
+      '需要先生成正式设定集，才能应用扩写设定补丁。'::text;
+    RETURN;
+  END IF;
+
+  v_payload := COALESCE(v_patch.patch_payload, '{}'::jsonb);
+  v_before := to_jsonb(v_bible);
+  v_new_characters := COALESCE(v_payload->'new_characters', v_payload->'new_supporting_characters', '[]'::jsonb);
+  v_new_villains := COALESCE(v_payload->'new_villains', '[]'::jsonb) || COALESCE(v_payload->'villain_updates', '[]'::jsonb);
+  v_new_organizations := COALESCE(v_payload->'new_organizations', v_payload->'organizations', '[]'::jsonb);
+  v_new_locations := COALESCE(v_payload->'new_locations', v_payload->'locations', '[]'::jsonb);
+  v_relationship_updates := COALESCE(v_payload->'relationship_updates', '[]'::jsonb);
+  v_plot_constraints := COALESCE(v_payload->'plot_constraints', '[]'::jsonb);
+  v_expansion_note := NULLIF(COALESCE(v_payload->>'expansion_notes', v_payload->>'summary', v_patch.expansion_request), '');
+
+  UPDATE novel_bibles
+  SET
+    supporting_characters = COALESCE(supporting_characters, '[]'::jsonb) || v_new_characters,
+    villain_setting = COALESCE(villain_setting, '[]'::jsonb) || v_new_villains,
+    organizations = COALESCE(organizations, '[]'::jsonb) || v_new_organizations,
+    locations = COALESCE(locations, '[]'::jsonb) || v_new_locations,
+    relationship_map = COALESCE(relationship_map, '[]'::jsonb) || v_relationship_updates,
+    plot_constraints = COALESCE(plot_constraints, '[]'::jsonb) || v_plot_constraints,
+    expansion_notes = concat_ws(E'\n', NULLIF(expansion_notes, ''), v_expansion_note),
+    raw_payload = COALESCE(raw_payload, '{}'::jsonb) || jsonb_build_object(
+      'last_applied_bible_patch_id', v_patch.id,
+      'last_applied_bible_patch', v_payload
+    )
+  WHERE id = v_bible.id
+  RETURNING * INTO v_bible;
+
+  UPDATE novel_bible_patches
+  SET
+    status = 'APPLIED',
+    reviewer = v_actor,
+    comment = NULLIF(p_comment, ''),
+    applied_at = NOW()
+  WHERE id = v_patch.id
+  RETURNING * INTO v_patch;
+
+  v_after := to_jsonb(v_bible);
+
+  IF COALESCE(v_patch.expansion_scope, 'append_only') = 'append_only' THEN
+    SELECT COALESCE(MAX(o.chapter_no), 0) + 1
+    INTO v_rewrite_from_chapter
+    FROM novel_chapter_outlines o
+    WHERE o.project_id = v_project.id;
+  ELSE
+    SELECT COALESCE(MAX(c.chapter_no), 0) + 1
+    INTO v_rewrite_from_chapter
+    FROM novel_chapters c
+    WHERE c.project_id = v_project.id
+      AND c.is_current = TRUE
+      AND c.status IN ('APPROVED', 'PUBLISHED');
+  END IF;
+
+  UPDATE novel_generation_jobs j
+  SET
+    status = 'CANCELLED',
+    error_message = COALESCE(j.error_message, '扩写设定补丁已应用，旧待处理大纲/导演台/正文任务已取消。'),
+    finished_at = NOW(),
+    updated_at = NOW()
+  WHERE j.project_id = v_project.id
+    AND j.status = 'PENDING'
+    AND (
+      j.job_type = 'GENERATE_OUTLINE'
+      OR (
+        COALESCE(v_patch.expansion_scope, 'append_only') IN ('rewrite_unwritten', 'regenerate_outline')
+        AND j.job_type IN ('PLAN_CHAPTER_DIRECTOR', 'GENERATE_CHAPTER', 'REVIEW_CHAPTER', 'REWRITE_CHAPTER', 'NOTIFY_REVIEW')
+        AND (
+          j.chapter_no IS NULL
+          OR COALESCE(v_patch.expansion_scope, 'append_only') = 'regenerate_outline'
+          OR j.chapter_no >= COALESCE(v_rewrite_from_chapter, 1)
+        )
+      )
+    );
+
+  GET DIAGNOSTICS v_cancelled_job_count = ROW_COUNT;
+
+  INSERT INTO novel_generation_jobs (
+    project_id,
+    job_type,
+    payload,
+    status
+  )
+  VALUES (
+    v_project.id,
+    'GENERATE_OUTLINE',
+    jsonb_build_object(
+      'trigger_source', 'bible_patch_applied',
+      'source_patch_id', v_patch.id,
+      'requested_by', v_actor,
+      'comment', NULLIF(p_comment, ''),
+      'expansion_request', v_patch.expansion_request,
+      'expansion_scope', COALESCE(v_patch.expansion_scope, v_project.expansion_scope, 'append_only'),
+      'expansion_constraints', COALESCE(v_patch.expansion_constraints, v_project.expansion_constraints, ''),
+      'rewrite_from_chapter', v_rewrite_from_chapter,
+      'cancelled_downstream_job_count', v_cancelled_job_count
+    ),
+    'PENDING'
+  )
+  ON CONFLICT DO NOTHING
+  RETURNING id INTO v_outline_job_id;
+
+  IF v_outline_job_id IS NULL THEN
+    SELECT j.id
+    INTO v_existing_outline_job_id
+    FROM novel_generation_jobs j
+    WHERE j.project_id = v_project.id
+      AND j.job_type = 'GENERATE_OUTLINE'
+      AND j.status IN ('PENDING', 'RUNNING')
+    ORDER BY j.created_at DESC
+    LIMIT 1;
+  END IF;
+
+  UPDATE novel_projects
+  SET status = 'BIBLE_READY'
+  WHERE id = v_project.id
+    AND status NOT IN ('PAUSED', 'ARCHIVED', 'FAILED');
+
+  SELECT *
+  INTO v_project
+  FROM novel_projects
+  WHERE id = v_patch.project_id;
+
+  INSERT INTO novel_project_events (
+    project_id,
+    bible_id,
+    event_type,
+    actor,
+    comment,
+    before_payload,
+    after_payload
+  )
+  VALUES (
+    v_project.id,
+    v_bible.id,
+    'BIBLE_PATCH_APPLIED',
+    v_actor,
+    NULLIF(p_comment, ''),
+    v_before,
+    jsonb_build_object(
+      'bible', v_after,
+      'patch', to_jsonb(v_patch),
+      'outline_job_id', COALESCE(v_outline_job_id, v_existing_outline_job_id),
+      'cancelled_downstream_job_count', v_cancelled_job_count,
+      'rewrite_from_chapter', v_rewrite_from_chapter
+    )
+  );
+
+  RETURN QUERY SELECT
+    TRUE,
+    'BIBLE_PATCH_APPLIED'::text,
+    'MANAGE_BIBLE_PATCH'::text,
+    v_project.id,
+    v_project.status,
+    v_bible.id,
+    NULL::uuid,
+    NULL::integer,
+    'GENERATE_OUTLINE'::text,
+    COALESCE(v_outline_job_id, v_existing_outline_job_id),
+    v_patch.id,
+    CASE
+      WHEN COALESCE(v_outline_job_id, v_existing_outline_job_id) IS NULL THEN '扩写设定补丁已应用到正式设定集；当前没有创建新的大纲任务，请检查是否已有运行中的大纲流程。'
+      WHEN v_cancelled_job_count > 0 THEN format('扩写设定补丁已应用到正式设定集；已取消 %s 个旧待处理下游任务，并创建后续大纲重算任务。', v_cancelled_job_count)
+      ELSE '扩写设定补丁已应用到正式设定集；已创建后续大纲重算任务。'
+    END::text;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -2251,6 +2740,8 @@ DECLARE
   v_status TEXT := NULLIF(upper(COALESCE(p_status, '')), '');
   v_actor TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
   v_deleted_fact_count INTEGER := 0;
+  v_deleted_facts JSONB := '[]'::jsonb;
+  v_before_fact JSONB := '{}'::jsonb;
 BEGIN
   IF v_action IN ('ADD', '新增', '新增事实') THEN
     v_action := 'CREATE';
@@ -2307,11 +2798,34 @@ BEGIN
   END IF;
 
   IF v_action = 'CLEAR_INACTIVE' THEN
-    DELETE FROM novel_continuity_facts f
-    WHERE f.project_id = p_project_id
-      AND f.status = 'INACTIVE';
+    WITH deleted AS (
+      DELETE FROM novel_continuity_facts f
+      WHERE f.project_id = p_project_id
+        AND f.status = 'INACTIVE'
+      RETURNING *
+    )
+    SELECT
+      COUNT(*)::integer,
+      COALESCE(jsonb_agg(to_jsonb(deleted) ORDER BY deleted.created_at DESC), '[]'::jsonb)
+    INTO v_deleted_fact_count, v_deleted_facts
+    FROM deleted;
 
-    GET DIAGNOSTICS v_deleted_fact_count = ROW_COUNT;
+    INSERT INTO novel_project_events (
+      project_id,
+      event_type,
+      actor,
+      comment,
+      before_payload,
+      after_payload
+    )
+    VALUES (
+      p_project_id,
+      'FACTS_CLEARED',
+      v_actor,
+      COALESCE(NULLIF(p_comment, ''), format('清理 %s 条失效事实。', v_deleted_fact_count)),
+      jsonb_build_object('deleted_facts', v_deleted_facts),
+      jsonb_build_object('deleted_fact_count', v_deleted_fact_count)
+    );
 
     RETURN QUERY SELECT
       TRUE,
@@ -2362,6 +2876,21 @@ BEGIN
       COALESCE(v_status, 'ACTIVE')
     )
     RETURNING * INTO v_fact;
+
+    INSERT INTO novel_project_events (
+      project_id,
+      event_type,
+      actor,
+      comment,
+      after_payload
+    )
+    VALUES (
+      p_project_id,
+      'FACT_CREATED',
+      v_actor,
+      COALESCE(NULLIF(p_comment, ''), '新增人工事实。'),
+      to_jsonb(v_fact)
+    );
 
     RETURN QUERY SELECT
       TRUE,
@@ -2416,6 +2945,8 @@ BEGIN
       RETURN;
     END IF;
 
+    v_before_fact := to_jsonb(v_fact);
+
     UPDATE novel_continuity_facts
     SET
       fact_type = v_fact_type,
@@ -2427,6 +2958,23 @@ BEGIN
       status = COALESCE(v_status, status)
     WHERE id = v_fact.id
     RETURNING * INTO v_fact;
+
+    INSERT INTO novel_project_events (
+      project_id,
+      event_type,
+      actor,
+      comment,
+      before_payload,
+      after_payload
+    )
+    VALUES (
+      p_project_id,
+      'FACT_UPDATED',
+      v_actor,
+      COALESCE(NULLIF(p_comment, ''), '编辑人工事实。'),
+      v_before_fact,
+      to_jsonb(v_fact)
+    );
 
     RETURN QUERY SELECT
       TRUE,
@@ -2441,6 +2989,8 @@ BEGIN
     RETURN;
   END IF;
 
+  v_before_fact := to_jsonb(v_fact);
+
   UPDATE novel_continuity_facts
   SET
     status = CASE WHEN v_action = 'ACTIVATE' THEN 'ACTIVE' ELSE 'INACTIVE' END,
@@ -2448,6 +2998,23 @@ BEGIN
     confidence = GREATEST(confidence, 1.0)
   WHERE id = v_fact.id
   RETURNING * INTO v_fact;
+
+  INSERT INTO novel_project_events (
+    project_id,
+    event_type,
+    actor,
+    comment,
+    before_payload,
+    after_payload
+  )
+  VALUES (
+    p_project_id,
+    CASE WHEN v_action = 'ACTIVATE' THEN 'FACT_ACTIVATED' ELSE 'FACT_DEACTIVATED' END,
+    v_actor,
+    COALESCE(NULLIF(p_comment, ''), CASE WHEN v_action = 'ACTIVATE' THEN '激活事实。' ELSE '设为失效事实。' END),
+    v_before_fact,
+    to_jsonb(v_fact)
+  );
 
   RETURN QUERY SELECT
     TRUE,
@@ -4038,8 +4605,12 @@ BEGIN
     'main_character', b.main_character,
     'supporting_characters', b.supporting_characters,
     'villain_setting', b.villain_setting,
+    'organizations', b.organizations,
+    'locations', b.locations,
     'power_system', b.power_system,
     'relationship_map', b.relationship_map,
+    'plot_constraints', b.plot_constraints,
+    'expansion_notes', b.expansion_notes,
     'tone_rules', b.tone_rules,
     'forbidden_rules', b.forbidden_rules,
     'selling_points', b.selling_points
@@ -5863,6 +6434,61 @@ BEGIN
     NULL::integer,
     0::integer,
     '项目已从归档恢复；如需继续生成，请回到项目控制台点击继续写作。'::text;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION clear_novel_archived_projects(
+  p_comment TEXT DEFAULT NULL,
+  p_reviewer TEXT DEFAULT 'local_user'
+)
+RETURNS TABLE (
+  success BOOLEAN,
+  result_code TEXT,
+  action TEXT,
+  deleted_project_count INTEGER,
+  deleted_project_titles TEXT,
+  message TEXT
+) AS $$
+DECLARE
+  v_deleted_count INTEGER := 0;
+  v_deleted_titles TEXT := '';
+BEGIN
+  WITH archived AS (
+    SELECT p.id, p.title
+    FROM novel_projects p
+    WHERE p.status = 'ARCHIVED'
+    ORDER BY p.updated_at DESC, p.created_at DESC
+    FOR UPDATE
+  ), deleted AS (
+    DELETE FROM novel_projects p
+    USING archived a
+    WHERE p.id = a.id
+    RETURNING a.title
+  )
+  SELECT
+    COUNT(*)::integer,
+    COALESCE(string_agg(title, '、' ORDER BY title), '')
+  INTO v_deleted_count, v_deleted_titles
+  FROM deleted;
+
+  IF v_deleted_count = 0 THEN
+    RETURN QUERY SELECT
+      TRUE,
+      'ARCHIVED_PROJECTS_NONE'::text,
+      'CLEAR_ARCHIVED_PROJECTS'::text,
+      0::integer,
+      ''::text,
+      '当前没有已归档项目可清理。'::text;
+    RETURN;
+  END IF;
+
+  RETURN QUERY SELECT
+    TRUE,
+    'ARCHIVED_PROJECTS_CLEARED'::text,
+    'CLEAR_ARCHIVED_PROJECTS'::text,
+    v_deleted_count,
+    v_deleted_titles,
+    format('已清理 %s 个归档项目；相关设定、大纲、正文、队列和日志已随项目一并删除。', v_deleted_count)::text;
 END;
 $$ LANGUAGE plpgsql;
 

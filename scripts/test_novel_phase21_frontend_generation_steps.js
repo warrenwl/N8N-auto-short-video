@@ -718,6 +718,16 @@ assert(visibleText(resultHtml).includes('查看队列'), 'generation result shou
 assert(visibleText(resultHtml).includes('页面会自动跳到队列状态'), 'generation result should explain automatic queue redirect');
 assert(!/\b(GENERATE_BIBLE|GENERATE_OUTLINE|SUCCEEDED|PENDING)\b/.test(visibleText(resultHtml)), 'generation result should not expose internal enums in visible text');
 
+const biblePatchResultHtml = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
+  project_id: projectId,
+  job_type: 'GENERATE_BIBLE_PATCH',
+  status: 'RUNNING',
+})[0].json.response_html;
+const biblePatchResultText = visibleText(biblePatchResultHtml);
+assert(biblePatchResultText.includes('扩写设定补丁生成已启动'), 'generation result should render Bible patch background start in Chinese');
+assert(biblePatchResultText.includes('待确认补丁'), 'Bible patch result should explain the manual confirmation handoff');
+assert(!/\b(GENERATE_BIBLE_PATCH|SUCCEEDED|PENDING)\b/.test(biblePatchResultText), 'Bible patch result should not expose internal enums in visible text');
+
 const noClaimHtml = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
   project_id: projectId,
   job_type: 'GENERATE_BIBLE',
@@ -755,17 +765,25 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集').parameters.httpMethod, 'POST', 'Bible direct generation webhook must be POST');
 assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集').parameters.path, 'novel-generate-bible-now', 'Bible direct generation webhook path should match page form');
+assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集补丁').parameters.httpMethod, 'POST', 'Bible patch direct generation webhook must be POST');
+assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集补丁').parameters.path, 'novel-generate-bible-patch-now', 'Bible patch direct generation webhook path should match page form');
 assert.strictEqual(workflowNode(workflow13, 'Webhook - 前端立即生成大纲').parameters.httpMethod, 'POST', 'outline direct generation webhook must be POST');
 assert.strictEqual(workflowNode(workflow13, 'Webhook - 前端立即生成大纲').parameters.path, 'novel-generate-outline-now', 'outline direct generation webhook path should match page form');
 assert.strictEqual(workflowNode(workflow14, 'Webhook - 前端立即生成章节').parameters.httpMethod, 'POST', 'chapter direct generation webhook must be POST');
 assert.strictEqual(workflowNode(workflow14, 'Webhook - 前端立即生成章节').parameters.path, 'novel-generate-chapter-now', 'chapter direct generation webhook path should match page form');
 assert(workflowNode(workflow12, '条件判断 - 前端设定集任务已领取'), 'Bible direct generation should branch on claim result before calling GLM');
+assert(workflowNode(workflow12, '条件判断 - 前端设定集补丁任务已领取'), 'Bible patch direct generation should branch on claim result before calling GLM');
 assert(workflowNode(workflow13, '条件判断 - 前端大纲任务已领取'), 'outline direct generation should branch on claim result before calling GLM');
 assert(workflowNode(workflow14, '条件判断 - 前端章节任务已领取'), 'chapter direct generation should branch on claim result before calling GLM');
 assert.deepStrictEqual(
   connectionTargets(workflow12, '条件判断 - 前端设定集任务已领取', 0),
   ['代码 - 生成前端设定集生成结果页', '数据库 - 读取前端Bible生成上下文'],
   'Bible claim success should respond first and continue the model branch in the background'
+);
+assert.deepStrictEqual(
+  connectionTargets(workflow12, '条件判断 - 前端设定集补丁任务已领取', 0),
+  ['代码 - 生成前端设定集补丁结果页', '数据库 - 读取前端Bible补丁生成上下文'],
+  'Bible patch claim success should respond first and continue the model branch in the background'
 );
 assert.deepStrictEqual(
   connectionTargets(workflow13, '条件判断 - 前端大纲任务已领取', 0),
@@ -778,6 +796,7 @@ assert.deepStrictEqual(
   'chapter claim success should respond first and launch the segmented model branch asynchronously'
 );
 assert(!connectionTargets(workflow12, '数据库 - 标记前端Bible任务成功').includes('代码 - 生成前端设定集生成结果页'), 'Bible success marker should not be on the browser response path');
+assert(!connectionTargets(workflow12, '数据库 - 标记前端Bible补丁任务成功').includes('代码 - 生成前端设定集补丁结果页'), 'Bible patch success marker should not be on the browser response path');
 assert(!connectionTargets(workflow13, '数据库 - 标记前端大纲任务成功').includes('代码 - 生成前端大纲生成结果页'), 'outline success marker should not be on the browser response path');
 assert(!connectionTargets(workflow14, '数据库 - 标记章节生成任务成功').includes('代码 - 生成前端章节生成结果页'), 'chapter success marker should not be on the browser response path');
 

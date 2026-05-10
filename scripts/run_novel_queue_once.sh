@@ -13,7 +13,7 @@ usage() {
 Usage: scripts/run_novel_queue_once.sh [--dry-run] [--real-notify]
 
 Runs one novel queue pass with the real GLM endpoint from .env:
-  12 GENERATE_BIBLE
+  12 GENERATE_BIBLE / GENERATE_BIBLE_PATCH
   13 GENERATE_OUTLINE
   13B PLAN_CHAPTER_DIRECTOR
   14 GENERATE_CHAPTER

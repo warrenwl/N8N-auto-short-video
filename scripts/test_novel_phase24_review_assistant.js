@@ -105,7 +105,7 @@ assert(renderCode.includes('renderAssistantResult'), 'review detail should rende
 assert(renderCode.includes('create_block_revision'), 'assistant actions should be able to prefill block revision');
 assert(renderCode.includes('record_human_note'), 'assistant actions should be able to prefill human review note');
 assert(renderCode.includes('create_fact_draft'), 'assistant actions should expose fact draft copying');
-assert(renderCode.includes('bridgeLabels') && renderCode.includes('.slice(0, 3)'), 'assistant actions should stay limited to the three bridge actions');
+assert(renderCode.includes('bridgeLabels') && renderCode.includes('seenAssistantActionTypes'), 'assistant actions should render one button per bridge action type');
 
 const validRequest = runCodeNode('n8n/code/novel_validate_review_assistant_request.js', {
   body: {
@@ -163,15 +163,22 @@ const parsed = runCodeNode('n8n/code/novel_parse_review_assistant_json.js', {
           findings: [{type: 'consistency', severity: 'medium', description: '许青交出文件缺少动机'}],
           suggestions: [{title: '补动机', detail: '加一句许青的压力来源'}],
           source_refs: [{source_type: 'chapter', label: '选区', quote: '许青没有解释'}],
-          suggested_actions: [{action_type: 'create_block_revision', label: '转为局部修订', instruction: '补足许青动机'}],
-        }),
-      },
-    }],
+	          suggested_actions: [
+	            {action_type: 'create_block_revision', label: '转为局部修订', instruction: '补足许青动机'},
+	            {action_type: 'create_block_revision', label: '转为局部修订', instruction: '补一个雨夜压力源'},
+	            {action_type: 'record_human_note', label: '记录为人工意见', instruction: '人工复核许青动机'},
+	          ],
+	        }),
+	      },
+	    }],
   },
 })[0].json;
 assert.strictEqual(parsed.assistant_success, true);
 assert.strictEqual(parsed.parsed_payload.ok, true);
 assert.strictEqual(parsed.parsed_payload.suggested_actions[0].action_type, 'create_block_revision');
+assert.strictEqual(parsed.parsed_payload.suggested_actions.length, 2);
+assert(parsed.parsed_payload.suggested_actions[0].instruction.includes('补足许青动机'));
+assert(parsed.parsed_payload.suggested_actions[0].instruction.includes('补一个雨夜压力源'));
 
 const invalid = runCodeNode('n8n/code/novel_parse_review_assistant_json.js', {
   thread_id: '22222222-2222-2222-2222-222222222222',

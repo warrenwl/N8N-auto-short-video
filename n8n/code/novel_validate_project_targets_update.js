@@ -28,6 +28,28 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 const projectId = text(body.project_id || body.id);
 const reviewer = text(body.reviewer || 'local_user') || 'local_user';
 const comment = text(body.comment || body.note);
+const expansionRequest = text(body.expansion_request || body.expansion_plan || body.plot_expansion_request);
+const expansionConstraints = text(body.expansion_constraints || body.keep_constraints);
+
+function normalizeExpansionScope(value) {
+  const raw = text(value || 'append_only');
+  const mapped = {
+    append_only: 'append_only',
+    append: 'append_only',
+    only_append: 'append_only',
+    '只追加新章节': 'append_only',
+    rewrite_unwritten: 'rewrite_unwritten',
+    unwritten: 'rewrite_unwritten',
+    '重排未写章节': 'rewrite_unwritten',
+    regenerate_outline: 'regenerate_outline',
+    full_outline: 'regenerate_outline',
+    '高风险重排全部大纲': 'regenerate_outline',
+  }[raw];
+  if (!mapped) {
+    throw new Error('扩写范围无效。');
+  }
+  return mapped;
+}
 
 if (!uuidPattern.test(projectId)) {
   throw new Error(`无效 project_id：${projectId || '(empty)'}`);
@@ -38,6 +60,9 @@ return [{
     project_id: projectId,
     target_total_chapters: positiveInt(body.target_total_chapters, '目标章节数'),
     target_words_per_chapter: positiveInt(body.target_words_per_chapter || 2000, '每章目标字数'),
+    expansion_request: expansionRequest,
+    expansion_scope: normalizeExpansionScope(body.expansion_scope),
+    expansion_constraints: expansionConstraints,
     comment,
     reviewer,
     action: 'UPDATE_PROJECT_TARGET',

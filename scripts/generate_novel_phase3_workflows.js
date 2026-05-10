@@ -398,6 +398,10 @@ WITH input AS (
     'villain_setting', b.villain_setting,
     'power_system', b.power_system,
     'relationship_map', b.relationship_map,
+    'organizations', b.organizations,
+    'locations', b.locations,
+    'plot_constraints', b.plot_constraints,
+    'expansion_notes', b.expansion_notes,
     'tone_rules', b.tone_rules,
     'forbidden_rules', b.forbidden_rules,
     'selling_points', b.selling_points,
@@ -543,6 +547,34 @@ WITH input AS (
       f.created_at DESC
     LIMIT 120
   ) f
+), bible_patches AS (
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'id', bp.id,
+    'job_id', bp.job_id,
+    'ai_run_id', bp.ai_run_id,
+    'source', bp.source,
+    'expansion_request', bp.expansion_request,
+    'expansion_scope', bp.expansion_scope,
+    'expansion_constraints', bp.expansion_constraints,
+    'patch_payload', bp.patch_payload,
+    'risk_notes', bp.risk_notes,
+    'status', bp.status,
+    'reviewer', bp.reviewer,
+    'comment', bp.comment,
+    'applied_at', bp.applied_at,
+    'created_at', bp.created_at,
+    'updated_at', bp.updated_at
+  ) ORDER BY
+    CASE bp.status WHEN 'PENDING' THEN 0 WHEN 'APPROVED' THEN 1 WHEN 'FAILED' THEN 2 ELSE 3 END,
+    bp.created_at DESC
+  ), '[]'::jsonb) AS bible_patches
+  FROM (
+    SELECT *
+    FROM novel_bible_patches bp
+    WHERE bp.project_id = (SELECT project_id FROM input)
+    ORDER BY created_at DESC
+    LIMIT 20
+  ) bp
 ), plot_threads AS (
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
     'id', t.id,
@@ -651,6 +683,9 @@ SELECT
   p.premise,
   p.target_total_chapters,
   p.target_words_per_chapter,
+  p.expansion_request,
+  p.expansion_scope,
+  p.expansion_constraints,
   p.current_chapter_no,
   p.status,
   p.error,
@@ -662,11 +697,12 @@ SELECT
   director_cards.director_cards,
   chapters.chapters,
   facts.facts,
+  bible_patches.bible_patches,
   plot_threads.plot_threads,
   ai_runs.ai_runs,
   jobs.jobs,
   project_events.project_events
-FROM project p, bible, outlines, director_cards, chapters, facts, plot_threads, ai_runs, jobs, project_events
+FROM project p, bible, outlines, director_cards, chapters, facts, bible_patches, plot_threads, ai_runs, jobs, project_events
 UNION ALL
 SELECT
   true AS is_empty,
@@ -678,6 +714,9 @@ SELECT
   NULL::text AS premise,
   NULL::integer AS target_total_chapters,
   NULL::integer AS target_words_per_chapter,
+  NULL::text AS expansion_request,
+  'append_only'::text AS expansion_scope,
+  NULL::text AS expansion_constraints,
   NULL::integer AS current_chapter_no,
   NULL::text AS status,
   NULL::text AS error,
@@ -689,11 +728,131 @@ SELECT
   '[]'::jsonb AS director_cards,
   '[]'::jsonb AS chapters,
   '[]'::jsonb AS facts,
+  '[]'::jsonb AS bible_patches,
   '[]'::jsonb AS plot_threads,
   '[]'::jsonb AS ai_runs,
   '[]'::jsonb AS jobs,
   '[]'::jsonb AS project_events
 WHERE NOT EXISTS (SELECT 1 FROM project);`;
+
+const projectExpansionAssistContextQuery = `-- Read project context for expansion AI assist.
+
+WITH input AS (
+  SELECT
+    NULLIF($1, '')::uuid AS project_id,
+    NULLIF($2, '') AS user_expansion_request,
+    COALESCE(NULLIF($3, ''), 'append_only') AS expansion_scope,
+    NULLIF($4, '') AS expansion_constraints,
+    CASE WHEN NULLIF($5::text, '') ~ '^[0-9]+$' THEN NULLIF($5::text, '')::integer ELSE NULL END AS target_total_chapters,
+    CASE WHEN NULLIF($6::text, '') ~ '^[0-9]+$' THEN NULLIF($6::text, '')::integer ELSE NULL END AS target_words_per_chapter,
+    NULLIF($7, '') AS assist_nonce,
+    NULLIF($8, '') AS requested_at
+), project AS (
+  SELECT p.*
+  FROM novel_projects p
+  JOIN input i ON i.project_id = p.id
+)
+SELECT
+  COALESCE(p.id, i.project_id) AS project_id,
+  COALESCE(p.title, '') AS title,
+  COALESCE(p.genre, '') AS genre,
+  COALESCE(p.audience, '') AS audience,
+  COALESCE(p.style, '') AS style,
+  COALESCE(p.premise, '') AS premise,
+  GREATEST(1, COALESCE(i.target_total_chapters, p.target_total_chapters, 20)) AS target_total_chapters,
+  GREATEST(300, COALESCE(i.target_words_per_chapter, p.target_words_per_chapter, 2000)) AS target_words_per_chapter,
+  COALESCE(i.user_expansion_request, p.expansion_request, '') AS expansion_request,
+  COALESCE(i.expansion_scope, p.expansion_scope, 'append_only') AS expansion_scope,
+  COALESCE(i.expansion_constraints, p.expansion_constraints, '已批准正文不改；已激活事实不破坏；新增剧情必须承接现有大纲和人物动机。') AS expansion_constraints,
+  COALESCE(i.assist_nonce, '') AS assist_nonce,
+  COALESCE(i.requested_at, '') AS requested_at,
+  CASE WHEN p.id IS NULL THEN false ELSE true END AS project_found,
+  bible.novel_bible,
+  outlines.existing_outlines,
+  chapters.approved_chapters,
+  facts.continuity_facts
+FROM input i
+LEFT JOIN project p ON true
+LEFT JOIN LATERAL (
+  SELECT COALESCE((
+    SELECT jsonb_build_object(
+      'world_setting', b.world_setting,
+      'story_core', b.story_core,
+      'main_character', b.main_character,
+      'supporting_characters', b.supporting_characters,
+      'villain_setting', b.villain_setting,
+      'power_system', b.power_system,
+      'relationship_map', b.relationship_map,
+      'organizations', b.organizations,
+      'locations', b.locations,
+      'plot_constraints', b.plot_constraints,
+      'expansion_notes', b.expansion_notes,
+      'tone_rules', b.tone_rules,
+      'forbidden_rules', b.forbidden_rules,
+      'selling_points', b.selling_points
+    )
+    FROM novel_bibles b
+    WHERE b.project_id = COALESCE(p.id, i.project_id)
+    ORDER BY b.updated_at DESC
+    LIMIT 1
+  ), '{}'::jsonb) AS novel_bible
+) bible ON true
+LEFT JOIN LATERAL (
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'chapter_no', picked.chapter_no,
+    'volume_no', picked.volume_no,
+    'title', picked.title,
+    'summary', picked.summary,
+    'chapter_goal', picked.chapter_goal,
+    'conflict_point', picked.conflict_point,
+    'emotional_point', picked.emotional_point,
+    'hook', picked.hook,
+    'status', picked.status
+  ) ORDER BY picked.chapter_no), '[]'::jsonb) AS existing_outlines
+  FROM (
+    SELECT *
+    FROM novel_chapter_outlines o
+    WHERE o.project_id = COALESCE(p.id, i.project_id)
+    ORDER BY o.chapter_no
+    LIMIT 120
+  ) picked
+) outlines ON true
+LEFT JOIN LATERAL (
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'chapter_no', picked.chapter_no,
+    'title', picked.title,
+    'summary', picked.summary,
+    'word_count', picked.word_count,
+    'updated_at', picked.updated_at
+  ) ORDER BY picked.chapter_no), '[]'::jsonb) AS approved_chapters
+  FROM (
+    SELECT c.chapter_no, c.title, c.summary, c.word_count, c.updated_at
+    FROM novel_chapters c
+    WHERE c.project_id = COALESCE(p.id, i.project_id)
+      AND c.is_current = TRUE
+      AND c.status IN ('APPROVED', 'PUBLISHED')
+    ORDER BY c.chapter_no DESC
+    LIMIT 30
+  ) picked
+) chapters ON true
+LEFT JOIN LATERAL (
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+    'chapter_no', picked.chapter_no,
+    'fact_type', picked.fact_type,
+    'fact_key', picked.fact_key,
+    'fact_value', picked.fact_value,
+    'confidence', picked.confidence,
+    'source', picked.source
+  ) ORDER BY picked.chapter_no NULLS LAST, picked.created_at DESC), '[]'::jsonb) AS continuity_facts
+  FROM (
+    SELECT *
+    FROM novel_continuity_facts f
+    WHERE f.project_id = COALESCE(p.id, i.project_id)
+      AND f.status = 'ACTIVE'
+    ORDER BY f.created_at DESC
+    LIMIT 120
+  ) picked
+) facts ON true;`;
 
 const queueStatusQuery = `-- Read-only novel queue status query.
 
@@ -1148,7 +1307,11 @@ FROM update_novel_bible_manual(
   NULLIF($10, ''),
   COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
   NULLIF($12, ''),
-  COALESCE(NULLIF($13, ''), 'local_user')
+  COALESCE(NULLIF($13, ''), 'local_user'),
+  COALESCE(NULLIF($14, '')::jsonb, '[]'::jsonb),
+  COALESCE(NULLIF($15, '')::jsonb, '[]'::jsonb),
+  COALESCE(NULLIF($16, '')::jsonb, '[]'::jsonb),
+  NULLIF($17, '')
 );`;
 
 const updateOutlineManualQuery = `-- Manually update a chapter outline.
@@ -1174,7 +1337,10 @@ FROM update_novel_project_targets(
   $2::integer,
   $3::integer,
   NULLIF($4, ''),
-  COALESCE(NULLIF($5, ''), 'local_user')
+  COALESCE(NULLIF($5, ''), 'local_user'),
+  NULLIF($6, ''),
+  COALESCE(NULLIF($7, ''), 'append_only'),
+  NULLIF($8, '')
 );`;
 
 const toggleProjectPauseQuery = `-- Pause or resume a novel project.
@@ -1230,6 +1396,13 @@ FROM set_novel_project_archive_state(
   COALESCE(NULLIF($5, ''), 'local_user')
 );`;
 
+const clearArchivedProjectsQuery = `-- Permanently clear archived novel projects.
+SELECT *
+FROM clear_novel_archived_projects(
+  NULLIF($1, ''),
+  COALESCE(NULLIF($2, ''), 'local_user')
+);`;
+
 const manageProjectFactQuery = `-- Create or update one continuity fact from the project console.
 SELECT *
 FROM manage_novel_project_fact(
@@ -1277,6 +1450,7 @@ WHERE j.id = claimed.id
 RETURNING j.*;`;
 
 const claimOutlineQuery = claimBibleQuery.replace(/GENERATE_BIBLE/g, 'GENERATE_OUTLINE');
+const claimBiblePatchQuery = claimBibleQuery.replace(/GENERATE_BIBLE/g, 'GENERATE_BIBLE_PATCH');
 
 const claimBibleForProjectQuery = `-- Claim one pending GENERATE_BIBLE job for a specific project and always return browser-friendly state.
 WITH requested AS (
@@ -1336,6 +1510,7 @@ SELECT
 WHERE NOT EXISTS (SELECT 1 FROM updated);`;
 
 const claimOutlineForProjectQuery = claimBibleForProjectQuery.replace(/GENERATE_BIBLE/g, 'GENERATE_OUTLINE');
+const claimBiblePatchForProjectQuery = claimBibleForProjectQuery.replace(/GENERATE_BIBLE/g, 'GENERATE_BIBLE_PATCH');
 
 const readProjectForBibleQuery = `-- Read project data for Bible generation.
 WITH job AS (
@@ -1367,13 +1542,121 @@ FROM novel_projects p
 LEFT JOIN job ON job.project_id = p.id
 WHERE p.id = $2::uuid;`;
 
+const readProjectForBiblePatchQuery = `-- Read project, Bible, outline, approved text, and facts for expansion Bible patch generation.
+WITH job AS (
+  SELECT *
+  FROM novel_generation_jobs
+  WHERE id = $1::uuid
+)
+SELECT
+  p.id,
+  p.id AS project_id,
+  p.title,
+  p.genre,
+  p.audience,
+  p.style,
+  p.premise,
+  p.target_total_chapters,
+  p.target_words_per_chapter,
+  p.expansion_request,
+  p.expansion_scope,
+  p.expansion_constraints,
+  p.current_chapter_no,
+  p.status,
+  $1::uuid AS job_id,
+  COALESCE(job.payload->>'trigger_source', 'queue') AS trigger_source,
+  job.payload->>'requested_by' AS requested_by,
+  job.payload->>'comment' AS bible_patch_request_comment,
+  'GENERATE_BIBLE_PATCH'::text AS run_type,
+  jsonb_build_object(
+    'world_setting', b.world_setting,
+    'story_core', b.story_core,
+    'main_character', b.main_character,
+    'supporting_characters', b.supporting_characters,
+    'villain_setting', b.villain_setting,
+    'organizations', b.organizations,
+    'locations', b.locations,
+    'power_system', b.power_system,
+    'relationship_map', b.relationship_map,
+    'plot_constraints', b.plot_constraints,
+    'expansion_notes', b.expansion_notes,
+    'tone_rules', b.tone_rules,
+    'forbidden_rules', b.forbidden_rules,
+    'selling_points', b.selling_points
+  ) AS novel_bible,
+  COALESCE(existing.existing_outlines, '[]'::jsonb) AS existing_outlines,
+  COALESCE(approved.approved_chapters, '[]'::jsonb) AS approved_chapters,
+  COALESCE(facts.continuity_facts, '[]'::jsonb) AS continuity_facts
+FROM novel_projects p
+JOIN novel_bibles b ON b.project_id = p.id
+LEFT JOIN job ON job.project_id = p.id
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(jsonb_build_object(
+    'chapter_no', o.chapter_no,
+    'title', o.title,
+    'summary', o.summary,
+    'chapter_goal', o.chapter_goal,
+    'conflict_point', o.conflict_point,
+    'hook', o.hook,
+    'status', o.status
+  ) ORDER BY o.chapter_no) AS existing_outlines
+  FROM novel_chapter_outlines o
+  WHERE o.project_id = p.id
+) existing ON true
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(jsonb_build_object(
+    'chapter_no', c.chapter_no,
+    'title', c.title,
+    'summary', c.summary,
+    'ending_excerpt', right(COALESCE(c.body, ''), 400)
+  ) ORDER BY c.chapter_no) AS approved_chapters
+  FROM novel_chapters c
+  WHERE c.project_id = p.id
+    AND c.is_current = TRUE
+    AND c.status IN ('APPROVED', 'PUBLISHED')
+) approved ON true
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(jsonb_build_object(
+    'fact_type', f.fact_type,
+    'fact_key', f.fact_key,
+    'fact_value', f.fact_value,
+    'chapter_no', f.chapter_no,
+    'source', f.source
+  ) ORDER BY f.chapter_no NULLS LAST, f.created_at DESC) AS continuity_facts
+  FROM novel_continuity_facts f
+  WHERE f.project_id = p.id
+    AND f.status = 'ACTIVE'
+) facts ON true
+WHERE p.id = $2::uuid;`;
+
 const readProjectForOutlineQuery = `-- Read project and Bible data for outline generation.
+WITH job AS (
+  SELECT *
+  FROM novel_generation_jobs
+  WHERE id = $1::uuid
+)
   SELECT
-    p.*,
+    p.id,
+    p.title,
+    p.genre,
+    p.audience,
+    p.style,
+    p.premise,
+    p.target_total_chapters,
+    p.target_words_per_chapter,
+    p.expansion_request,
+    p.expansion_scope,
+    p.expansion_constraints,
+    p.current_chapter_no,
+    p.status,
+    p.error,
+    p.created_at,
+    p.updated_at,
     p.id AS project_id,
     $1::uuid AS job_id,
-    COALESCE((SELECT j.payload->>'trigger_source' FROM novel_generation_jobs j WHERE j.id = $1::uuid), 'queue') AS trigger_source,
-    (SELECT j.payload->>'requested_by' FROM novel_generation_jobs j WHERE j.id = $1::uuid) AS requested_by,
+    COALESCE(job.payload->>'trigger_source', 'queue') AS trigger_source,
+    job.payload->>'requested_by' AS requested_by,
+    job.payload->>'comment' AS outline_request_comment,
     'GENERATE_OUTLINE'::text AS run_type,
   b.world_setting,
   b.story_core,
@@ -1382,11 +1665,45 @@ const readProjectForOutlineQuery = `-- Read project and Bible data for outline g
   b.villain_setting,
   b.power_system,
   b.relationship_map,
+  b.organizations,
+  b.locations,
+  b.plot_constraints,
+  b.expansion_notes,
   b.tone_rules,
   b.forbidden_rules,
-  b.selling_points
+  b.selling_points,
+  COALESCE(existing.existing_outlines, '[]'::jsonb) AS existing_outlines,
+  COALESCE(approved.approved_chapters, '[]'::jsonb) AS approved_chapters
 FROM novel_projects p
 JOIN novel_bibles b ON b.project_id = p.id
+LEFT JOIN job ON job.project_id = p.id
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(jsonb_build_object(
+    'chapter_no', o.chapter_no,
+    'volume_no', o.volume_no,
+    'title', o.title,
+    'summary', o.summary,
+    'chapter_goal', o.chapter_goal,
+    'conflict_point', o.conflict_point,
+    'emotional_point', o.emotional_point,
+    'hook', o.hook,
+    'status', o.status
+  ) ORDER BY o.chapter_no) AS existing_outlines
+  FROM novel_chapter_outlines o
+  WHERE o.project_id = p.id
+) existing ON true
+LEFT JOIN LATERAL (
+  SELECT jsonb_agg(jsonb_build_object(
+    'chapter_no', c.chapter_no,
+    'title', c.title,
+    'summary', c.summary,
+    'ending_excerpt', right(COALESCE(c.body, ''), 500)
+  ) ORDER BY c.chapter_no) AS approved_chapters
+  FROM novel_chapters c
+  WHERE c.project_id = p.id
+    AND c.is_current = TRUE
+    AND c.status IN ('APPROVED', 'PUBLISHED')
+) approved ON true
 WHERE p.id = $2::uuid;`;
 
 const recordAiRunQuery = `-- Record one AI run.
@@ -1444,6 +1761,10 @@ WITH bible AS (
     villain_setting,
     power_system,
     relationship_map,
+    organizations,
+    locations,
+    plot_constraints,
+    expansion_notes,
     tone_rules,
     forbidden_rules,
     selling_points,
@@ -1459,11 +1780,15 @@ WITH bible AS (
     COALESCE(NULLIF($6, '')::jsonb, '[]'::jsonb),
     $7,
     COALESCE(NULLIF($8, '')::jsonb, '[]'::jsonb),
-    $9,
-    $10,
+    COALESCE(NULLIF($9, '')::jsonb, '[]'::jsonb),
+    COALESCE(NULLIF($10, '')::jsonb, '[]'::jsonb),
     COALESCE(NULLIF($11, '')::jsonb, '[]'::jsonb),
-    $12,
-    COALESCE(NULLIF($13, '')::jsonb, '{}'::jsonb)
+    NULLIF($12, ''),
+    $13,
+    $14,
+    COALESCE(NULLIF($15, '')::jsonb, '[]'::jsonb),
+    $16,
+    COALESCE(NULLIF($17, '')::jsonb, '{}'::jsonb)
   )
   ON CONFLICT (project_id) DO UPDATE
   SET
@@ -1474,6 +1799,10 @@ WITH bible AS (
     villain_setting = EXCLUDED.villain_setting,
     power_system = EXCLUDED.power_system,
     relationship_map = EXCLUDED.relationship_map,
+    organizations = EXCLUDED.organizations,
+    locations = EXCLUDED.locations,
+    plot_constraints = EXCLUDED.plot_constraints,
+    expansion_notes = EXCLUDED.expansion_notes,
     tone_rules = EXCLUDED.tone_rules,
     forbidden_rules = EXCLUDED.forbidden_rules,
     selling_points = EXCLUDED.selling_points,
@@ -1497,14 +1826,112 @@ SELECT
   (SELECT id FROM job LIMIT 1) AS outline_job_id
 FROM bible;`;
 
+const saveBiblePatchQuery = `-- Save generated expansion Bible patch for human confirmation.
+WITH input AS (
+  SELECT
+    $1::uuid AS project_id,
+    $2::uuid AS job_id,
+    NULLIF($3, '')::uuid AS ai_run_id,
+    COALESCE(NULLIF($4, '')::jsonb, '{}'::jsonb) AS patch_payload,
+    NULLIF($5, '') AS generation_model
+), inserted AS (
+  INSERT INTO novel_bible_patches (
+    project_id,
+    job_id,
+    ai_run_id,
+    source,
+    expansion_request,
+    expansion_scope,
+    expansion_constraints,
+    patch_payload,
+    risk_notes,
+    status
+  )
+  SELECT
+    p.id,
+    input.job_id,
+    input.ai_run_id,
+    'AI',
+    p.expansion_request,
+    p.expansion_scope,
+    p.expansion_constraints,
+    input.patch_payload,
+    COALESCE(input.patch_payload->'risk_notes', '[]'::jsonb),
+    'PENDING'
+  FROM input
+  JOIN novel_projects p ON p.id = input.project_id
+  RETURNING *
+), event AS (
+  INSERT INTO novel_project_events (
+    project_id,
+    event_type,
+    actor,
+    comment,
+    after_payload
+  )
+  SELECT
+    inserted.project_id,
+    'BIBLE_PATCH_CREATED',
+    'ai',
+    '扩写设定补丁已生成，等待人工确认',
+    to_jsonb(inserted)
+  FROM inserted
+  RETURNING *
+)
+SELECT
+  inserted.*,
+  input.generation_model
+FROM inserted, input;`;
+
+const manageBiblePatchQuery = `-- Apply, reject, or regenerate an expansion Bible patch.
+SELECT *
+FROM manage_novel_bible_patch(
+  $1::uuid,
+  $2,
+  NULLIF($3, ''),
+  COALESCE(NULLIF($4, ''), 'local_user')
+);`;
+
 const upsertOutlineQuery = `-- Bulk upsert generated chapter outlines and enqueue chapter 1 director planning.
 WITH input AS (
   SELECT
     $1::uuid AS project_id,
-    COALESCE(NULLIF($2, '')::jsonb, '[]'::jsonb) AS chapters_json
+    COALESCE(NULLIF($2, '')::jsonb, '[]'::jsonb) AS chapters_json,
+    COALESCE((
+      SELECT expansion_scope
+      FROM novel_projects
+      WHERE id = $1::uuid
+    ), 'append_only') AS expansion_scope
 ), chapters AS (
-  SELECT value
+  SELECT
+    value,
+    (value->>'chapter_no')::integer AS chapter_no
   FROM input, jsonb_array_elements(input.chapters_json) AS value
+  WHERE NULLIF(value->>'chapter_no', '') IS NOT NULL
+), writable_chapters AS (
+  SELECT c.*
+  FROM chapters c
+  CROSS JOIN input i
+  WHERE (
+      i.expansion_scope <> 'append_only'
+      OR NOT EXISTS (
+        SELECT 1
+        FROM novel_chapter_outlines existing
+        WHERE existing.project_id = i.project_id
+          AND existing.chapter_no = c.chapter_no
+      )
+    )
+    AND (
+      i.expansion_scope = 'regenerate_outline'
+      OR NOT EXISTS (
+        SELECT 1
+        FROM novel_chapters approved
+        WHERE approved.project_id = i.project_id
+          AND approved.chapter_no = c.chapter_no
+          AND approved.is_current = TRUE
+          AND approved.status IN ('APPROVED', 'PUBLISHED')
+      )
+    )
 ), upserted AS (
   INSERT INTO novel_chapter_outlines (
     project_id,
@@ -1520,7 +1947,7 @@ WITH input AS (
   )
   SELECT
     (SELECT project_id FROM input),
-    (value->>'chapter_no')::integer,
+    chapter_no,
     COALESCE(NULLIF(value->>'volume_no', '')::integer, 1),
     NULLIF(value->>'title', ''),
     NULLIF(value->>'summary', ''),
@@ -1529,8 +1956,7 @@ WITH input AS (
     NULLIF(value->>'emotional_point', ''),
     NULLIF(value->>'hook', ''),
     'READY'
-  FROM chapters
-  WHERE NULLIF(value->>'chapter_no', '') IS NOT NULL
+  FROM writable_chapters
   ON CONFLICT (project_id, chapter_no) DO UPDATE
   SET
     volume_no = EXCLUDED.volume_no,
@@ -1551,8 +1977,12 @@ WITH input AS (
   RETURNING *
 ), job AS (
   INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, status)
-  SELECT (SELECT project_id FROM input), 'PLAN_CHAPTER_DIRECTOR', 1, 'PENDING'
-  WHERE EXISTS (SELECT 1 FROM upserted)
+  SELECT (SELECT project_id FROM input), 'PLAN_CHAPTER_DIRECTOR', next.first_chapter_no, 'PENDING'
+  FROM (
+    SELECT MIN(chapter_no) AS first_chapter_no
+    FROM upserted
+  ) next
+  WHERE next.first_chapter_no IS NOT NULL
   ON CONFLICT DO NOTHING
   RETURNING *
 )
@@ -1577,8 +2007,18 @@ const context = $('代码 - 构建Bible GLM请求').first().json;
 const response = $json;
 return [{json: {...context, llm_response: response}}];`;
 
+const mergeBiblePatchCode = `// n8n Code node: Merge Bible patch GLM Response Context
+const context = $('代码 - 构建Bible补丁 GLM请求').first().json;
+const response = $json;
+return [{json: {...context, llm_response: response}}];`;
+
 const mergeFrontBibleCode = `// n8n Code node: Merge front-end Bible GLM Response Context
 const context = $('代码 - 构建前端Bible GLM请求').first().json;
+const response = $json;
+return [{json: {...context, llm_response: response}}];`;
+
+const mergeFrontBiblePatchCode = `// n8n Code node: Merge front-end Bible patch GLM Response Context
+const context = $('代码 - 构建前端Bible补丁 GLM请求').first().json;
 const response = $json;
 return [{json: {...context, llm_response: response}}];`;
 
@@ -1597,6 +2037,11 @@ const context = $('代码 - 构建创建页 GLM助手请求').first().json;
 const response = $json;
 return [{json: {...context, llm_response: response}}];`;
 
+const mergeExpansionAssistCode = `// n8n Code node: Merge project expansion AI assist response context
+const context = $('代码 - 构建扩写剧情 AI创意请求').first().json;
+const response = $json;
+return [{json: {...context, llm_response: response}}];`;
+
 const centerWorkflow = workflowBase(
   'novelCenterV1Workflow11',
   '11_小说工作台_项目列表_创建与目录',
@@ -1611,6 +2056,18 @@ const centerWorkflow = workflowBase(
     codeNode('code-render-novel-project-list-11', '代码 - 生成小说项目列表页面', [-280, -120], code('n8n/code/novel_render_project_list_html.js')),
     respondNode('respond-novel-project-list-11', '响应Webhook - 返回小说项目列表', [-60, -120], '={{ $json.response_html }}', 200, 'text/html; charset=utf-8'),
 
+    webhookNode('webhook-novel-archived-projects-cleanup-11', 'Webhook - 小说已归档项目清理', [-720, -20], 'POST', 'novel-archived-projects-cleanup', 'novel-archived-projects-cleanup-11'),
+    codeNode('code-validate-archived-projects-cleanup-11', '代码 - 校验已归档项目清理', [-500, -20], code('n8n/code/novel_validate_archived_projects_cleanup.js')),
+    postgresNode(
+      'postgres-clear-archived-projects-11',
+      '数据库 - 清理已归档项目',
+      [-280, -20],
+      clearArchivedProjectsQuery,
+      '={{ [ $json.comment, $json.reviewer ] }}'
+    ),
+    codeNode('code-render-archived-projects-cleanup-result-11', '代码 - 生成已归档项目清理结果页', [-60, -20], code('n8n/code/novel_render_project_action_result.js')),
+    respondNode('respond-archived-projects-cleanup-11', '响应Webhook - 返回已归档项目清理结果', [160, -20], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
+
     webhookNode('webhook-novel-project-new-11', 'Webhook - 小说创建页面', [-720, 80], 'GET', 'novel-project-new', 'novel-project-new-11'),
     codeNode('code-render-novel-project-new-11', '代码 - 生成小说创建页面', [-500, 80], code('n8n/code/novel_render_project_create_html.js')),
     respondNode('respond-novel-project-new-11', '响应Webhook - 返回小说创建页面', [-280, 80], '={{ $json.response_html }}', 200, 'text/html; charset=utf-8'),
@@ -1623,6 +2080,22 @@ const centerWorkflow = workflowBase(
     codeNode('code-parse-project-ai-assist-11', '代码 - 解析创建页GLM助手响应', [380, 130], code('n8n/code/novel_parse_project_ai_assist_glm_response.js'), {continueErrorOutput: true}),
     codeNode('code-render-project-ai-assist-error-11', '代码 - 生成创建页GLM助手错误响应', [380, 220], code('n8n/code/novel_render_project_ai_assist_error_json.js')),
     respondNode('respond-project-ai-assist-11', '响应Webhook - 返回创建页GLM助手结果', [600, 170], '={{ $json.response_json }}', '={{ $json.response_status_code || 200 }}', 'application/json; charset=utf-8'),
+
+    webhookNode('webhook-novel-project-expansion-ai-assist-11', 'Webhook - 项目扩写剧情AI创意', [-720, 380], 'POST', 'novel-project-expansion-ai-assist', 'novel-project-expansion-ai-assist-11'),
+    codeNode('code-validate-project-expansion-ai-assist-11', '代码 - 校验扩写剧情AI创意', [-500, 380], code('n8n/code/novel_validate_project_expansion_ai_assist.js')),
+    postgresNode(
+      'postgres-read-project-expansion-ai-assist-11',
+      '数据库 - 读取扩写剧情AI创意上下文',
+      [-280, 380],
+      projectExpansionAssistContextQuery,
+      '={{ [ $json.project_id, $json.expansion_request, $json.expansion_scope, $json.expansion_constraints, $json.target_total_chapters, $json.target_words_per_chapter, $json.assist_nonce, $json.requested_at ] }}'
+    ),
+    codeNode('code-build-project-expansion-ai-assist-11', '代码 - 构建扩写剧情 AI创意请求', [-60, 380], code('n8n/code/novel_build_project_expansion_ai_assist_glm_request.js')),
+    httpGlmNode('http-glm-project-expansion-ai-assist-11', 'HTTP请求 - 调用GLM生成扩写剧情设计', [160, 380], {continueErrorOutput: true}),
+    codeNode('code-merge-project-expansion-ai-assist-11', '代码 - 合并扩写剧情AI响应上下文', [380, 340], mergeExpansionAssistCode),
+    codeNode('code-parse-project-expansion-ai-assist-11', '代码 - 解析扩写剧情AI响应', [600, 340], code('n8n/code/novel_parse_project_expansion_ai_assist_glm_response.js'), {continueErrorOutput: true}),
+    codeNode('code-render-project-expansion-ai-assist-error-11', '代码 - 生成扩写剧情AI错误响应', [600, 430], code('n8n/code/novel_render_project_expansion_ai_assist_error_json.js')),
+    respondNode('respond-project-expansion-ai-assist-11', '响应Webhook - 返回扩写剧情AI结果', [820, 380], '={{ $json.response_json }}', '={{ $json.response_status_code || 200 }}', 'application/json; charset=utf-8'),
 
     webhookNode('webhook-novel-project-detail-11', 'Webhook - 小说项目详情', [-720, 280], 'GET', 'novel-project-detail', 'novel-project-detail-11'),
     postgresNode(
@@ -1736,7 +2209,7 @@ const centerWorkflow = workflowBase(
       '数据库 - 保存小说设定集',
       [-280, 1780],
       updateBibleManualQuery,
-      '={{ [ $json.project_id, $json.world_setting, $json.story_core, $json.main_character_json, $json.supporting_characters_json, $json.villain_setting_json, $json.power_system, $json.relationship_map_json, $json.tone_rules, $json.forbidden_rules, $json.selling_points_json, $json.comment, $json.reviewer ] }}'
+      '={{ [ $json.project_id, $json.world_setting, $json.story_core, $json.main_character_json, $json.supporting_characters_json, $json.villain_setting_json, $json.power_system, $json.relationship_map_json, $json.tone_rules, $json.forbidden_rules, $json.selling_points_json, $json.comment, $json.reviewer, $json.organizations_json, $json.locations_json, $json.plot_constraints_json, $json.expansion_notes ] }}'
     ),
     codeNode('code-render-bible-update-result-11', '代码 - 生成小说设定集编辑结果页', [-60, 1780], code('n8n/code/novel_render_project_action_result.js')),
     respondNode('respond-bible-update-11', '响应Webhook - 返回设定集编辑结果', [160, 1780], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
@@ -1760,10 +2233,22 @@ const centerWorkflow = workflowBase(
       '数据库 - 保存小说项目目标',
       [-280, 2220],
       updateProjectTargetsQuery,
-      '={{ [ $json.project_id, $json.target_total_chapters, $json.target_words_per_chapter, $json.comment, $json.reviewer ] }}'
+      '={{ [ $json.project_id, $json.target_total_chapters, $json.target_words_per_chapter, $json.comment, $json.reviewer, $json.expansion_request, $json.expansion_scope, $json.expansion_constraints ] }}'
     ),
     codeNode('code-render-project-targets-update-result-11', '代码 - 生成小说项目目标修改结果页', [-60, 2220], code('n8n/code/novel_render_project_action_result.js')),
     respondNode('respond-project-targets-update-11', '响应Webhook - 返回项目目标修改结果', [160, 2220], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
+
+    webhookNode('webhook-novel-bible-patch-action-11', 'Webhook - 小说设定集补丁操作', [-720, 2380], 'POST', 'novel-bible-patch-action', 'novel-bible-patch-action-11'),
+    codeNode('code-validate-bible-patch-action-11', '代码 - 校验小说设定集补丁操作', [-500, 2380], code('n8n/code/novel_validate_bible_patch_action.js')),
+    postgresNode(
+      'postgres-manage-bible-patch-11',
+      '数据库 - 处理小说设定集补丁',
+      [-280, 2380],
+      manageBiblePatchQuery,
+      '={{ [ $json.patch_id, $json.patch_action, $json.comment, $json.reviewer ] }}'
+    ),
+    codeNode('code-render-bible-patch-action-result-11', '代码 - 生成小说设定集补丁操作结果页', [-60, 2380], code('n8n/code/novel_render_project_action_result.js')),
+    respondNode('respond-bible-patch-action-11', '响应Webhook - 返回设定集补丁操作结果', [160, 2380], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
 
     webhookNode('webhook-novel-project-status-toggle-11', 'Webhook - 小说项目暂停恢复', [-720, 2440], 'POST', 'novel-project-status-toggle', 'novel-project-status-toggle-11'),
     codeNode('code-validate-project-status-toggle-11', '代码 - 校验小说项目暂停恢复', [-500, 2440], code('n8n/code/novel_validate_project_status_toggle.js')),
@@ -1826,9 +2311,9 @@ const centerWorkflow = workflowBase(
     respondNode('respond-stale-chapter-cleanup-11', '响应Webhook - 返回过期历史章节清理结果', [160, 3320], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
 
     sticky('note-novel-center-11', '说明 - 小说工作台', [-720, -520], 'GET `/webhook/novel-center` 展示待办总览和需要处理的项目；创建表单已拆到独立页面。'),
-    sticky('note-novel-project-list-11', '说明 - 小说项目列表', [-720, -140], 'GET `/webhook/novel-project-list` 只读展示完整项目列表，并提供去审核、查看目录、看队列、看日报和查看概览入口。'),
+    sticky('note-novel-project-list-11', '说明 - 小说项目列表', [-720, -140], 'GET `/webhook/novel-project-list` 展示完整项目列表，并提供去审核、查看目录、看队列、看日报、查看概览和 POST 清理已归档项目入口。'),
     sticky('note-novel-project-new-11', '说明 - 小说创建页面', [-720, 80], 'GET `/webhook/novel-project-new` 只展示创建表单；真正创建仍提交到 POST `/webhook/novel-project-create`；标题/创意按钮会 POST `/webhook/novel-project-ai-assist` 即时调用 GLM 返回 JSON。'),
-    sticky('note-novel-project-detail-11', '说明 - 小说项目详情', [-720, 280], 'GET `/webhook/novel-project-detail?project_id=...&view=overview|bible|outline|chapters|facts|ops|export`；默认总览，二级视图再展示设定、目录、正文、事实、运行和导出。'),
+    sticky('note-novel-project-detail-11', '说明 - 小说项目详情', [-720, 280], 'GET `/webhook/novel-project-detail?project_id=...&view=overview|bible|outline|chapters|facts|ops|export`；默认总览，二级视图再展示设定、目录、正文、事实、运行和导出；项目目标里的 AI创意按钮会 POST `/webhook/novel-project-expansion-ai-assist` 生成后续剧情设计。'),
     sticky('note-novel-queue-status-11', '说明 - 小说队列状态', [-720, 480], 'GET `/webhook/novel-queue-status` 只读展示项目队列、最近任务和最近调用；带 project_id 时服务端统计和列表都按项目过滤。'),
     sticky('note-novel-daily-report-11', '说明 - 小说运行日报', [-720, 680], 'GET `/webhook/novel-daily-report` 只读展示今日任务、模型调用、失败摘要和调度策略。'),
     sticky('note-project-create-11', '说明 - 创建项目动作', [-720, 980], '创建项目只写入 `novel_projects(CREATED)` 并创建 `GENERATE_BIBLE(PENDING)`，不直接调用 GLM；创建页 AI 助手是独立即时 GLM webhook；浏览器提交后返回中文结果页和下一步入口。'),
@@ -1841,6 +2326,10 @@ const centerWorkflow = workflowBase(
     'Webhook - 小说项目列表': {main: [[{node: '数据库 - 查询小说项目列表', type: 'main', index: 0}]]},
     '数据库 - 查询小说项目列表': {main: [[{node: '代码 - 生成小说项目列表页面', type: 'main', index: 0}]]},
     '代码 - 生成小说项目列表页面': {main: [[{node: '响应Webhook - 返回小说项目列表', type: 'main', index: 0}]]},
+    'Webhook - 小说已归档项目清理': {main: [[{node: '代码 - 校验已归档项目清理', type: 'main', index: 0}]]},
+    '代码 - 校验已归档项目清理': {main: [[{node: '数据库 - 清理已归档项目', type: 'main', index: 0}]]},
+    '数据库 - 清理已归档项目': {main: [[{node: '代码 - 生成已归档项目清理结果页', type: 'main', index: 0}]]},
+    '代码 - 生成已归档项目清理结果页': {main: [[{node: '响应Webhook - 返回已归档项目清理结果', type: 'main', index: 0}]]},
     'Webhook - 小说创建页面': {main: [[{node: '代码 - 生成小说创建页面', type: 'main', index: 0}]]},
     '代码 - 生成小说创建页面': {main: [[{node: '响应Webhook - 返回小说创建页面', type: 'main', index: 0}]]},
     'Webhook - 小说创建页GLM助手': {main: [[{node: '代码 - 校验创建页GLM助手', type: 'main', index: 0}]]},
@@ -1856,6 +2345,20 @@ const centerWorkflow = workflowBase(
       [{node: '代码 - 生成创建页GLM助手错误响应', type: 'main', index: 0}],
     ]},
     '代码 - 生成创建页GLM助手错误响应': {main: [[{node: '响应Webhook - 返回创建页GLM助手结果', type: 'main', index: 0}]]},
+    'Webhook - 项目扩写剧情AI创意': {main: [[{node: '代码 - 校验扩写剧情AI创意', type: 'main', index: 0}]]},
+    '代码 - 校验扩写剧情AI创意': {main: [[{node: '数据库 - 读取扩写剧情AI创意上下文', type: 'main', index: 0}]]},
+    '数据库 - 读取扩写剧情AI创意上下文': {main: [[{node: '代码 - 构建扩写剧情 AI创意请求', type: 'main', index: 0}]]},
+    '代码 - 构建扩写剧情 AI创意请求': {main: [[{node: 'HTTP请求 - 调用GLM生成扩写剧情设计', type: 'main', index: 0}]]},
+    'HTTP请求 - 调用GLM生成扩写剧情设计': {main: [
+      [{node: '代码 - 合并扩写剧情AI响应上下文', type: 'main', index: 0}],
+      [{node: '代码 - 生成扩写剧情AI错误响应', type: 'main', index: 0}],
+    ]},
+    '代码 - 合并扩写剧情AI响应上下文': {main: [[{node: '代码 - 解析扩写剧情AI响应', type: 'main', index: 0}]]},
+    '代码 - 解析扩写剧情AI响应': {main: [
+      [{node: '响应Webhook - 返回扩写剧情AI结果', type: 'main', index: 0}],
+      [{node: '代码 - 生成扩写剧情AI错误响应', type: 'main', index: 0}],
+    ]},
+    '代码 - 生成扩写剧情AI错误响应': {main: [[{node: '响应Webhook - 返回扩写剧情AI结果', type: 'main', index: 0}]]},
     'Webhook - 小说项目详情': {main: [[{node: '数据库 - 查询小说项目详情', type: 'main', index: 0}]]},
     '数据库 - 查询小说项目详情': {main: [[{node: '代码 - 生成小说项目详情页面', type: 'main', index: 0}]]},
     '代码 - 生成小说项目详情页面': {main: [[{node: '响应Webhook - 返回小说项目详情', type: 'main', index: 0}]]},
@@ -1911,6 +2414,10 @@ const centerWorkflow = workflowBase(
     '代码 - 校验小说项目目标修改': {main: [[{node: '数据库 - 保存小说项目目标', type: 'main', index: 0}]]},
     '数据库 - 保存小说项目目标': {main: [[{node: '代码 - 生成小说项目目标修改结果页', type: 'main', index: 0}]]},
     '代码 - 生成小说项目目标修改结果页': {main: [[{node: '响应Webhook - 返回项目目标修改结果', type: 'main', index: 0}]]},
+    'Webhook - 小说设定集补丁操作': {main: [[{node: '代码 - 校验小说设定集补丁操作', type: 'main', index: 0}]]},
+    '代码 - 校验小说设定集补丁操作': {main: [[{node: '数据库 - 处理小说设定集补丁', type: 'main', index: 0}]]},
+    '数据库 - 处理小说设定集补丁': {main: [[{node: '代码 - 生成小说设定集补丁操作结果页', type: 'main', index: 0}]]},
+    '代码 - 生成小说设定集补丁操作结果页': {main: [[{node: '响应Webhook - 返回设定集补丁操作结果', type: 'main', index: 0}]]},
     'Webhook - 小说项目暂停恢复': {main: [[{node: '代码 - 校验小说项目暂停恢复', type: 'main', index: 0}]]},
     '代码 - 校验小说项目暂停恢复': {main: [[{node: '数据库 - 暂停或恢复小说项目', type: 'main', index: 0}]]},
     '数据库 - 暂停或恢复小说项目': {main: [[{node: '代码 - 生成小说项目暂停恢复结果页', type: 'main', index: 0}]]},
@@ -1963,7 +2470,7 @@ const bibleWorkflow = workflowBase(
       '数据库 - 写入Bible并创建大纲任务',
       [840, 0],
       upsertBibleQuery,
-      '={{ [ $("代码 - 解析Bible GLM响应").first().json.project_id, $("代码 - 解析Bible GLM响应").first().json.world_setting, $("代码 - 解析Bible GLM响应").first().json.story_core, $("代码 - 解析Bible GLM响应").first().json.main_character_json, $("代码 - 解析Bible GLM响应").first().json.supporting_characters_json, $("代码 - 解析Bible GLM响应").first().json.villain_setting_json, $("代码 - 解析Bible GLM响应").first().json.power_system, $("代码 - 解析Bible GLM响应").first().json.relationship_map_json, $("代码 - 解析Bible GLM响应").first().json.tone_rules, $("代码 - 解析Bible GLM响应").first().json.forbidden_rules, $("代码 - 解析Bible GLM响应").first().json.selling_points_json, $("代码 - 解析Bible GLM响应").first().json.llm_request_body.model, $("代码 - 解析Bible GLM响应").first().json.parsed_payload_json ] }}'
+      '={{ [ $("代码 - 解析Bible GLM响应").first().json.project_id, $("代码 - 解析Bible GLM响应").first().json.world_setting, $("代码 - 解析Bible GLM响应").first().json.story_core, $("代码 - 解析Bible GLM响应").first().json.main_character_json, $("代码 - 解析Bible GLM响应").first().json.supporting_characters_json, $("代码 - 解析Bible GLM响应").first().json.villain_setting_json, $("代码 - 解析Bible GLM响应").first().json.power_system, $("代码 - 解析Bible GLM响应").first().json.relationship_map_json, $("代码 - 解析Bible GLM响应").first().json.organizations_json, $("代码 - 解析Bible GLM响应").first().json.locations_json, $("代码 - 解析Bible GLM响应").first().json.plot_constraints_json, $("代码 - 解析Bible GLM响应").first().json.expansion_notes, $("代码 - 解析Bible GLM响应").first().json.tone_rules, $("代码 - 解析Bible GLM响应").first().json.forbidden_rules, $("代码 - 解析Bible GLM响应").first().json.selling_points_json, $("代码 - 解析Bible GLM响应").first().json.llm_request_body.model, $("代码 - 解析Bible GLM响应").first().json.parsed_payload_json ] }}'
     ),
     postgresNode(
       'postgres-mark-bible-success-12',
@@ -1971,6 +2478,40 @@ const bibleWorkflow = workflowBase(
       [1060, 0],
       markJobSucceededQuery,
       '={{ [ $("数据库 - 领取GENERATE_BIBLE任务").first().json.id ] }}'
+    ),
+    manualNode('manual-novel-bible-patch-12', '手动触发扩写设定补丁', [-920, 520]),
+    postgresNode('postgres-claim-bible-patch-12', '数据库 - 领取GENERATE_BIBLE_PATCH任务', [-700, 520], claimBiblePatchQuery),
+    postgresNode(
+      'postgres-read-project-bible-patch-12',
+      '数据库 - 读取Bible补丁生成上下文',
+      [-480, 520],
+      readProjectForBiblePatchQuery,
+      '={{ [ $json.id, $json.project_id ] }}'
+    ),
+    codeNode('code-build-bible-patch-request-12', '代码 - 构建Bible补丁 GLM请求', [-260, 520], code('n8n/code/novel_build_glm_request.js')),
+    httpGlmNode('http-glm-bible-patch-12', 'HTTP请求 - 调用GLM生成Bible补丁', [-40, 520]),
+    codeNode('code-merge-bible-patch-response-12', '代码 - 合并Bible补丁 GLM响应上下文', [180, 520], mergeBiblePatchCode),
+    codeNode('code-parse-bible-patch-response-12', '代码 - 解析Bible补丁 GLM响应', [400, 520], code('n8n/code/novel_parse_glm_json.js')),
+    postgresNode(
+      'postgres-record-bible-patch-ai-run-12',
+      '数据库 - 记录Bible补丁 AI调用',
+      [620, 520],
+      recordAiRunQuery,
+      '={{ [ $json.project_id, "", $json.job_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify({ ...$json.llm_request_body, trigger_source: $json.trigger_source, requested_by: $json.requested_by }), $json.llm_response_json, $json.parsed_payload_json, true, "", $json.ai_run_started_at, $json.ai_run_finished_at ] }}'
+    ),
+    postgresNode(
+      'postgres-save-bible-patch-12',
+      '数据库 - 保存Bible补丁待确认',
+      [840, 520],
+      saveBiblePatchQuery,
+      '={{ [ $("代码 - 解析Bible补丁 GLM响应").first().json.project_id, $("代码 - 解析Bible补丁 GLM响应").first().json.job_id, $("数据库 - 记录Bible补丁 AI调用").first().json.id, $("代码 - 解析Bible补丁 GLM响应").first().json.patch_payload_json, $("代码 - 解析Bible补丁 GLM响应").first().json.llm_request_body.model ] }}'
+    ),
+    postgresNode(
+      'postgres-mark-bible-patch-success-12',
+      '数据库 - 标记Bible补丁任务成功',
+      [1060, 520],
+      markJobSucceededQuery,
+      '={{ [ $("数据库 - 领取GENERATE_BIBLE_PATCH任务").first().json.id ] }}'
     ),
     webhookNode('webhook-front-generate-bible-12', 'Webhook - 前端立即生成设定集', [-920, 260], 'POST', 'novel-generate-bible-now', 'novel-generate-bible-now-12'),
     codeNode('code-validate-front-bible-12', '代码 - 校验前端生成设定集', [-700, 260], code('n8n/code/novel_validate_project_generation_step.js')),
@@ -2005,7 +2546,7 @@ const bibleWorkflow = workflowBase(
       '数据库 - 前端写入Bible并创建大纲任务',
       [1280, 180],
       upsertBibleQuery,
-      '={{ [ $("代码 - 解析前端Bible GLM响应").first().json.project_id, $("代码 - 解析前端Bible GLM响应").first().json.world_setting, $("代码 - 解析前端Bible GLM响应").first().json.story_core, $("代码 - 解析前端Bible GLM响应").first().json.main_character_json, $("代码 - 解析前端Bible GLM响应").first().json.supporting_characters_json, $("代码 - 解析前端Bible GLM响应").first().json.villain_setting_json, $("代码 - 解析前端Bible GLM响应").first().json.power_system, $("代码 - 解析前端Bible GLM响应").first().json.relationship_map_json, $("代码 - 解析前端Bible GLM响应").first().json.tone_rules, $("代码 - 解析前端Bible GLM响应").first().json.forbidden_rules, $("代码 - 解析前端Bible GLM响应").first().json.selling_points_json, $("代码 - 解析前端Bible GLM响应").first().json.llm_request_body.model, $("代码 - 解析前端Bible GLM响应").first().json.parsed_payload_json ] }}'
+      '={{ [ $("代码 - 解析前端Bible GLM响应").first().json.project_id, $("代码 - 解析前端Bible GLM响应").first().json.world_setting, $("代码 - 解析前端Bible GLM响应").first().json.story_core, $("代码 - 解析前端Bible GLM响应").first().json.main_character_json, $("代码 - 解析前端Bible GLM响应").first().json.supporting_characters_json, $("代码 - 解析前端Bible GLM响应").first().json.villain_setting_json, $("代码 - 解析前端Bible GLM响应").first().json.power_system, $("代码 - 解析前端Bible GLM响应").first().json.relationship_map_json, $("代码 - 解析前端Bible GLM响应").first().json.organizations_json, $("代码 - 解析前端Bible GLM响应").first().json.locations_json, $("代码 - 解析前端Bible GLM响应").first().json.plot_constraints_json, $("代码 - 解析前端Bible GLM响应").first().json.expansion_notes, $("代码 - 解析前端Bible GLM响应").first().json.tone_rules, $("代码 - 解析前端Bible GLM响应").first().json.forbidden_rules, $("代码 - 解析前端Bible GLM响应").first().json.selling_points_json, $("代码 - 解析前端Bible GLM响应").first().json.llm_request_body.model, $("代码 - 解析前端Bible GLM响应").first().json.parsed_payload_json ] }}'
     ),
     postgresNode(
       'postgres-mark-front-bible-success-12',
@@ -2016,7 +2557,51 @@ const bibleWorkflow = workflowBase(
     ),
     codeNode('code-render-front-bible-result-12', '代码 - 生成前端设定集生成结果页', [-40, 360], code('n8n/code/novel_render_generation_step_result.js')),
     respondNode('respond-front-bible-result-12', '响应Webhook - 返回设定集生成结果', [180, 360], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
-    sticky('note-bible-12', '说明 - Bible生成', [-920, -240], '领取 `GENERATE_BIBLE` 任务，调用 GLM，写入 `novel_ai_runs` 和 `novel_bibles`，并创建 `GENERATE_OUTLINE(PENDING)`；POST `/webhook/novel-generate-bible-now` 会先返回后台执行页，模型调用继续在工作流后台完成。'),
+    webhookNode('webhook-front-generate-bible-patch-12', 'Webhook - 前端立即生成设定集补丁', [-920, 780], 'POST', 'novel-generate-bible-patch-now', 'novel-generate-bible-patch-now-12'),
+    codeNode('code-validate-front-bible-patch-12', '代码 - 校验前端生成设定集补丁', [-700, 780], code('n8n/code/novel_validate_project_generation_step.js')),
+    postgresNode(
+      'postgres-claim-front-bible-patch-12',
+      '数据库 - 前端领取GENERATE_BIBLE_PATCH任务',
+      [-480, 780],
+      claimBiblePatchForProjectQuery,
+      '={{ [ $json.project_id ] }}'
+    ),
+    ifNode('if-front-bible-patch-claimed-12', '条件判断 - 前端设定集补丁任务已领取', [-260, 780], '={{ $json.claim_success }}', 'front-bible-patch-claimed'),
+    postgresNode(
+      'postgres-read-front-project-bible-patch-12',
+      '数据库 - 读取前端Bible补丁生成上下文',
+      [-40, 700],
+      readProjectForBiblePatchQuery,
+      '={{ [ $json.id, $json.project_id ] }}'
+    ),
+    codeNode('code-build-front-bible-patch-request-12', '代码 - 构建前端Bible补丁 GLM请求', [180, 700], code('n8n/code/novel_build_glm_request.js')),
+    httpGlmNode('http-glm-front-bible-patch-12', 'HTTP请求 - 前端调用GLM生成Bible补丁', [400, 700]),
+    codeNode('code-merge-front-bible-patch-response-12', '代码 - 合并前端Bible补丁 GLM响应上下文', [620, 700], mergeFrontBiblePatchCode),
+    codeNode('code-parse-front-bible-patch-response-12', '代码 - 解析前端Bible补丁 GLM响应', [840, 700], code('n8n/code/novel_parse_glm_json.js')),
+    postgresNode(
+      'postgres-record-front-bible-patch-ai-run-12',
+      '数据库 - 记录前端Bible补丁 AI调用',
+      [1060, 700],
+      recordAiRunQuery,
+      '={{ [ $json.project_id, "", $json.job_id, $json.run_type, $json.llm_request_body.model, $json.prompt_version, JSON.stringify({ ...$json.llm_request_body, trigger_source: $json.trigger_source, requested_by: $json.requested_by }), $json.llm_response_json, $json.parsed_payload_json, true, "", $json.ai_run_started_at, $json.ai_run_finished_at ] }}'
+    ),
+    postgresNode(
+      'postgres-save-front-bible-patch-12',
+      '数据库 - 前端保存Bible补丁待确认',
+      [1280, 700],
+      saveBiblePatchQuery,
+      '={{ [ $("代码 - 解析前端Bible补丁 GLM响应").first().json.project_id, $("代码 - 解析前端Bible补丁 GLM响应").first().json.job_id, $("数据库 - 记录前端Bible补丁 AI调用").first().json.id, $("代码 - 解析前端Bible补丁 GLM响应").first().json.patch_payload_json, $("代码 - 解析前端Bible补丁 GLM响应").first().json.llm_request_body.model ] }}'
+    ),
+    postgresNode(
+      'postgres-mark-front-bible-patch-success-12',
+      '数据库 - 标记前端Bible补丁任务成功',
+      [1500, 700],
+      markJobSucceededQuery,
+      '={{ [ $("数据库 - 前端领取GENERATE_BIBLE_PATCH任务").first().json.id ] }}'
+    ),
+    codeNode('code-render-front-bible-patch-result-12', '代码 - 生成前端设定集补丁结果页', [-40, 880], code('n8n/code/novel_render_generation_step_result.js')),
+    respondNode('respond-front-bible-patch-result-12', '响应Webhook - 返回设定集补丁结果', [180, 880], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
+    sticky('note-bible-12', '说明 - Bible生成', [-920, -240], '领取 `GENERATE_BIBLE` 任务会写入正式设定集并创建大纲任务；领取 `GENERATE_BIBLE_PATCH` 任务只生成待确认扩写补丁，人工应用后才合并进正式设定集。前端入口包括 `/webhook/novel-generate-bible-now` 和 `/webhook/novel-generate-bible-patch-now`。'),
   ],
   {
     '手动触发': {main: [[{node: '数据库 - 领取GENERATE_BIBLE任务', type: 'main', index: 0}]]},
@@ -2028,6 +2613,15 @@ const bibleWorkflow = workflowBase(
     '代码 - 解析Bible GLM响应': {main: [[{node: '数据库 - 记录Bible AI调用', type: 'main', index: 0}]]},
     '数据库 - 记录Bible AI调用': {main: [[{node: '数据库 - 写入Bible并创建大纲任务', type: 'main', index: 0}]]},
     '数据库 - 写入Bible并创建大纲任务': {main: [[{node: '数据库 - 标记Bible任务成功', type: 'main', index: 0}]]},
+    '手动触发扩写设定补丁': {main: [[{node: '数据库 - 领取GENERATE_BIBLE_PATCH任务', type: 'main', index: 0}]]},
+    '数据库 - 领取GENERATE_BIBLE_PATCH任务': {main: [[{node: '数据库 - 读取Bible补丁生成上下文', type: 'main', index: 0}]]},
+    '数据库 - 读取Bible补丁生成上下文': {main: [[{node: '代码 - 构建Bible补丁 GLM请求', type: 'main', index: 0}]]},
+    '代码 - 构建Bible补丁 GLM请求': {main: [[{node: 'HTTP请求 - 调用GLM生成Bible补丁', type: 'main', index: 0}]]},
+    'HTTP请求 - 调用GLM生成Bible补丁': {main: [[{node: '代码 - 合并Bible补丁 GLM响应上下文', type: 'main', index: 0}]]},
+    '代码 - 合并Bible补丁 GLM响应上下文': {main: [[{node: '代码 - 解析Bible补丁 GLM响应', type: 'main', index: 0}]]},
+    '代码 - 解析Bible补丁 GLM响应': {main: [[{node: '数据库 - 记录Bible补丁 AI调用', type: 'main', index: 0}]]},
+    '数据库 - 记录Bible补丁 AI调用': {main: [[{node: '数据库 - 保存Bible补丁待确认', type: 'main', index: 0}]]},
+    '数据库 - 保存Bible补丁待确认': {main: [[{node: '数据库 - 标记Bible补丁任务成功', type: 'main', index: 0}]]},
     'Webhook - 前端立即生成设定集': {main: [[{node: '代码 - 校验前端生成设定集', type: 'main', index: 0}]]},
     '代码 - 校验前端生成设定集': {main: [[{node: '数据库 - 前端领取GENERATE_BIBLE任务', type: 'main', index: 0}]]},
     '数据库 - 前端领取GENERATE_BIBLE任务': {main: [[{node: '条件判断 - 前端设定集任务已领取', type: 'main', index: 0}]]},
@@ -2040,6 +2634,18 @@ const bibleWorkflow = workflowBase(
     '数据库 - 记录前端Bible AI调用': {main: [[{node: '数据库 - 前端写入Bible并创建大纲任务', type: 'main', index: 0}]]},
     '数据库 - 前端写入Bible并创建大纲任务': {main: [[{node: '数据库 - 标记前端Bible任务成功', type: 'main', index: 0}]]},
     '代码 - 生成前端设定集生成结果页': {main: [[{node: '响应Webhook - 返回设定集生成结果', type: 'main', index: 0}]]},
+    'Webhook - 前端立即生成设定集补丁': {main: [[{node: '代码 - 校验前端生成设定集补丁', type: 'main', index: 0}]]},
+    '代码 - 校验前端生成设定集补丁': {main: [[{node: '数据库 - 前端领取GENERATE_BIBLE_PATCH任务', type: 'main', index: 0}]]},
+    '数据库 - 前端领取GENERATE_BIBLE_PATCH任务': {main: [[{node: '条件判断 - 前端设定集补丁任务已领取', type: 'main', index: 0}]]},
+    '条件判断 - 前端设定集补丁任务已领取': {main: [[{node: '代码 - 生成前端设定集补丁结果页', type: 'main', index: 0}, {node: '数据库 - 读取前端Bible补丁生成上下文', type: 'main', index: 0}], [{node: '代码 - 生成前端设定集补丁结果页', type: 'main', index: 0}]]},
+    '数据库 - 读取前端Bible补丁生成上下文': {main: [[{node: '代码 - 构建前端Bible补丁 GLM请求', type: 'main', index: 0}]]},
+    '代码 - 构建前端Bible补丁 GLM请求': {main: [[{node: 'HTTP请求 - 前端调用GLM生成Bible补丁', type: 'main', index: 0}]]},
+    'HTTP请求 - 前端调用GLM生成Bible补丁': {main: [[{node: '代码 - 合并前端Bible补丁 GLM响应上下文', type: 'main', index: 0}]]},
+    '代码 - 合并前端Bible补丁 GLM响应上下文': {main: [[{node: '代码 - 解析前端Bible补丁 GLM响应', type: 'main', index: 0}]]},
+    '代码 - 解析前端Bible补丁 GLM响应': {main: [[{node: '数据库 - 记录前端Bible补丁 AI调用', type: 'main', index: 0}]]},
+    '数据库 - 记录前端Bible补丁 AI调用': {main: [[{node: '数据库 - 前端保存Bible补丁待确认', type: 'main', index: 0}]]},
+    '数据库 - 前端保存Bible补丁待确认': {main: [[{node: '数据库 - 标记前端Bible补丁任务成功', type: 'main', index: 0}]]},
+    '代码 - 生成前端设定集补丁结果页': {main: [[{node: '响应Webhook - 返回设定集补丁结果', type: 'main', index: 0}]]},
   }
 );
 
@@ -2125,7 +2731,7 @@ const outlineWorkflow = workflowBase(
     ),
     codeNode('code-render-front-outline-result-13', '代码 - 生成前端大纲生成结果页', [-40, 360], code('n8n/code/novel_render_generation_step_result.js')),
     respondNode('respond-front-outline-result-13', '响应Webhook - 返回大纲生成结果', [180, 360], '={{ $json.response_html }}', '={{ $json.response_status_code || 200 }}', 'text/html; charset=utf-8'),
-    sticky('note-outline-13', '说明 - 大纲生成', [-920, -240], '领取 `GENERATE_OUTLINE` 任务，调用 GLM，批量写入 `novel_chapter_outlines(READY)`，并创建第 1 章 `PLAN_CHAPTER_DIRECTOR(PENDING)`；POST `/webhook/novel-generate-outline-now` 会先返回后台执行页，模型调用继续在工作流后台完成。'),
+    sticky('note-outline-13', '说明 - 大纲生成', [-920, -240], '领取 `GENERATE_OUTLINE` 任务，调用 GLM，按扩写范围写入 `novel_chapter_outlines(READY)`，并从本次实际写入的最小章节创建 `PLAN_CHAPTER_DIRECTOR(PENDING)`；POST `/webhook/novel-generate-outline-now` 会先返回后台执行页，模型调用继续在工作流后台完成。'),
   ],
   {
     '手动触发': {main: [[{node: '数据库 - 领取GENERATE_OUTLINE任务', type: 'main', index: 0}]]},

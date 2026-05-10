@@ -12,6 +12,7 @@ function escapeHtml(value) {
 
 const stepLabel = {
   GENERATE_BIBLE: '设定集',
+  GENERATE_BIBLE_PATCH: '扩写设定补丁',
   GENERATE_OUTLINE: '大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
   GENERATE_CHAPTER: '章节正文',
@@ -41,6 +42,7 @@ const projectId = row.project_id || row.id || '';
 const jobType = row.job_type || row.requested_step || '';
 const claimSuccess = row.claim_success !== false && row.claim_success !== 'false';
 const isBible = jobType === 'GENERATE_BIBLE';
+const isBiblePatch = jobType === 'GENERATE_BIBLE_PATCH';
 const isOutline = jobType === 'GENERATE_OUTLINE';
 const isDirector = jobType === 'PLAN_CHAPTER_DIRECTOR';
 const isChapter = jobType === 'GENERATE_CHAPTER';
@@ -54,11 +56,13 @@ const claimReasonLabel = {
   PROJECT_ARCHIVED: '项目已归档，当前不会领取生成任务。',
 };
 const title = claimSuccess
-  ? (isBible ? '设定集生成已启动' : (isOutline ? '大纲生成已启动' : (isDirector ? (isRejectedRetry ? `${chapterNo}继续重写已启动` : `${chapterNo}导演台已启动`) : (isChapter ? `${chapterNo}生成已启动` : '生成任务已启动'))))
+  ? (isBible ? '设定集生成已启动' : (isBiblePatch ? '扩写设定补丁生成已启动' : (isOutline ? '大纲生成已启动' : (isDirector ? (isRejectedRetry ? `${chapterNo}继续重写已启动` : `${chapterNo}导演台已启动`) : (isChapter ? `${chapterNo}生成已启动` : '生成任务已启动')))))
   : '未开始模型调用';
 const summary = claimSuccess
   ? (isBible
     ? '设定集任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；完成后可回项目控制台查看设定内容。'
+    : (isBiblePatch
+      ? '扩写设定补丁任务已领取，模型会根据扩写计划、当前设定集、已批准正文和事实库生成待确认补丁。完成后回项目控制台确认应用。'
     : (isOutline
       ? '大纲任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；完成后可回项目控制台查看目录。'
       : (isDirector
@@ -67,7 +71,7 @@ const summary = claimSuccess
           : `${chapterNo}导演台规划任务已领取，模型调用会继续在 n8n 后台执行。通过质量闸门后会自动排队正文生成；如需调整，项目页会显示导演台卡片。`)
         : (isChapter
         ? `${chapterNo}生成任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；生成候选稿后会进入智能审稿队列，审稿完成后再到审核中心处理。`
-        : '当前生成步骤已交给后台执行。'))))
+        : '当前生成步骤已交给后台执行。')))))
   : (claimReasonLabel[row.claim_reason] || claimReasonLabel.JOB_NOT_FOUND_OR_ALREADY_CLAIMED);
 const detailHref = projectId
   ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}`
