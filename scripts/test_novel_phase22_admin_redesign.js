@@ -285,10 +285,14 @@ for (const expected of [
   'data-fact-type-filter="character"',
   'data-fact-type-filter="item"',
   'data-fact-type-filter="rule"',
-  'data-fact-card data-fact-type="character"',
-  'data-fact-card data-fact-type="item"',
-  'data-fact-card data-fact-type="rule"',
+  'name="chapter_no" type="number" min="1" step="1"',
+  'data-fact-card data-fact-scope="current" data-fact-type="character"',
+  'data-fact-card data-fact-scope="current" data-fact-type="item"',
+  'data-fact-card data-fact-scope="history" data-fact-type="rule"',
   '当前类型暂无事实',
+  '失效事实历史',
+  'class="inline-form fact-clear-form"',
+  'aria-label="清理失效事实"',
   '清理失效事实</span><small>1 条可清理',
   'const navigateOrReload = (nextUrl) =>',
   'const sameDocument = currentUrl.origin === nextUrl.origin',
@@ -304,6 +308,8 @@ for (const expected of [
 ]) {
   assert(detailFactsHtml.includes(expected), `project facts view should expose type filtering: ${expected}`);
 }
+assert(!detailFactsHtml.includes('<details class="fact-danger-zone"'), 'inactive fact cleanup should be a direct button, not a details panel');
+assert(!detailFactsHtml.includes('输入项目名确认清理'), 'inactive fact cleanup should not render the old expanded confirmation field');
 
 const detailBibleHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html;
 const detailBibleText = visibleText(detailBibleHtml);
@@ -366,13 +372,27 @@ const detailDirectorHtml = runCodeNode('n8n/code/novel_render_project_detail_htm
         payoff_target_chapter: 5,
       }],
       abruptness_risks: [{risk: '债主突然退让', reason: '压迫感不足', fix: '先让围观者议论陆明旧债'}],
+      fact_source_audit: [{
+        claim: '旧城债务来自大纲',
+        source_type: 'Bible',
+        source_evidence: 'Bible villain_setting赵衡 conflict_with_mc: 争夺旧城控制权。',
+        verdict: 'supported',
+      }],
+      cross_chapter_transition: {
+        mode: 'natural_scene_cut',
+        allowed: true,
+        reason: '上一章结尾到本章开场只省略路程。',
+        opening_bridge: '第一段接上债主围堵后的旧街雨声。',
+        risk: '需要交代陆明为何回到旧店。',
+        needs_explicit_bridge: true,
+      },
       quality_gate: {pass: true, blocking_issues: []},
       segment_plan: [{segment_no: 1, goal: '开场压迫', conflict: '债主上门', information_release: '旧债金额', emotion_turn: '压抑转反击', ending_hook: '暗格露出'}],
     },
   }]),
 }])[0].json.response_html;
 const detailDirectorText = visibleText(detailDirectorHtml);
-for (const expected of ['伏笔操作', '旧城账本', '动作', '埋设', '避免提前揭露', '揭露前禁写', '第 1 段', '突兀风险', '原因：压迫感不足', '修正：先让围观者议论陆明旧债']) {
+for (const expected of ['伏笔操作', '旧城账本', '动作', '埋设', '避免提前揭露', '揭露前禁写', '第 1 段', '突兀风险', '原因：压迫感不足', '修正：先让围观者议论陆明旧债', '阻力障碍', '资金不足', '开章承接', '自然转场', '第一段接上债主围堵后的旧街雨声', '事实来源审计', '旧城债务来自大纲', '来源类型 设定集', '设定集 反派设定赵衡 与主角冲突', '依据充分', '质量闸门', '闸门状态', '通过']) {
   assert(detailDirectorText.includes(expected), `director view should localize planning card display: ${expected}`);
 }
 assert(!detailDirectorHtml.includes('<li>{&quot;'), 'director view should not render foreshadowing objects as raw JSON list items');
@@ -394,8 +414,11 @@ assert(detailOutlineHtml.includes('class="readonly-field"><span>卷号</span>'),
 assert(detailOutlineHtml.includes('<input type="hidden" name="volume_no"'), 'outline edit drawer should still submit the current volume number');
 assert(!detailOutlineHtml.includes('name="volume_no" type="number"'), 'outline edit drawer should not allow editing volume number');
 assert(detailDirectorHtml.includes('class="director-chapter-summary"'), 'director chapter cards should expose a collapsible summary header');
-assert((detailDirectorHtml.match(/class="director-panel director-drawer-card"/g) || []).length >= 6, 'director inner planning sections should render as drawer trigger cards');
+assert((detailDirectorHtml.match(/class="director-panel director-drawer-card"/g) || []).length >= 9, 'director inner planning sections should render as drawer trigger cards');
 assert(detailDirectorHtml.includes('data-open-dialog="director-panel-1-chain"'), 'director inner planning cards should open right-side drawers');
+assert(detailDirectorHtml.includes('data-open-dialog="director-panel-1-transition"'), 'director transition planning should open a right-side drawer');
+assert(detailDirectorHtml.includes('data-open-dialog="director-panel-1-source-audit"'), 'director fact-source audit should open a right-side drawer');
+assert(detailDirectorHtml.includes('data-open-dialog="director-panel-1-quality-gate"'), 'director quality gate should open a right-side drawer');
 assert(detailDirectorHtml.includes('class="side-dialog director-panel-dialog"'), 'director inner planning content should live in right-side drawer dialogs');
 assert(detailDirectorHtml.includes('class="director-panel-body"'), 'director drawer panels should wrap their body content');
 assert(!detailDirectorHtml.includes('<details class="director-panel"'), 'director inner planning sections should not render as inline collapsible details');

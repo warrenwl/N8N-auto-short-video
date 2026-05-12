@@ -1412,7 +1412,7 @@ FROM manage_novel_project_fact(
   $4,
   NULLIF($5, ''),
   NULLIF($6, ''),
-  NULLIF($7, '')::integer,
+  NULLIF($7::text, '')::integer,
   NULLIF($8, ''),
   NULLIF($9, ''),
   COALESCE(NULLIF($10, ''), 'local_user')

@@ -82,6 +82,12 @@ assert(reviewHtml.includes('block-revision-group'), 'block revision results shou
 assert(reviewHtml.includes('data-polish-block-instruction'), 'block revision form should offer assistant instruction polishing');
 assert(reviewHtml.includes('data-block-risk-assistant'), 'block risk warnings should bridge to assistant impact checks');
 assert(reviewHtml.includes('block-secondary-actions'), 'block revision cards should tuck secondary actions behind details');
+assert(
+  reviewHtml.includes('block-apply-main-actions') &&
+    reviewHtml.includes('>拒绝建议</button>') &&
+    !reviewHtml.includes('value="reject">放弃</button>'),
+  'suggested block revision cards should expose an explicit reject suggestion action instead of hiding a vague abandon button'
+);
 assert(reviewHtml.includes('mobile-workbench-switcher'), 'mobile detail page should expose assistant/revision workbench switcher');
 assert(reviewHtml.includes('data-block-card-paragraph') && reviewHtml.includes('blockCardParagraph'), 'block revision apply should restore around the affected paragraph');
 assert(reviewHtml.includes('</article>\n    ${blockRevisionPanel(row, id)}'), 'block revision workbench should live outside the review decision drawer');

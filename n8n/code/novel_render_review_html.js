@@ -396,6 +396,15 @@ function blockRevisionCard(revision, row) {
   const liveNote = isLive
     ? '<div class="block-live" data-block-live><strong>建议生成中</strong><span data-block-refresh-countdown>页面会自动刷新建议状态。</span></div>'
     : '';
+  const secondaryActions = isSuggested ? `
+            <button class="secondary" type="button" data-enable-block-edit>修改后应用</button>
+            <button class="secondary" type="submit" name="action" value="apply_edited" data-apply-edited hidden>确认应用修改</button>
+            <button class="secondary" type="button" data-reset-block-edit hidden>还原 AI 建议</button>
+            <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
+            <button class="warn-button" type="submit" name="action" value="request_rewrite">转为整章重写意见</button>
+          ` : status !== 'REJECTED' ? `
+            <button class="danger-secondary" type="submit" name="action" value="reject">拒绝建议</button>
+          ` : '';
   const form = (isSuggested || canRegenerate) ? `
     <form class="block-apply-form" method="POST" action="/webhook/novel-review-block-apply" data-block-revision-apply>
       <input type="hidden" name="revision_id" value="${revisionId}" />
@@ -408,27 +417,19 @@ function blockRevisionCard(revision, row) {
           <textarea name="replacement_text" rows="5" readonly data-block-replacement data-original-replacement="${escapeHtml(replacementText)}">${escapeHtml(replacementText)}</textarea>
         </label>
         <div class="block-step-label block-confirm-step"><span>4</span><strong>确认应用</strong></div>
-        <div class="block-apply-primary">
+        <div class="block-apply-primary block-apply-main-actions">
           <button type="submit" name="action" value="apply" data-apply-original>应用建议</button>
+          <button class="danger-secondary" type="submit" name="action" value="reject">拒绝建议</button>
         </div>` : `
         <div class="block-apply-primary">
           <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
         </div>`}
-      <details class="block-secondary-actions">
+      ${secondaryActions ? `<details class="block-secondary-actions">
         <summary>更多处理</summary>
         <div class="block-apply-row">
-          ${isSuggested ? `
-            <button class="secondary" type="button" data-enable-block-edit>修改后应用</button>
-            <button class="secondary" type="submit" name="action" value="apply_edited" data-apply-edited hidden>确认应用修改</button>
-            <button class="secondary" type="button" data-reset-block-edit hidden>还原 AI 建议</button>
-            <button class="secondary" type="submit" name="action" value="regenerate">重新生成</button>
-            <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
-            <button class="warn-button" type="submit" name="action" value="request_rewrite">转为整章重写意见</button>
-          ` : `
-            <button class="danger-secondary" type="submit" name="action" value="reject">放弃</button>
-          `}
+          ${secondaryActions}
         </div>
-      </details>
+      </details>` : ''}
     </form>` : '';
 
   return `
@@ -1428,6 +1429,7 @@ const html = `<!doctype html>
     .block-checklist span { display: block; color: var(--muted); }
     .block-apply-form { display: grid; gap: 8px; margin-top: 8px; }
     .block-apply-primary { display: grid; }
+    .block-apply-main-actions { grid-template-columns: minmax(0, 1fr) minmax(112px, auto); gap: 8px; }
     .block-apply-row { display: flex; flex-wrap: wrap; gap: 8px; }
     .block-apply-row button { min-height: 36px; padding: 9px 12px; }
     .block-secondary-actions { border-top: 1px dashed var(--line); padding-top: 8px; }
@@ -1561,6 +1563,7 @@ const html = `<!doctype html>
       .block-form-actions { grid-template-columns: 1fr; }
       .button-row { display: grid; grid-template-columns: 1fr; }
       .block-form-grid, .block-apply-row { grid-template-columns: 1fr; }
+      .block-apply-main-actions { grid-template-columns: 1fr; }
       .block-apply-row button { flex: 1 1 100%; }
       button { min-height: 44px; }
     }
@@ -1827,7 +1830,7 @@ const html = `<!doctype html>
         apply: '确认应用这条局部建议？系统会保存成新的待审候选稿，你可以继续局部修改，不会自动重新审稿。',
         apply_edited: '确认应用你修改后的局部文本？系统会保存成新的待审候选稿，你可以继续局部修改，不会自动重新审稿。',
         regenerate: '确认重新生成这条局部建议？当前建议会被新任务替代。',
-        reject: '确认放弃这条局部修订建议？',
+        reject: '确认拒绝这条局部修订建议？正文不会被修改。',
         request_rewrite: '确认把这条局部意见转为整章重写？原候选稿会退出审核列表。',
       };
 

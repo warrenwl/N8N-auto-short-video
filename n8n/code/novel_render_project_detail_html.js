@@ -214,6 +214,38 @@ const directorForeshadowActionLabel = {
   avoid_reveal: '避开揭露',
 };
 
+const directorTransitionModeLabel = {
+  direct_continuation: '直接承接',
+  natural_scene_cut: '自然转场',
+  pov_shift: '视角转换',
+  time_skip: '时间跳转',
+  summary_bridge: '概述过桥',
+};
+
+const directorAuditVerdictLabel = {
+  supported: '依据充分',
+  neutralized: '已中和',
+  unsupported: '依据不足',
+};
+
+const directorFactSourceTypeLabel = {
+  bible: '设定集',
+  outline: '大纲',
+  current_outline: '当前章大纲',
+  chapter_outline: '章节大纲',
+  previous_chapter_ending: '上一章结尾',
+  previous_chapter_summary: '前文摘要',
+  approved_chapter: '已通过正文',
+  chapter: '章节正文',
+  director: '导演台',
+  director_card: '导演台',
+  fact: '连续性事实',
+  continuity_fact: '连续性事实',
+  plot_thread: '伏笔账本',
+  review: '审稿报告',
+  history: '历史记录',
+};
+
 const sourceLabel = {
   ai: '模型',
   human: '人工',
@@ -276,6 +308,11 @@ function badge(value, map, fallback = '未知状态') {
         ? 'good'
         : 'muted';
   return `<span class="badge ${klass}">${escapeHtml(label(map, raw, fallback))}</span>`;
+}
+
+function toneBadge(text, tone = 'muted') {
+  const klass = ['good', 'warn', 'bad', 'muted'].includes(tone) ? tone : 'muted';
+  return `<span class="badge ${klass}">${escapeHtml(text || '未记录')}</span>`;
 }
 
 function renderSidebar(current) {
@@ -346,6 +383,17 @@ function jsonBlock(value) {
 }
 
 const bibleFieldLabel = {
+  story_core: '故事核心',
+  main_character: '主角设定',
+  supporting_characters: '配角设定',
+  villain_setting: '反派设定',
+  relationship_map: '人物关系',
+  organizations: '组织势力',
+  locations: '关键地点',
+  selling_points: '卖点',
+  world_setting: '世界观',
+  power_system: '能力体系',
+  forbidden_rules: '禁忌规则',
   name: '姓名',
   names: '姓名',
   alias: '别名',
@@ -1690,6 +1738,112 @@ function directorForeshadowingOpsHtml(values) {
   }).join('')}</ul>`;
 }
 
+function directorTransitionHtml(value) {
+  const transition = parseObject(value);
+  if (!Object.keys(transition).length) return '<p class="muted">未记录</p>';
+  return directorDl([
+    ['转场模式', label(directorTransitionModeLabel, transition.mode, transition.mode || '未记录')],
+    ['允许开章', transition.allowed],
+    ['需要显式过桥', transition.needs_explicit_bridge],
+    ['原因', transition.reason],
+    ['开章桥接', transition.opening_bridge],
+    ['风险', transition.risk],
+  ]);
+}
+
+function directorTransitionSummary(value) {
+  const transition = parseObject(value);
+  if (!Object.keys(transition).length) return '未记录';
+  const mode = label(directorTransitionModeLabel, transition.mode, transition.mode || '未记录');
+  const bridge = transition.needs_explicit_bridge === true || String(transition.needs_explicit_bridge).toLowerCase() === 'true'
+    ? '需过桥'
+    : '无需过桥';
+  return `${mode} / ${bridge}`;
+}
+
+function directorAuditTone(verdict) {
+  const raw = String(verdict || '').toLowerCase();
+  if (raw === 'supported') return 'good';
+  if (raw === 'neutralized') return 'warn';
+  if (raw === 'unsupported') return 'bad';
+  return 'muted';
+}
+
+function directorFactSourceTypeText(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/[\u4e00-\u9fa5]/.test(raw)) return raw;
+  return directorFactSourceTypeLabel[raw.toLowerCase()] || raw;
+}
+
+function directorEvidenceText(value) {
+  let text = String(value || '').trim();
+  if (!text) return '';
+  text = text.replace(/\bBible\b/g, '设定集');
+  for (const [key, zh] of Object.entries({...directorFactSourceTypeLabel, ...bibleFieldLabel})) {
+    text = text.replace(new RegExp(`\\b${key}\\b`, 'gi'), zh);
+  }
+  return text;
+}
+
+function directorFactSourceAuditHtml(values) {
+  const items = parseArray(values);
+  if (!items.length) return '<p class="muted">未记录</p>';
+  return `<ul class="director-audit-list">${items.map((audit, index) => {
+    const item = audit && typeof audit === 'object' ? audit : {};
+    const verdict = String(item.verdict || '').toLowerCase();
+    const verdictText = label(directorAuditVerdictLabel, verdict, item.verdict || '未记录');
+    const claim = item.claim || item.fact || item.statement || `审计项 ${index + 1}`;
+    return `
+      <li>
+        <div class="director-audit-head">
+          <strong>${escapeHtml(claim)}</strong>
+          ${toneBadge(verdictText, directorAuditTone(verdict))}
+        </div>
+        ${directorDl([
+          ['来源类型', directorFactSourceTypeText(item.source_type || item.source)],
+          ['来源证据', directorEvidenceText(item.source_evidence || item.evidence)],
+        ])}
+      </li>`;
+  }).join('')}</ul>`;
+}
+
+function directorFactSourceAuditSummary(values) {
+  const items = parseArray(values);
+  if (!items.length) return '未记录';
+  const unsupported = items.filter((item) => String(item?.verdict || '').toLowerCase() === 'unsupported').length;
+  const neutralized = items.filter((item) => String(item?.verdict || '').toLowerCase() === 'neutralized').length;
+  if (unsupported) return `${unsupported} 条依据不足`;
+  if (neutralized) return `${items.length} 条 / ${neutralized} 条中和`;
+  return `${items.length} 条依据`;
+}
+
+function directorQualityGateHtml(value) {
+  const gate = parseObject(value);
+  if (!Object.keys(gate).length) return '<p class="muted">未记录</p>';
+  const blockingIssues = parseArray(gate.blocking_issues);
+  const hasPass = gate.pass !== undefined && gate.pass !== null && gate.pass !== '';
+  const pass = gate.pass === true || String(gate.pass).toLowerCase() === 'true';
+  const stateText = hasPass ? (pass && !blockingIssues.length ? '通过' : '需调整') : '未记录';
+  const tone = pass && !blockingIssues.length ? 'good' : blockingIssues.length ? 'bad' : 'warn';
+  return `
+    <div class="director-gate-summary">${toneBadge(stateText, tone)}</div>
+    ${directorDl([
+      ['闸门状态', stateText],
+      ['阻断数量', `${blockingIssues.length} 条`],
+    ])}
+    ${blockingIssues.length ? directorList(blockingIssues) : '<p class="muted">没有阻断问题。</p>'}`;
+}
+
+function directorQualityGateSummary(value) {
+  const gate = parseObject(value);
+  if (!Object.keys(gate).length) return '未记录';
+  const blockingIssues = parseArray(gate.blocking_issues);
+  const pass = gate.pass === true || String(gate.pass).toLowerCase() === 'true';
+  if (blockingIssues.length) return `${blockingIssues.length} 条阻断`;
+  return pass ? '通过' : '需调整';
+}
+
 function directorSegmentPlanHtml(payload) {
   const segments = parseArray(payload.segment_plan);
   if (!segments.length) return '<p class="muted">未记录</p>';
@@ -1748,6 +1902,7 @@ function directorCardArticle(card, outline, activeJob, chapterJob = null, chapte
     ['章节意图', payload.chapter_intent],
     ['前因', chain.from_previous],
     ['触发', chain.trigger],
+    ['阻力障碍', parseArray(chain.obstacles).join('；')],
     ['不可逆结果', chain.irreversible_result],
     ['推向后续', chain.to_next],
   ]);
@@ -1758,6 +1913,7 @@ function directorCardArticle(card, outline, activeJob, chapterJob = null, chapte
   const ops = parseArray(payload.foreshadowing_ops);
   const risks = parseArray(payload.abruptness_risks);
   const segments = parseArray(payload.segment_plan);
+  const auditItems = parseArray(payload.fact_source_audit);
   const repairAction = directorResolveBlockersForm(projectId, chapterNo, card?.id, blockingIssues, activeJob);
   const actions = card?.id
     ? `
@@ -1780,14 +1936,17 @@ function directorCardArticle(card, outline, activeJob, chapterJob = null, chapte
       ${blockingIssues.length ? `<div class="director-warning"><strong>阻断问题</strong><p class="muted">这些来自导演台原始结构里的质量闸门；保存后仍有阻断内容时，状态会继续显示待调整。也可以直接带着这份清单重跑导演台，让模型只处理阻断。</p>${directorList(blockingIssues)}${repairAction ? `<div class="director-warning-actions">${repairAction}</div>` : ''}</div>` : ''}
       <div class="director-grid">
         ${directorPanelHtml('情节因果链', chainContent, {drawerId: `director-panel-${chapterNo}-chain`, summary: chain.from_previous ? '前后承接' : '未记录'})}
+        ${directorPanelHtml('开章承接', directorTransitionHtml(payload.cross_chapter_transition), {drawerId: `director-panel-${chapterNo}-transition`, summary: directorTransitionSummary(payload.cross_chapter_transition)})}
         ${directorPanelHtml('人物动机', directorList(chain.character_motives), {drawerId: `director-panel-${chapterNo}-motives`, summary: motives.length ? `${motives.length} 条动机` : '未记录'})}
         ${directorPanelHtml('连续性约束', directorDl([
           ['必须记住', parseArray(constraints.must_remember).join('；')],
           ['不能打破', parseArray(constraints.must_not_break).join('；')],
           ['后文护栏', parseArray(constraints.future_outline_guardrails).join('；')],
         ]), {drawerId: `director-panel-${chapterNo}-constraints`, summary: `${rememberCount + breakCount + guardrailCount} 条约束`})}
+        ${directorPanelHtml('事实来源审计', directorFactSourceAuditHtml(payload.fact_source_audit), {drawerId: `director-panel-${chapterNo}-source-audit`, summary: directorFactSourceAuditSummary(auditItems)})}
         ${directorPanelHtml('伏笔操作', directorForeshadowingOpsHtml(payload.foreshadowing_ops), {drawerId: `director-panel-${chapterNo}-foreshadow`, summary: ops.length ? `${ops.length} 条伏笔` : '未记录'})}
         ${directorPanelHtml('突兀风险', directorList(payload.abruptness_risks), {drawerId: `director-panel-${chapterNo}-risks`, summary: risks.length ? `${risks.length} 条风险` : '未记录'})}
+        ${directorPanelHtml('质量闸门', directorQualityGateHtml(payload.quality_gate), {drawerId: `director-panel-${chapterNo}-quality-gate`, summary: directorQualityGateSummary(payload.quality_gate)})}
         ${directorPanelHtml('分段计划', directorSegmentPlanHtml(payload), {drawerId: `director-panel-${chapterNo}-segments`, summary: segments.length ? `${segments.length} 段` : '未记录'})}
       </div>
       <div class="row-actions">${actions}</div>
@@ -1831,6 +1990,27 @@ function factTypeSelect(selected) {
   return selectOptions(factTypeOptions, selected || 'other');
 }
 
+function isMachineFactKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw || /[\u4e00-\u9fff]/.test(raw)) return false;
+  return /^[a-z0-9_.:-]+$/i.test(raw) && /[a-z]/i.test(raw);
+}
+
+function factValueTitle(value, factType) {
+  const source = String(value || '').replace(/\s+/g, ' ').trim();
+  const typeText = label(factTypeLabel, factType, '事实');
+  if (!source) return `${typeText}事实`;
+  const firstClause = source.split(/[。！？；;，,]/)[0].trim() || source;
+  const clipped = firstClause.length > 20 ? `${firstClause.slice(0, 20)}…` : firstClause;
+  return `${typeText}：${clipped}`;
+}
+
+function factDisplayKey(fact) {
+  const raw = String(fact?.fact_key || '').trim();
+  if (!raw || isMachineFactKey(raw)) return factValueTitle(fact?.fact_value, fact?.fact_type);
+  return raw.replace(/_/g, '：');
+}
+
 function factStatusSelect(selected) {
   return selectOptions([
     ['ACTIVE', '激活'],
@@ -1852,6 +2032,7 @@ function factStatusAction(fact) {
 }
 
 function factEditForm(fact) {
+  const displayKey = factDisplayKey(fact);
   return `
     <details class="fact-edit">
       <summary>编辑这条事实</summary>
@@ -1862,8 +2043,8 @@ function factEditForm(fact) {
         ${formHidden('reviewer', 'local_user')}
         <label><span>事实类型</span><select name="fact_type">${factTypeSelect(fact.fact_type)}</select></label>
         <label><span>状态</span><select name="status">${factStatusSelect(fact.status)}</select></label>
-        <label><span>标题/关键词</span><input name="fact_key" value="${escapeHtml(fact.fact_key || '')}" placeholder="例如：女主真实身份" /></label>
-        <label><span>关联章节</span><input name="chapter_no" inputmode="numeric" value="${escapeHtml(fact.chapter_no || '')}" placeholder="留空表示项目级事实" /></label>
+        <label><span>标题/关键词</span><input name="fact_key" value="${escapeHtml(displayKey)}" placeholder="例如：女主真实身份" /></label>
+        <label><span>关联章节</span><input name="chapter_no" type="number" min="1" step="1" inputmode="numeric" value="${escapeHtml(fact.chapter_no || '')}" placeholder="留空表示项目级事实" /></label>
         <label class="wide"><span>事实内容</span><textarea name="fact_value" required>${escapeHtml(fact.fact_value || '')}</textarea></label>
         <label class="wide"><span>备注</span><input name="comment" placeholder="可选：说明为什么调整这条事实" /></label>
         <button class="primary" type="submit">保存事实</button>
@@ -1891,7 +2072,7 @@ function factCreateForm(projectId) {
           <label><span>事实类型</span><select name="fact_type">${factTypeSelect('other')}</select></label>
           <label><span>状态</span><select name="status">${factStatusSelect('ACTIVE')}</select></label>
           <label><span>标题/关键词</span><input name="fact_key" placeholder="例如：男主隐藏身份" /></label>
-          <label><span>关联章节</span><input name="chapter_no" inputmode="numeric" placeholder="留空表示项目级事实" /></label>
+          <label><span>关联章节</span><input name="chapter_no" type="number" min="1" step="1" inputmode="numeric" placeholder="留空表示项目级事实" /></label>
           <label class="wide"><span>事实内容</span><textarea name="fact_value" required placeholder="写清楚后续续写必须保持一致的设定、关系、伏笔、物品状态或规则。"></textarea></label>
           <label class="wide"><span>备注</span><input name="comment" placeholder="可选：为什么新增这条事实" /></label>
           <p class="async-feedback" data-async-feedback role="status" aria-live="polite"></p>
@@ -1905,7 +2086,7 @@ function factClearInactiveForm(projectId, inactiveCount) {
   const disabled = inactiveCount > 0 ? '' : ' disabled';
   const confirmText = `这会永久删除 ${inactiveCount} 条已失效事实；激活和待确认事实会保留。确认清理？`;
   return `
-    <form class="inline-form fact-clear-form" method="POST" action="/webhook/novel-project-fact-action" data-confirm="${escapeHtml(confirmText)}">
+    <form class="inline-form fact-clear-form" method="POST" action="/webhook/novel-project-fact-action" data-confirm="${escapeHtml(confirmText)}" aria-label="清理失效事实">
       ${formHidden('project_id', projectId)}
       ${formHidden('fact_action', 'CLEAR_INACTIVE')}
       ${formHidden('reviewer', 'local_user')}
@@ -1937,11 +2118,12 @@ function factTypeFilterControls(facts) {
     </div>`;
 }
 
-function factCard(fact) {
+function factCard(fact, scope = 'current') {
+  const displayKey = factDisplayKey(fact);
   return `
-    <article class="fact-card" data-fact-card data-fact-type="${escapeHtml(fact.fact_type || 'other')}">
+    <article class="fact-card" data-fact-card data-fact-scope="${escapeHtml(scope)}" data-fact-type="${escapeHtml(fact.fact_type || 'other')}">
       <div class="item-head">
-        <strong>${escapeHtml(fact.fact_key || label(factTypeLabel, fact.fact_type, '事实'))}</strong>
+        <strong>${escapeHtml(displayKey)}</strong>
         ${badge(fact.status, factStatusLabel)}
       </div>
       <p>${escapeHtml(fact.fact_value || '未记录')}</p>
@@ -2074,6 +2256,8 @@ const failedJobs = jobs.filter((job) => job.status === 'FAILED');
 const activeQueueCount = waitingCount + runningCount;
 const activeFacts = facts.filter((fact) => fact.status === 'ACTIVE').length;
 const inactiveFacts = facts.filter((fact) => fact.status === 'INACTIVE').length;
+const currentFacts = facts.filter((fact) => fact.status !== 'INACTIVE');
+const inactiveFactList = facts.filter((fact) => fact.status === 'INACTIVE');
 const pendingHumanReviewChapter = latestChapters.find((chapter) => chapter.status === 'NEED_REVIEW');
 const pendingBibleJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE' && job.status === 'PENDING');
 const pendingBiblePatchJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE_PATCH' && job.status === 'PENDING');
@@ -2088,6 +2272,7 @@ const pendingChapterWithoutReadyDirectorJob = jobs.find((job) => job.job_type ==
 const runningBibleJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE' && job.status === 'RUNNING');
 const runningBiblePatchJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE_PATCH' && job.status === 'RUNNING');
 const runningOutlineJob = jobs.find((job) => job.job_type === 'GENERATE_OUTLINE' && job.status === 'RUNNING');
+const runningProjectGenerationJob = runningBibleJob || runningBiblePatchJob || runningOutlineJob;
 const runningDirectorJob = jobs.find((job) => job.job_type === 'PLAN_CHAPTER_DIRECTOR' && job.status === 'RUNNING');
 const runningChapterJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'RUNNING');
 const activeQueueJobs = jobs
@@ -2122,6 +2307,7 @@ const canShowContinueForm = !hasFrontStartJob
   && activeQueueCount === 0
   && failedJobs.length === 0
   && reviewCount === 0
+  && !pendingBiblePatch
   && !['ARCHIVED', 'PAUSED', 'COMPLETED'].includes(String(row.status || ''));
 const bibleRegenerateControl = pendingBibleJob
   ? generationRunForm(projectId, 'GENERATE_BIBLE')
@@ -2236,6 +2422,24 @@ function recommendationState() {
     body: `请稍后刷新项目控制台，或到队列状态页观察任务是否完成。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，等新设定和大纲完成后再决定是否处理。` : ''}`,
     intent: '观察进度',
     mode: '后台运行中',
+  };
+  if (pendingBiblePatchJob) return {
+    title: '启动扩写设定补丁',
+    body: '扩写设定补丁任务已排队。点击“启动扩写设定补丁”会先生成待确认设定；确认补丁后再继续后续大纲、导演台或章节重写，避免新设定还没合并就往下写。',
+    intent: '生成设定补丁',
+    mode: '后台执行',
+  };
+  if (runningBiblePatchJob) return {
+    title: '扩写设定补丁正在生成',
+    body: `${nextRejectedChapter ? `${rejectedRetryLabel(nextRejectedChapter.chapter_no)}仍会保留，不会被跳过；` : ''}请先等补丁生成完成，并在设定集视图确认或拒绝补丁。补丁处理完后，再继续章节重写会更稳。`,
+    intent: '观察补丁生成',
+    mode: '后台运行中',
+  };
+  if (pendingBiblePatch) return {
+    title: '确认扩写设定补丁',
+    body: `${nextRejectedChapter ? `${rejectedRetryLabel(nextRejectedChapter.chapter_no)}仍会保留，不会被跳过；` : ''}先确认或拒绝扩写设定补丁，再继续章节重写，避免后续正文没有读到新增人物、势力或约束。`,
+    intent: '确认设定补丁',
+    mode: '不会调用模型',
   };
   if (pendingOutlineJob) return {
     title: '启动大纲生成',
@@ -2497,6 +2701,7 @@ function projectPrimaryAction() {
   if (pendingBiblePatchJob) return generationRunForm(projectId, 'GENERATE_BIBLE_PATCH');
   if (pendingBiblePatch) return commandLink(projectViewHref('bible', '#bible-patch-section'), '确认设定补丁', '先合并新增设定');
   if (pendingOutlineJob) return generationRunForm(projectId, 'GENERATE_OUTLINE');
+  if (runningProjectGenerationJob) return commandLink(`/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`, runningBiblePatchJob ? '查看补丁生成' : '查看队列', '观察后台');
   if (pendingDirectorJob) return generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', pendingDirectorJob);
   if (pendingChapterJob) return generationRunForm(projectId, 'GENERATE_CHAPTER', pendingChapterJob);
   if (activeRewriteActionJob) return rewriteRunForm(projectId, activeRewriteActionJob);
@@ -2846,7 +3051,7 @@ const chaptersSectionHtml = `
 
 const factsSectionHtml = `
     <section id="facts-section" aria-label="连续性事实">
-      <div class="section-title"><h2>连续性事实</h2><p class="muted">事实库是后续生成章节会读取的连续性记忆：激活事实会进入模型上下文，待确认事实来自候选稿或重写稿，失效事实仅保留追溯。</p></div>
+      <div class="section-title"><h2>连续性事实</h2><p class="muted">事实库默认只展示当前事实：激活事实会进入模型上下文，待确认事实需要人工判断；失效事实来自旧候选稿，仅保留在折叠历史里。</p></div>
       <div class="fact-toolbar">
         <div>
           <strong>人工维护入口</strong>
@@ -2857,11 +3062,19 @@ const factsSectionHtml = `
           ${factClearInactiveForm(projectId, inactiveFacts)}
         </div>
       </div>
-      ${factTypeFilterControls(facts)}
+      ${inactiveFactList.length ? `<div class="fact-history-note">当前可用事实 ${escapeHtml(currentFacts.length)} 条；失效历史 ${escapeHtml(inactiveFactList.length)} 条已默认收起，不会进入后续生成上下文。</div>` : ''}
+      ${factTypeFilterControls(currentFacts)}
       <div class="fact-grid">
-        ${facts.length ? facts.map(factCard).join('') : '<article class="empty">暂无连续性事实。</article>'}
+        ${currentFacts.length ? currentFacts.map((fact) => factCard(fact, 'current')).join('') : '<article class="empty">暂无当前可用事实。</article>'}
         <article class="empty fact-filter-empty" data-fact-filter-empty hidden>当前类型暂无事实。</article>
       </div>
+      ${inactiveFactList.length ? `
+        <details class="fact-history">
+          <summary>失效事实历史（${escapeHtml(inactiveFactList.length)} 条，默认不参与生成）</summary>
+          <div class="fact-grid fact-history-grid">
+            ${inactiveFactList.map((fact) => factCard(fact, 'history')).join('')}
+          </div>
+        </details>` : ''}
     </section>`;
 
 const opsSectionHtml = `
@@ -3248,6 +3461,12 @@ const html = `<!doctype html>
     .director-warning-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(167, 101, 8, .24); }
     .inline-form.action-repair button { border-color: #f0c36a; color: var(--warn); background: #fffaf0; }
     .inline-form.action-repair button:hover { border-color: var(--warn); background: #fff3d6; }
+    .director-audit-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+    .director-audit-list li { border-top: 1px solid var(--line); padding-top: 10px; }
+    .director-audit-list li:first-child { border-top: 0; padding-top: 0; }
+    .director-audit-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 8px; }
+    .director-audit-head strong { min-width: 0; color: var(--ink); line-height: 1.45; }
+    .director-gate-summary { margin: 0 0 10px; }
     .director-segments { display: grid; gap: 8px; margin: 0; padding-left: 20px; }
     .director-segments li { padding: 8px 0 0; border-top: 1px solid var(--line); }
     .director-segments li:first-child { padding-top: 0; border-top: 0; }
@@ -3261,6 +3480,10 @@ const html = `<!doctype html>
     .fact-filter-chip small { min-width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 999px; background: #eef4f2; color: #40665a; font-size: 12px; }
     .fact-filter-chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
     .fact-filter-chip[aria-pressed="true"] small { background: #fff; color: var(--accent); }
+    .fact-history-note { margin: 0 16px 14px; padding: 10px 12px; border: 1px solid #f1ce96; border-radius: 8px; background: #fffaf0; color: #8a5204; line-height: 1.55; }
+    .fact-history { margin: 0 16px 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+    .fact-history > summary { min-height: 44px; display: flex; align-items: center; padding: 0 14px; color: #667085; font-weight: 850; cursor: pointer; }
+    .fact-history-grid { padding: 0 12px 12px; }
     .fact-create-form, .fact-edit form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
     .fact-create-form label, .fact-edit label { display: grid; gap: 5px; font-weight: 700; color: var(--ink); }
     .fact-create-form input, .fact-create-form select, .fact-create-form textarea, .fact-edit input, .fact-edit select, .fact-edit textarea { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff; color: var(--ink); font: inherit; }
@@ -3272,6 +3495,7 @@ const html = `<!doctype html>
     .async-feedback.is-success, .form-help.is-success { color: var(--accent); }
     .fact-edit summary { color: var(--accent); font-weight: 800; cursor: pointer; }
     .fact-clear-form button { width: fit-content; border-color: #f2b8b5; color: var(--danger); background: #fff; }
+    .fact-clear-form button:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
     .fact-actions { display: grid; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
     .fact-status-form button { min-height: 34px; }
     .fact-edit { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #f8fafb; }
@@ -3719,7 +3943,7 @@ const html = `<!doctype html>
         const panel = document.querySelector('[data-fact-filter-panel]');
         if (!panel) return;
         const buttons = Array.from(panel.querySelectorAll('[data-fact-type-filter]'));
-        const cards = Array.from(document.querySelectorAll('[data-fact-card]'));
+        const cards = Array.from(document.querySelectorAll('[data-fact-card][data-fact-scope="current"]'));
         const empty = document.querySelector('[data-fact-filter-empty]');
         const countLabel = document.querySelector('[data-fact-filter-count]');
         const params = new URLSearchParams(window.location.search);

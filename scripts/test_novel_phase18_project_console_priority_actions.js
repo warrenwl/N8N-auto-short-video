@@ -190,8 +190,9 @@ const detailRow = {
     },
   ]),
   facts: JSON.stringify([
-    {fact_type: 'character', fact_key: '陆明', fact_value: '主角，目标是翻身。', source: 'ai', confidence: 0.9, status: 'ACTIVE', chapter_no: 1},
+    {fact_type: 'character', fact_key: 'luming_goal', fact_value: '陆明目标是翻身。', source: 'ai', confidence: 0.9, status: 'ACTIVE', chapter_no: 1},
     {fact_type: 'foreshadowing', fact_key: '神秘来电', fact_value: '第二章继续回收。', source: 'ai', confidence: 0.8, status: 'PENDING', chapter_no: 2},
+    {fact_type: 'other', fact_key: 'old_candidate_fact', fact_value: '旧候选稿事实，仅保留追溯。', source: 'ai', confidence: 0.6, status: 'INACTIVE', chapter_no: 1},
   ]),
   ai_runs: JSON.stringify([
     {run_type: 'GENERATE_CHAPTER', model: 'glm-5.1', success: true, duration_ms: 2200, chapter_no: 1, created_at: '2026-05-03T01:00:00.000Z'},
@@ -232,8 +233,12 @@ assert(!detailBibleHtml.includes('<dt>name</dt>'), 'project console bible view s
 assert(!detailBibleHtml.includes('<li>{&quot;'), 'project console bible view should not render array objects as raw JSON list items');
 assert(!detailBibleHtml.includes('主角设定 JSON'), 'project console bible edit labels should avoid raw JSON wording');
 
-const detailFactsText = visibleText(runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'facts'}])[0].json.response_html);
+const detailFactsHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'facts'}])[0].json.response_html;
+const detailFactsText = visibleText(detailFactsHtml);
 assert(detailFactsText.includes('连续性事实'), 'project console facts view should include continuity facts');
+assert(detailFactsText.includes('失效事实历史'), 'project console facts view should fold inactive facts into history');
+assert(detailFactsText.includes('人物：陆明目标是翻身'), 'project console facts view should derive Chinese titles for machine fact keys');
+assert(!detailFactsHtml.includes('luming_goal') && !detailFactsHtml.includes('old_candidate_fact'), 'project console facts view should not expose machine fact keys');
 
 const detailOpsText = visibleText(runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'ops'}])[0].json.response_html);
 for (const expected of ['模型调用日志', '失败原因']) {

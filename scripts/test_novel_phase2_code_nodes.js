@@ -726,7 +726,7 @@ const parsedSegmentOne = runCodeNode('n8n/code/novel_parse_chapter_segment_json.
             segment_body: '林昼在雨夜推开旧钟表店的门，墙上的钟同时停住。',
             segment_summary: '林昼进入旧钟表店，发现时间异常。',
             bridge_to_next: '柜台后的老人说出了父亲的名字。',
-            new_facts: [{fact_type: 'location', fact_key: '旧钟表店', fact_value: '店内钟表会在林昼进门时停住'}],
+            new_facts: [{fact_type: 'location', fact_key: 'old_clock_shop', fact_value: '店内钟表会在林昼进门时停住'}],
           }),
         },
       }],
@@ -736,6 +736,7 @@ const parsedSegmentOne = runCodeNode('n8n/code/novel_parse_chapter_segment_json.
 assert.strictEqual(parsedSegmentOne.parse_success, true);
 assert.strictEqual(parsedSegmentOne.chapter_title, '旧钟表店的第一声回响', 'segment parser should strip generated chapter-number title prefixes');
 assert.strictEqual(parsedSegmentOne.segment_no, 1);
+assert.strictEqual(parsedSegmentOne.new_facts[0].fact_key, '地点：店内钟表会在林昼进门时停住');
 assert.strictEqual(parsedSegmentOne.has_more_segments, true);
 assert.strictEqual(parsedSegmentOne.next_chapter_segment_no, 2);
 assert(parsedSegmentOne.segment_body.includes('旧钟表店'), 'segment parser should expose body text');

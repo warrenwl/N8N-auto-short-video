@@ -88,12 +88,19 @@ assert.strictEqual(
   '14 chapter generation webhook should match project console form'
 );
 assert(
-  chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
+  chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes('FOR UPDATE') &&
+    chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes('SKIP LOCKED'),
   '14 should claim jobs with FOR UPDATE SKIP LOCKED'
 );
 assert(
   chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes('GENERATE_CHAPTER'),
   '14 should claim GENERATE_CHAPTER'
+);
+assert(
+  chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes('current_director_card_id') &&
+    chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes("jsonb_build_object('director_card_id', claimed.current_director_card_id)") &&
+    !chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes("(j.payload->>'director_card_id')::uuid"),
+  '14 background chapter claim should rebind stale queued jobs to the current READY director card'
 );
 const chapterSegmentHttpNames = [...chapterNodes.keys()]
   .filter((name) => /^HTTP请求 - 调用GLM生成章节第\d+段$/.test(name))
@@ -172,6 +179,12 @@ assert(
 assert(
   chapterNodes.get('数据库 - 前端领取GENERATE_CHAPTER任务').parameters.query.includes('ORDER BY j.chapter_no ASC'),
   '14 front-end chapter start should claim the earliest pending chapter for that project'
+);
+assert(
+  chapterNodes.get('数据库 - 前端领取GENERATE_CHAPTER任务').parameters.query.includes('current_director_card_id') &&
+    chapterNodes.get('数据库 - 前端领取GENERATE_CHAPTER任务').parameters.query.includes("jsonb_build_object('director_card_id', claimed.current_director_card_id, 'trigger_source', 'front_immediate')") &&
+    !chapterNodes.get('数据库 - 前端领取GENERATE_CHAPTER任务').parameters.query.includes("(j.payload->>'director_card_id')::uuid"),
+  '14 front-end chapter start should not deadlock when a pending job references a superseded director card'
 );
 assert.strictEqual(
   chapterNodes.get('执行子流程 - 异步生成章节').parameters.workflowId,

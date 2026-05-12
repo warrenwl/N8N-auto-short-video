@@ -457,6 +457,59 @@ assert(rejectedRetryDirectorText.includes('下一步动作区：继续重写第 
 assert(rejectedRetryDirectorText.includes('继续重写第 5 章'), 'primary action should say continue rewriting the chapter');
 assert(!rejectedRetryDirectorText.includes('下一步动作区：启动第 5 章导演台'), 'pending rejected retry director should not be the primary title');
 
+const detailViewWithRunningPatchAndRejectedRetry = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  requested_view: 'overview',
+  title: '第二十一阶段项目',
+  genre: '都市逆袭',
+  audience: '中文读者',
+  style: '节奏快',
+  premise: '验证补丁生成中不会误导继续重写。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 2,
+  status: 'WRITING',
+  bible: JSON.stringify({story_core: '主角从低谷翻身。'}),
+  outlines: JSON.stringify([{chapter_no: 3, title: '第三章', summary: '候选稿待决策', status: 'READY'}]),
+  chapters: JSON.stringify([{
+    id: '21000000-0000-0000-0000-000000000085',
+    chapter_no: 3,
+    title: '已拒绝第三章',
+    body: '被拒绝的第三章正文',
+    summary: '已拒绝',
+    status: 'REJECTED',
+    is_current: false,
+    generation_version: 2,
+  }]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([
+    {
+      id: '21000000-0000-0000-0000-000000000086',
+      job_type: 'GENERATE_BIBLE_PATCH',
+      status: 'RUNNING',
+      updated_at: '2026-05-06T15:40:13.000Z',
+      created_at: '2026-05-06T15:40:13.000Z',
+    },
+    {
+      id: '21000000-0000-0000-0000-000000000087',
+      chapter_no: 3,
+      job_type: 'PLAN_CHAPTER_DIRECTOR',
+      status: 'PENDING',
+      payload: {trigger_source: 'chapter_rejected_retry'},
+      updated_at: '2026-05-06T15:41:13.000Z',
+      created_at: '2026-05-06T15:41:13.000Z',
+    },
+  ]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const runningPatchRejectedRetryText = visibleText(detailViewWithRunningPatchAndRejectedRetry);
+assert(runningPatchRejectedRetryText.includes('下一步动作区：扩写设定补丁正在生成'), 'running Bible patch should outrank rejected chapter retry in the next-action title');
+assert(runningPatchRejectedRetryText.includes('查看补丁生成'), 'running Bible patch should send the primary action to queue observation');
+assert(!runningPatchRejectedRetryText.includes('下一步动作区：继续重写第 3 章'), 'running Bible patch should not present same-chapter rewrite as the current primary title');
+assert(!detailViewWithRunningPatchAndRejectedRetry.includes('action="/webhook/novel-generate-director-now"'), 'running Bible patch should suppress the director-start primary form until the patch is handled');
+
 const detailFactsView = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
   is_empty: false,
   id: projectId,
@@ -497,7 +550,7 @@ const detailFactsView = runListCodeNode('n8n/code/novel_render_project_detail_ht
   project_events: JSON.stringify([]),
 }])[0].json.response_html;
 const detailFactsText = visibleText(detailFactsView);
-assert(detailFactsText.includes('事实库是后续生成章节会读取的连续性记忆'), 'facts view should explain what the fact library is');
+assert(detailFactsText.includes('事实库默认只展示当前事实'), 'facts view should explain what the fact library is');
 assert(detailFactsView.includes('action="/webhook/novel-project-fact-action"'), 'facts view should expose POST fact management forms');
 assert(detailFactsView.includes('data-open-dialog="fact-create-drawer"'), 'facts view should open manual fact creation in a drawer');
 assert(detailFactsView.includes('id="fact-create-drawer"'), 'facts view should render a right-side manual fact drawer');
@@ -507,6 +560,8 @@ assert(detailFactsView.includes('name="fact_action" value="UPDATE"'), 'facts vie
 assert(detailFactsView.includes('name="fact_action" value="ACTIVATE"'), 'pending facts should be activatable');
 assert(detailFactsView.includes('name="fact_action" value="CLEAR_INACTIVE"'), 'facts view should allow clearing inactive facts');
 assert(detailFactsText.includes('清理失效事实'), 'facts view should label inactive fact cleanup clearly');
+assert(!detailFactsView.includes('<details class="fact-danger-zone"'), 'inactive fact cleanup should be a direct button instead of an expanded details panel');
+assert(!detailFactsText.includes('输入项目名确认清理'), 'inactive fact cleanup should not require opening an inline confirmation form');
 assert(detailFactsText.includes('保存后会关闭抽屉并刷新事实库'), 'manual fact drawer should explain save-and-close behavior');
 assert(!/href=["'][^"']*novel-project-fact-action/i.test(detailFactsView), 'fact management must not be a GET link');
 

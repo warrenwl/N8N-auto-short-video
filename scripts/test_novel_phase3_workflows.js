@@ -192,8 +192,9 @@ assert(
 );
 assert(
   centerNodes.get('数据库 - 保存小说事实库操作').parameters.query.includes('manage_novel_project_fact') &&
-    centerNodes.get('数据库 - 保存小说事实库操作').parameters.options.queryReplacement.includes('$json.fact_action'),
-  '11 fact management should validate and persist project facts through POST'
+    centerNodes.get('数据库 - 保存小说事实库操作').parameters.options.queryReplacement.includes('$json.fact_action') &&
+    centerNodes.get('数据库 - 保存小说事实库操作').parameters.query.includes("NULLIF($7::text, '')::integer"),
+  '11 fact management should validate and persist project facts through POST, with blank chapter numbers coerced to null'
 );
 assert(
   centerNodes.get('数据库 - 处理小说设定集补丁').parameters.query.includes('manage_novel_bible_patch') &&
@@ -421,8 +422,10 @@ assert(
 assert(
   directorNodes.get('数据库 - 保存导演台并按闸门排正文').parameters.query.includes("card.status = 'READY'") &&
     directorNodes.get('数据库 - 保存导演台并按闸门排正文').parameters.query.includes('GENERATE_CHAPTER') &&
-    directorNodes.get('数据库 - 保存导演台并按闸门排正文').parameters.query.includes('novel_chapters c'),
-  '13B should enqueue chapter generation only after the quality gate is READY and no chapter candidate already exists'
+    directorNodes.get('数据库 - 保存导演台并按闸门排正文').parameters.query.includes('novel_chapters c') &&
+    directorNodes.get('数据库 - 保存导演台并按闸门排正文').parameters.query.includes('pending_chapter_job') &&
+    directorNodes.get('数据库 - 保存导演台并按闸门排正文').parameters.query.includes('runnable_chapter_job'),
+  '13B should enqueue or relink chapter generation only after the quality gate is READY and no chapter candidate already exists'
 );
 assert(
   directorNodes.has('数据库 - 取消旧当前导演台版本') &&
@@ -438,8 +441,15 @@ assert(
   directorNodes.get('数据库 - 保存手动导演台版本').parameters.query.includes('target_words_per_chapter <= 4500 THEN 4') &&
     directorNodes.get('数据库 - 保存手动导演台版本').parameters.query.includes('fact_source_audit') &&
     directorNodes.get('数据库 - 保存手动导演台版本').parameters.query.includes('segment_count <> manual_checks.expected_segments') &&
-    directorNodes.get('数据库 - 保存手动导演台版本').parameters.query.includes('仍需调整'),
-  '13B should re-check manual director saves for gate status, fact source audit, and segment plan count'
+    directorNodes.get('数据库 - 保存手动导演台版本').parameters.query.includes('仍需调整') &&
+    directorNodes.get('数据库 - 保存手动导演台版本').parameters.query.includes('relink_pending_chapter_jobs'),
+  '13B should re-check manual director saves for gate status, fact source audit, segment plan count, and relink pending chapter jobs'
+);
+assert(
+  directorNodes.get('数据库 - 按导演台创建正文任务').parameters.query.includes('pending_job') &&
+    directorNodes.get('数据库 - 按导演台创建正文任务').parameters.query.includes('runnable_job') &&
+    directorNodes.get('数据库 - 按导演台创建正文任务').parameters.query.includes('director_manual_start'),
+  '13B manual chapter start should reuse and relink an existing pending chapter job for the current director card'
 );
 
 console.log(JSON.stringify({

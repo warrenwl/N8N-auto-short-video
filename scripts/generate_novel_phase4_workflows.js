@@ -243,27 +243,27 @@ function workflowBase(id, name, nodes, connections) {
 
 const claimChapterQuery = `-- Claim one pending GENERATE_CHAPTER job.
 WITH claimed AS (
-  SELECT j.id
+  SELECT
+    j.id,
+    current_director.id AS current_director_card_id
   FROM novel_generation_jobs j
   JOIN novel_projects p ON p.id = j.project_id
+  JOIN LATERAL (
+    SELECT d.id
+    FROM novel_chapter_director_cards d
+    WHERE d.project_id = j.project_id
+      AND d.chapter_no = j.chapter_no
+      AND d.is_current = TRUE
+      AND d.status = 'READY'
+    ORDER BY d.version DESC
+    LIMIT 1
+  ) current_director ON true
   WHERE j.job_type = 'GENERATE_CHAPTER'
     AND j.status = 'PENDING'
     AND j.attempt_count < j.max_attempts
     AND p.status NOT IN ('PAUSED', 'ARCHIVED')
-    AND EXISTS (
-      SELECT 1
-      FROM novel_chapter_director_cards d
-      WHERE d.project_id = j.project_id
-        AND d.chapter_no = j.chapter_no
-        AND d.is_current = TRUE
-        AND d.status = 'READY'
-        AND (
-          COALESCE(j.payload->>'director_card_id', '') = ''
-          OR d.id = (j.payload->>'director_card_id')::uuid
-        )
-    )
   ORDER BY j.created_at ASC
-  FOR UPDATE SKIP LOCKED
+  FOR UPDATE OF j SKIP LOCKED
   LIMIT 1
 )
 UPDATE novel_generation_jobs j
@@ -272,6 +272,7 @@ SET
   started_at = NOW(),
   attempt_count = attempt_count + 1,
   error_message = NULL,
+  payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('director_card_id', claimed.current_director_card_id),
   updated_at = NOW()
 FROM claimed
 WHERE j.id = claimed.id
@@ -285,28 +286,28 @@ WITH requested AS (
   FROM novel_projects
   WHERE id = (SELECT project_id FROM requested)
 ), claimed AS (
-  SELECT j.id
+  SELECT
+    j.id,
+    current_director.id AS current_director_card_id
   FROM novel_generation_jobs j
   JOIN novel_projects p ON p.id = j.project_id
+  JOIN LATERAL (
+    SELECT d.id
+    FROM novel_chapter_director_cards d
+    WHERE d.project_id = j.project_id
+      AND d.chapter_no = j.chapter_no
+      AND d.is_current = TRUE
+      AND d.status = 'READY'
+    ORDER BY d.version DESC
+    LIMIT 1
+  ) current_director ON true
   WHERE j.project_id = (SELECT project_id FROM requested)
     AND j.job_type = 'GENERATE_CHAPTER'
     AND j.status = 'PENDING'
     AND j.attempt_count < j.max_attempts
     AND p.status NOT IN ('PAUSED', 'ARCHIVED')
-    AND EXISTS (
-      SELECT 1
-      FROM novel_chapter_director_cards d
-      WHERE d.project_id = j.project_id
-        AND d.chapter_no = j.chapter_no
-        AND d.is_current = TRUE
-        AND d.status = 'READY'
-        AND (
-          COALESCE(j.payload->>'director_card_id', '') = ''
-          OR d.id = (j.payload->>'director_card_id')::uuid
-        )
-    )
   ORDER BY j.chapter_no ASC NULLS LAST, j.created_at ASC
-  FOR UPDATE SKIP LOCKED
+  FOR UPDATE OF j SKIP LOCKED
   LIMIT 1
 ), updated AS (
   UPDATE novel_generation_jobs j
@@ -315,7 +316,7 @@ WITH requested AS (
     started_at = NOW(),
     attempt_count = attempt_count + 1,
     error_message = NULL,
-    payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('trigger_source', 'front_immediate'),
+    payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('director_card_id', claimed.current_director_card_id, 'trigger_source', 'front_immediate'),
     updated_at = NOW()
   FROM claimed
   WHERE j.id = claimed.id

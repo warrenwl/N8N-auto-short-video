@@ -363,6 +363,7 @@ function buildJsonSafetyInstruction(runType) {
     '输出顶层只能包含 chapter_title、chapter_body、chapter_summary、word_count_estimate、new_facts、foreshadowing。',
     '正文只能写在 chapter_body 字符串里，正文不得散落到其他 JSON 字段名；不要把任何小说句子、对白、动作或心理描写作为 JSON key。',
     '正文内不要使用半角英文双引号 " 表示对白、拟声或强调，统一使用中文引号“”；半角双引号容易截断 JSON 字符串。',
+    'new_facts[].fact_key 必须是中文短标题，例如“宋岩动机”“红纸扎女尸失踪”；不得输出 songyan_reaction、red_corpse_disappearance 这类英文/下划线机器键。',
   ].join('\n');
 }
 

@@ -235,11 +235,39 @@ function normalizeFactType(value, fallbackType = 'other') {
   return allowedFactTypes.has(raw) ? raw : (allowedFactTypes.has(fallbackType) ? fallbackType : 'other');
 }
 
+function isMachineFactKey(value) {
+  const raw = text(value);
+  if (!raw || /[\u4e00-\u9fff]/.test(raw)) return false;
+  return /^[a-z0-9_.:-]+$/i.test(raw) && /[a-z]/i.test(raw);
+}
+
+function factKeyFromValue(value, factType) {
+  const source = text(value).replace(/\s+/g, ' ');
+  const typeLabel = {
+    character: '人物',
+    item: '物品',
+    location: '地点',
+    ability: '能力',
+    relationship: '关系',
+    foreshadowing: '伏笔',
+    timeline: '时间线',
+    rule: '规则',
+    other: '事实',
+  }[factType] || '事实';
+  if (!source) return typeLabel;
+  const firstClause = source.split(/[。！？；;，,]/)[0].trim() || source;
+  return `${typeLabel}：${firstClause.slice(0, 18)}${firstClause.length > 18 ? '…' : ''}`;
+}
+
 function normalizeFact(fact, fallbackType = 'other') {
+  const factType = normalizeFactType(fact.fact_type || fact.type, fallbackType);
+  const factValue = text(fact.fact_value || fact.value || fact.description || fact.content);
+  const rawKey = text(fact.fact_key || fact.key || fact.name);
+  const displayKey = rawKey.replace(/_/g, '：');
   return {
-    fact_type: normalizeFactType(fact.fact_type || fact.type, fallbackType),
-    fact_key: text(fact.fact_key || fact.key || fact.name),
-    fact_value: text(fact.fact_value || fact.value || fact.description || fact.content),
+    fact_type: factType,
+    fact_key: isMachineFactKey(rawKey) ? factKeyFromValue(factValue, factType) : (displayKey || factKeyFromValue(factValue, factType)),
+    fact_value: factValue,
     confidence: Math.min(Math.max(number(fact.confidence, 0.8), 0), 1),
   };
 }

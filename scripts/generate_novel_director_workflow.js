@@ -667,6 +667,25 @@ WITH input AS (
     notes = EXCLUDED.notes,
     updated_at = NOW()
   RETURNING *
+), pending_chapter_job AS (
+  UPDATE novel_generation_jobs j
+  SET
+    payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('director_card_id', card.id),
+    updated_at = NOW()
+  FROM card
+  WHERE card.status = 'READY'
+    AND j.project_id = card.project_id
+    AND j.chapter_no = card.chapter_no
+    AND j.job_type = 'GENERATE_CHAPTER'
+    AND j.status = 'PENDING'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM novel_chapters c
+      WHERE c.project_id = card.project_id
+        AND c.chapter_no = card.chapter_no
+        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+    )
+  RETURNING j.*
 ), chapter_job AS (
   INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status)
   SELECT
@@ -684,8 +703,13 @@ WITH input AS (
         AND c.chapter_no = card.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
     )
+    AND NOT EXISTS (SELECT 1 FROM pending_chapter_job)
   ON CONFLICT DO NOTHING
   RETURNING *
+), runnable_chapter_job AS (
+  SELECT * FROM pending_chapter_job
+  UNION ALL
+  SELECT * FROM chapter_job
 )
 SELECT
   TRUE AS success,
@@ -697,11 +721,11 @@ SELECT
   card.chapter_no,
   card.status AS director_status,
   card.version AS director_version,
-  (SELECT id FROM chapter_job LIMIT 1) AS job_id,
+  (SELECT id FROM runnable_chapter_job LIMIT 1) AS job_id,
   CASE WHEN card.status = 'READY' THEN 'GENERATE_CHAPTER' ELSE 'PLAN_CHAPTER_DIRECTOR' END AS job_type,
   (SELECT COUNT(*) FROM upsert_threads)::integer AS plot_thread_count,
   CASE
-    WHEN card.status = 'READY' THEN '导演台已通过质量闸门，并已创建正文生成任务。'
+    WHEN card.status = 'READY' THEN '导演台已通过质量闸门，并已创建或绑定正文生成任务。'
     ELSE '导演台存在阻断问题，已保存为需调整状态，正文生成不会自动开始。'
   END AS message
 FROM card;`;
@@ -884,6 +908,25 @@ WITH input AS (
     inserted.card_payload
   FROM inserted
   RETURNING *
+), relink_pending_chapter_jobs AS (
+  UPDATE novel_generation_jobs j
+  SET
+    payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('director_card_id', inserted.id),
+    updated_at = NOW()
+  FROM inserted
+  WHERE inserted.status = 'READY'
+    AND j.project_id = inserted.project_id
+    AND j.chapter_no = inserted.chapter_no
+    AND j.job_type = 'GENERATE_CHAPTER'
+    AND j.status = 'PENDING'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM novel_chapters c
+      WHERE c.project_id = inserted.project_id
+        AND c.chapter_no = inserted.chapter_no
+        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+    )
+  RETURNING j.*
 ), thread_values AS (
   SELECT value
   FROM inserted, jsonb_array_elements(COALESCE(inserted.card_payload->'foreshadowing_ops', '[]'::jsonb)) AS value
@@ -949,11 +992,11 @@ SELECT
   (SELECT chapter_no FROM inserted) AS chapter_no,
   (SELECT status FROM inserted) AS director_status,
   (SELECT version FROM inserted) AS director_version,
-  NULL::uuid AS job_id,
+  (SELECT id FROM relink_pending_chapter_jobs LIMIT 1) AS job_id,
   'PLAN_CHAPTER_DIRECTOR'::text AS job_type,
   CASE
     WHEN NOT EXISTS (SELECT 1 FROM inserted) THEN '没有找到可保存的导演台。'
-    WHEN (SELECT status FROM inserted) = 'READY' THEN '导演台已保存为当前版本，质量闸门已通过。'
+    WHEN (SELECT status FROM inserted) = 'READY' THEN '导演台已保存为当前版本，质量闸门已通过；同章待生成正文任务已绑定到当前导演台。'
     ELSE '导演台已保存为当前版本，但仍需调整；请检查质量闸门、阻断列表、事实来源审计和分段计划数量。'
   END AS message;`;
 
@@ -1063,6 +1106,25 @@ WITH input AS (
   WHERE d.project_id = input.project_id
     AND d.id = input.director_card_id
     AND d.is_current = TRUE
+), pending_job AS (
+  UPDATE novel_generation_jobs j
+  SET
+    payload = COALESCE(j.payload, '{}'::jsonb) || jsonb_build_object('director_card_id', card.id, 'requested_by', COALESCE((SELECT reviewer FROM input), 'local_user'), 'trigger_source', 'director_manual_start', 'comment', (SELECT comment FROM input)),
+    updated_at = NOW()
+  FROM card
+  WHERE card.status = 'READY'
+    AND j.project_id = card.project_id
+    AND j.chapter_no = card.chapter_no
+    AND j.job_type = 'GENERATE_CHAPTER'
+    AND j.status = 'PENDING'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM novel_chapters c
+      WHERE c.project_id = card.project_id
+        AND c.chapter_no = card.chapter_no
+        AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+    )
+  RETURNING j.*
 ), job AS (
   INSERT INTO novel_generation_jobs (project_id, job_type, chapter_no, payload, status)
   SELECT
@@ -1080,8 +1142,13 @@ WITH input AS (
         AND c.chapter_no = card.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
     )
+    AND NOT EXISTS (SELECT 1 FROM pending_job)
   ON CONFLICT DO NOTHING
   RETURNING *
+), runnable_job AS (
+  SELECT * FROM pending_job
+  UNION ALL
+  SELECT * FROM job
 ), event AS (
   INSERT INTO novel_project_events (project_id, outline_id, event_type, actor, comment, after_payload)
   SELECT
@@ -1090,13 +1157,13 @@ WITH input AS (
     'DIRECTOR_CARD_CHAPTER_JOB_CREATED',
     COALESCE((SELECT reviewer FROM input), 'local_user'),
     COALESCE((SELECT comment FROM input), '按导演台生成正文'),
-    jsonb_build_object('director_card_id', card.id, 'chapter_job_id', (SELECT id FROM job LIMIT 1))
+    jsonb_build_object('director_card_id', card.id, 'chapter_job_id', (SELECT id FROM runnable_job LIMIT 1))
   FROM card
-  WHERE EXISTS (SELECT 1 FROM job)
+  WHERE EXISTS (SELECT 1 FROM runnable_job)
   RETURNING *
 )
 SELECT
-  EXISTS (SELECT 1 FROM job) AS success,
+  EXISTS (SELECT 1 FROM runnable_job) AS success,
   CASE
     WHEN NOT EXISTS (SELECT 1 FROM card) THEN 'DIRECTOR_CARD_NOT_FOUND'
     WHEN (SELECT status FROM card LIMIT 1) <> 'READY' THEN 'DIRECTOR_CARD_NOT_READY'
@@ -1106,7 +1173,7 @@ SELECT
       JOIN card ON card.project_id = c.project_id AND card.chapter_no = c.chapter_no
       WHERE c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
     ) THEN 'ACTIVE_CHAPTER_JOB_BLOCKED'
-    WHEN EXISTS (SELECT 1 FROM job) THEN 'DIRECTOR_CARD_CHAPTER_JOB_CREATED'
+    WHEN EXISTS (SELECT 1 FROM runnable_job) THEN 'DIRECTOR_CARD_CHAPTER_JOB_CREATED'
     ELSE 'ACTIVE_CHAPTER_JOB_BLOCKED'
   END AS result_code,
   'START_CHAPTER_FROM_DIRECTOR'::text AS action,
@@ -1116,7 +1183,7 @@ SELECT
   (SELECT chapter_no FROM card) AS chapter_no,
   (SELECT status FROM card) AS director_status,
   (SELECT version FROM card) AS director_version,
-  (SELECT id FROM job) AS job_id,
+  (SELECT id FROM runnable_job) AS job_id,
   'GENERATE_CHAPTER'::text AS job_type,
   CASE
     WHEN NOT EXISTS (SELECT 1 FROM card) THEN '没有找到当前导演台。'
@@ -1127,7 +1194,7 @@ SELECT
       JOIN card ON card.project_id = c.project_id AND card.chapter_no = c.chapter_no
       WHERE c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
     ) THEN '同章已有正文版本或候选稿，不能重复启动正文生成。'
-    WHEN EXISTS (SELECT 1 FROM job) THEN '已按当前导演台创建正文生成任务。'
+    WHEN EXISTS (SELECT 1 FROM runnable_job) THEN '已按当前导演台创建或绑定正文生成任务。'
     ELSE '同章已有正文生成任务正在等待或运行。'
   END AS message;`;
 
