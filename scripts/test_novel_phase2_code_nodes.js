@@ -108,12 +108,35 @@ assert(
 );
 assert.doesNotThrow(() => JSON.parse(builtJson.prompt_messages_json));
 
+const builtTreatment = runCodeNode('n8n/code/novel_build_glm_request.js', {
+  json: {
+    ...buildInput,
+    run_type: 'GENERATE_STORY_TREATMENT',
+    title: '红凶',
+    premise: '阴阳引渡人接到一桩红衣凶案，引出旧债和阴阳秩序。',
+  },
+  env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
+})[0].json;
+assert.strictEqual(builtTreatment.prompt_key, 'story_treatment');
+assert.strictEqual(builtTreatment.llm_request_body.max_tokens, 2800);
+assert(
+  builtTreatment.llm_request_body.messages[1].content.includes('创作母本') &&
+    builtTreatment.llm_request_body.messages[1].content.includes('mystery_stack') &&
+    builtTreatment.llm_request_body.messages[1].content.includes('reveal_ladder') &&
+    builtTreatment.llm_request_body.messages[1].content.includes('reader_promise'),
+  'story treatment prompt should require a mystery stack, reveal ladder, and reader promise before Bible generation'
+);
+
 const builtBible = runCodeNode('n8n/code/novel_build_glm_request.js', {
   json: {
     ...buildInput,
     run_type: 'GENERATE_BIBLE',
     title: '逆光回响',
     premise: '普通修表师卷入城市异能事件。',
+    story_treatment: {
+      theme_core: '人不能靠忘记旧债获得新生。',
+      reveal_ladder: [{chapter_range: '1-4', visible_clue: '旧表停在父亲失踪时刻'}],
+    },
   },
   env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
 })[0].json;
@@ -124,9 +147,31 @@ assert(
     builtBible.llm_request_body.messages[1].content.includes('organizations') &&
     builtBible.llm_request_body.messages[1].content.includes('locations') &&
     builtBible.llm_request_body.messages[1].content.includes('plot_constraints') &&
-    builtBible.llm_request_body.messages[1].content.includes('所有字段值、描述、角色设定内容必须使用中文'),
-  'bible prompt should force canonical names, registered aliases, and Chinese-readable values'
+    builtBible.llm_request_body.messages[1].content.includes('所有字段值、描述、角色设定内容必须使用中文') &&
+    builtBible.llm_request_body.messages[1].content.includes('【创作母本】') &&
+    builtBible.llm_request_body.messages[1].content.includes('人不能靠忘记旧债获得新生'),
+  'bible prompt should force canonical names, registered aliases, Chinese-readable values, and story-treatment continuity'
 );
+
+const parsedTreatment = runCodeNode('n8n/code/novel_parse_glm_json.js', {
+  json: {
+    run_type: 'GENERATE_STORY_TREATMENT',
+    choices: [{message: {content: JSON.stringify({
+      theme_core: '红衣不是恐怖符号，而是未被偿还的旧债。',
+      reader_promise: '每章都给出一个可误读线索，并在情绪上推进一次偿还。',
+      mystery_stack: [{reader_question: '红衣女人为什么只在雨夜出现？', misdirection: '她是凶手', truth: '她是引路人', payoff_hint: '伞下红线'}],
+      reveal_ladder: [{chapter_range: '1-2', visible_clue: '红伞', misread: '索命', truth_progress: '引渡', emotional_payoff: '愧疚浮出', do_not_reveal: true}],
+      emotional_arc: [{chapter_range: '1-4', outer_pressure: '案子逼近', inner_shift: '逃避到承担', payoff: '主动引渡'}],
+      protagonist_inner_wound: '主角曾经放弃过一个亡魂。',
+      symbolic_motifs: [{motif: '红伞', meaning: '旧债入口', first_use: '开篇雨夜', payoff_use: '终局合伞'}],
+      ending_payoff: '主角承认旧债后完成引渡。',
+      quality_notes: '避免把灵异写成设定百科。',
+    })}}],
+  },
+})[0].json;
+assert.strictEqual(parsedTreatment.run_type, 'GENERATE_STORY_TREATMENT');
+assert(parsedTreatment.theme_core.includes('未被偿还'), 'story treatment parser should expose theme_core');
+assert.strictEqual(JSON.parse(parsedTreatment.reveal_ladder_json)[0].chapter_range, '1-2', 'story treatment parser should preserve reveal ladder JSON');
 
 const builtBiblePatch = runCodeNode('n8n/code/novel_build_glm_request.js', {
   json: {
@@ -225,6 +270,10 @@ assert(
     builtOutline.llm_request_body.messages[1].content.includes('【组织势力】') &&
     builtOutline.llm_request_body.messages[1].content.includes('【剧情约束】') &&
     builtOutline.llm_request_body.messages[1].content.includes('chapters[].title 只写标题本身') &&
+    builtOutline.llm_request_body.messages[1].content.includes('【场景阶梯硬规则】') &&
+    builtOutline.llm_request_body.messages[1].content.includes('scene_beats') &&
+    builtOutline.llm_request_body.messages[1].content.includes('reader_questions') &&
+    builtOutline.llm_request_body.messages[1].content.includes('每个 beat 是一个独立阅读体验') &&
     builtOutline.llm_request_body.messages[1].content.includes('【章节连续性与镜头转换】') &&
     builtOutline.llm_request_body.messages[1].content.includes('不要让读者感觉上一章刚离开 A 地，下一章突然已在 B 地执行新任务'),
   'outline prompt should not invent alias-style double names or frequent cross-chapter breaks'
@@ -316,11 +365,22 @@ const parsedExpandedOutline = runCodeNode('n8n/code/novel_parse_glm_json.js', {
         chapter_no: chapterNo,
         title: `新章${chapterNo}`,
         summary: '扩写剧情',
+        scene_beats: [{
+          beat_no: 1,
+          beat_goal: '打开新线索',
+          scene_image: '旧钟表店灯牌忽明忽暗',
+          new_information: '沈氏商会留下旧票据',
+          emotional_shift: '警惕转为主动追查',
+          reader_question: '旧票据为什么和父亲有关？',
+          do_not_reveal: true,
+        }],
+        reader_questions: ['旧票据为什么和父亲有关？'],
       })),
     })}}],
   },
 })[0].json;
 assert.strictEqual(JSON.parse(parsedExpandedOutline.chapters_json).at(-1).chapter_no, 9, 'outline parser should accept complete rewrite-unwritten coverage');
+assert.strictEqual(JSON.parse(parsedExpandedOutline.chapters_json)[0].scene_beats[0].beat_goal, '打开新线索', 'outline parser should preserve scene beats for director and chapter prompts');
 
 const builtReview = runCodeNode('n8n/code/novel_build_glm_request.js', {
   json: {
@@ -362,6 +422,15 @@ const builtRewrite = runCodeNode('n8n/code/novel_build_glm_request.js', {
     ...buildInput,
     run_type: 'REWRITE_CHAPTER',
     chapter_body: '旧稿正文。',
+    scene_beats: [{
+      beat_no: 1,
+      beat_goal: '修复陌生人可信度',
+      scene_image: '陌生人递出旧怀表刻痕',
+      new_information: '刻痕只有父亲知道',
+      emotional_shift: '抗拒转为短暂合作',
+      reader_question: '陌生人为何知道刻痕？',
+      do_not_reveal: false,
+    }],
     issues: [{type: '逻辑', description: '主角动机跳变', severity: 'medium'}],
     suggestions: ['补足主角决定冒险的心理转折。'],
     human_comment: '',
@@ -394,7 +463,9 @@ assert(
   'rewrite prompt should force AI review issues and suggestions as the rewrite checklist'
 );
 assert(
-  rewritePrompt.includes('【导演台重写约束】') &&
+    rewritePrompt.includes('【导演台重写约束】') &&
+    rewritePrompt.includes('【正文场景阶梯】') &&
+    rewritePrompt.includes('每个 beat 至少要有一段可见场景承接') &&
     rewritePrompt.includes('旧钟表店必须保留为本章核心场景') &&
     rewritePrompt.includes('不得提前揭露 do_not_reveal=true 的伏笔') &&
     rewritePrompt.includes('主角手臂仍有伤，不能突然满血追车'),
@@ -410,6 +481,15 @@ const builtDirector = runCodeNode('n8n/code/novel_build_glm_request.js', {
       story_core: '林昼追查父亲失踪。',
     },
     chapter_segment_total: 4,
+    scene_beats: [{
+      beat_no: 1,
+      beat_goal: '红伞入场',
+      scene_image: '雨巷尽头一把红伞逆风停住',
+      new_information: '红伞只跟着欠证之人',
+      emotional_shift: '警惕转为惊惧',
+      reader_question: '红伞为何只在雨夜出现？',
+      do_not_reveal: true,
+    }],
     previous_chapters: [{chapter_no: 1, summary: '林昼发现父亲失踪和钟表店有关。'}],
     previous_chapter_ending: '林昼握紧怀表上车，旧钟表店的灯光在身后熄灭。',
     previous_transition_modes: [{chapter_no: 1, mode: 'direct_continuation'}],
@@ -449,6 +529,9 @@ assert(
     directorPrompt.includes('fact_source_audit') &&
     directorPrompt.includes('推断') &&
     directorPrompt.includes('【跨章镜头调度】') &&
+    directorPrompt.includes('【本章场景阶梯】') &&
+    directorPrompt.includes('source_beat_nos') &&
+    directorPrompt.includes('所有 scene_beats 至少被一个 segment_plan 覆盖') &&
     directorPrompt.includes('cross_chapter_transition') &&
     directorPrompt.includes('【导演台阻断修复】') &&
     directorPrompt.includes('赏花宴') &&
@@ -1372,6 +1455,48 @@ assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.organizations_json)[0]
 assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.locations_json)[0].story_function, '伏笔汇合点');
 assert.strictEqual(JSON.parse(validatedChineseBibleUpdate.plot_constraints_json)[0].constraint, '第4章前不能揭露钟楼真相');
 assert.strictEqual(validatedChineseBibleUpdate.expansion_notes, '扩写只影响后续章节。');
+
+const validatedOutlineUpdate = runCodeNode('n8n/code/novel_validate_outline_update.js', {
+  json: {
+    body: {
+      project_id: '22222222-2222-2222-2222-222222222222',
+      outline_id: '33333333-3333-3333-3333-333333333333',
+      volume_no: '1',
+      title: '第1章：雨夜红伞',
+      summary: '主角第一次看见红伞。',
+      chapter_goal: '建立民俗悬疑谜面。',
+      conflict_point: '活人恐惧与亡魂求助冲突。',
+      emotional_point: '惊惧转为怜悯。',
+      hook: '红伞下露出旧证词。',
+      scene_beats_json: JSON.stringify([{
+        beat_no: 1,
+        beat_goal: '红伞入场',
+        scene_image: '雨巷尽头一把红伞逆风停住',
+        new_information: '红伞只跟着欠证之人',
+        emotional_shift: '好奇转为惊惧',
+        reader_question: '红伞为何只在雨夜出现？',
+        do_not_reveal: true,
+      }]),
+      reader_questions_json: JSON.stringify(['红伞为何只在雨夜出现？']),
+      reviewer: 'phase2_test',
+    },
+  },
+})[0].json;
+assert.strictEqual(validatedOutlineUpdate.title, '雨夜红伞');
+assert.strictEqual(JSON.parse(validatedOutlineUpdate.scene_beats_json)[0].beat_goal, '红伞入场');
+assert.strictEqual(JSON.parse(validatedOutlineUpdate.reader_questions_json)[0], '红伞为何只在雨夜出现？');
+assertThrowsMessage(() => {
+  runCodeNode('n8n/code/novel_validate_outline_update.js', {
+    json: {
+      body: {
+        project_id: '22222222-2222-2222-2222-222222222222',
+        outline_id: '33333333-3333-3333-3333-333333333333',
+        volume_no: '1',
+        scene_beats_json: '{"bad":true}',
+      },
+    },
+  });
+}, '场景阶梯 必须是 JSON 数组');
 
 const biblePatchAction = runCodeNode('n8n/code/novel_validate_bible_patch_action.js', {
   json: {

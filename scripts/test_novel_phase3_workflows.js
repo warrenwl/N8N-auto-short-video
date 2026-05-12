@@ -178,11 +178,11 @@ assert.strictEqual(centerNodes.get('Webhook - 小说设定集补丁操作').para
 assert.strictEqual(centerNodes.get('Webhook - 小说过期历史章节清理').parameters.httpMethod, 'POST');
 assert.strictEqual(centerNodes.get('Webhook - 小说过期历史章节清理').parameters.path, 'novel-stale-chapters-cleanup');
 assert(
-  centerNodes.get('数据库 - 创建小说项目并创建Bible任务').parameters.query.includes('GENERATE_BIBLE'),
-  '11 project create query should enqueue GENERATE_BIBLE'
+  centerNodes.get('数据库 - 创建小说项目并创建创作母本任务').parameters.query.includes('GENERATE_STORY_TREATMENT'),
+  '11 project create query should enqueue GENERATE_STORY_TREATMENT'
 );
 assert(
-  centerNodes.get('数据库 - 创建小说项目并创建Bible任务').parameters.query.includes('novel_projects'),
+  centerNodes.get('数据库 - 创建小说项目并创建创作母本任务').parameters.query.includes('novel_projects'),
   '11 project create query should insert novel_projects'
 );
 assert(
@@ -236,8 +236,19 @@ assert(
 assert(
   centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("'is_stale'") &&
     centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('c.created_at < co.updated_at') &&
-    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('novel_bible_patches'),
-  '11 project detail should mark stale chapters and read pending Bible patches'
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('novel_bible_patches') &&
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('novel_story_treatments') &&
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes('story_treatment') &&
+    centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("WHEN t.id IS NULL THEN '{}'::jsonb"),
+  '11 project detail should mark stale chapters and read pending Bible patches plus non-empty story treatment'
+);
+assert(
+  centerNodes.get('数据库 - 保存小说大纲').parameters.query.includes('update_novel_outline_manual') &&
+    centerNodes.get('数据库 - 保存小说大纲').parameters.query.includes('$12') &&
+    centerNodes.get('数据库 - 保存小说大纲').parameters.query.includes('$13') &&
+    centerNodes.get('数据库 - 保存小说大纲').parameters.options.queryReplacement.includes('scene_beats_json') &&
+    centerNodes.get('数据库 - 保存小说大纲').parameters.options.queryReplacement.includes('reader_questions_json'),
+  '11 manual outline update should persist editable scene beats and reader questions'
 );
 assert(
   centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("j.job_type = 'NOTIFY_REVIEW'") &&
@@ -255,7 +266,29 @@ assert(
 
 const bible = workflows['n8n/workflow/12_novel_bible_workflow.json'];
 const bibleNodes = nodesByName(bible);
-assert(nodesByType(bible, 'n8n-nodes-base.manualTrigger').length >= 2, '12 should have manual triggers for Bible and Bible patch queues');
+assert(nodesByType(bible, 'n8n-nodes-base.manualTrigger').length >= 3, '12 should have manual triggers for story treatment, Bible, and Bible patch queues');
+assert(
+  bibleNodes.get('数据库 - 领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('FOR UPDATE SKIP LOCKED') &&
+    bibleNodes.get('数据库 - 领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('GENERATE_STORY_TREATMENT'),
+  '12 should claim GENERATE_STORY_TREATMENT jobs with FOR UPDATE SKIP LOCKED'
+);
+assert(
+  bibleNodes.get('数据库 - 写入创作母本并创建Bible任务').parameters.query.includes('novel_story_treatments') &&
+    bibleNodes.get('数据库 - 写入创作母本并创建Bible任务').parameters.query.includes('STORY_TREATMENT_UPDATED') &&
+    bibleNodes.get('数据库 - 写入创作母本并创建Bible任务').parameters.query.includes('GENERATE_BIBLE'),
+  '12 should persist story treatment and enqueue Bible generation'
+);
+assert.strictEqual(bibleNodes.get('Webhook - 前端立即生成创作母本').parameters.httpMethod, 'POST');
+assert.strictEqual(bibleNodes.get('Webhook - 前端立即生成创作母本').parameters.path, 'novel-generate-treatment-now');
+assert(
+  bibleNodes.get('数据库 - 前端领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('front_immediate_missing') &&
+    bibleNodes.get('数据库 - 前端领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('front_immediate_regenerate') &&
+    bibleNodes.get('数据库 - 前端领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('request_novel_project_regeneration') &&
+    bibleNodes.get('数据库 - 前端领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('novel_story_treatments') &&
+    bibleNodes.get('数据库 - 前端领取GENERATE_STORY_TREATMENT任务').parameters.options.queryReplacement.includes('$json.regenerate_existing') &&
+    bibleNodes.get('数据库 - 前端领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('GENERATE_STORY_TREATMENT'),
+  '12 front treatment start should create-and-claim missing jobs and immediately regenerate existing treatments'
+);
 assert(
   bibleNodes.get('数据库 - 领取GENERATE_BIBLE任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
   '12 should claim jobs with FOR UPDATE SKIP LOCKED'
@@ -267,8 +300,10 @@ assert(
 assert(
   bibleNodes.get('数据库 - 读取Bible生成上下文').parameters.query.includes("payload->>'regenerate_prompt'") &&
     bibleNodes.get('数据库 - 读取Bible生成上下文').parameters.query.includes('COALESCE') &&
-    bibleNodes.get('数据库 - 读取Bible生成上下文').parameters.query.includes('AS premise'),
-  '12 Bible generation context should use the regenerated core idea prompt when present'
+    bibleNodes.get('数据库 - 读取Bible生成上下文').parameters.query.includes('AS premise') &&
+    bibleNodes.get('数据库 - 读取Bible生成上下文').parameters.query.includes('novel_story_treatments') &&
+    bibleNodes.get('数据库 - 读取Bible生成上下文').parameters.query.includes('story_treatment'),
+  '12 Bible generation context should use regenerated prompts and the story treatment when present'
 );
 assert.strictEqual(bibleNodes.get('HTTP请求 - 调用GLM生成Bible').parameters.method, 'POST');
 assert(
@@ -324,8 +359,11 @@ assert(
 assert.strictEqual(outlineNodes.get('HTTP请求 - 调用GLM生成大纲').parameters.method, 'POST');
 assert(
   outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('expansion_request') &&
-    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('existing_outlines') &&
+  outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('existing_outlines') &&
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('approved_chapters') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('story_treatment') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('scene_beats') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('reader_questions') &&
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('organizations') &&
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('plot_constraints') &&
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('outline_request_comment'),
@@ -354,6 +392,11 @@ assert(
   '13 should bulk upsert outline chapters from JSON'
 );
 assert(
+  outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('scene_beats') &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('reader_questions'),
+  '13 should persist chapter scene beats and reader questions from outline JSON'
+);
+assert(
   outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('expansion_scope') &&
     outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("i.expansion_scope <> 'append_only'") &&
     outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("approved.status IN ('APPROVED', 'PUBLISHED')"),
@@ -362,6 +405,12 @@ assert(
 assert(
   outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('PLAN_CHAPTER_DIRECTOR'),
   '13 should enqueue first PLAN_CHAPTER_DIRECTOR job'
+);
+assert(
+  outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('superseded_directors') &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("status = 'SUPERSEDED'") &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('cancelled_downstream_jobs'),
+  '13 should retire stale director cards and cancel stale downstream jobs when generated outlines overwrite chapters'
 );
 assert(
   outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('MIN(chapter_no) AS first_chapter_no'),
@@ -397,8 +446,10 @@ assert(
 );
 assert(
   directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('previous_chapter_ending') &&
-    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('previous_transition_modes'),
-  '13B should read previous chapter ending and recent transition modes into director planning'
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('previous_transition_modes') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('scene_beats') &&
+    directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('reader_questions'),
+  '13B should read previous transitions and outline scene beats into director planning'
 );
 assert(
   directorNodes.get('数据库 - 读取导演台上下文').parameters.query.includes('expansion_request') &&

@@ -37,7 +37,7 @@ function formatDuration(value) {
 }
 
 const projectStatusLabel = {
-  CREATED: '待生成设定集',
+  CREATED: '待生成创作母本',
   BIBLE_READY: '设定集已完成',
   OUTLINE_READY: '大纲已完成',
   WRITING: '写作中',
@@ -49,6 +49,7 @@ const projectStatusLabel = {
 };
 
 const jobTypeLabel = {
+  GENERATE_STORY_TREATMENT: '生成创作母本',
   GENERATE_BIBLE: '生成设定集',
   GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',
@@ -68,6 +69,7 @@ const jobStatusLabel = {
 };
 
 const runTypeLabel = {
+  GENERATE_STORY_TREATMENT: '生成创作母本',
   GENERATE_BIBLE: '生成设定集',
   GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',

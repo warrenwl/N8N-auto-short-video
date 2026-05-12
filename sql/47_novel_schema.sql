@@ -53,6 +53,34 @@ BEFORE UPDATE ON novel_projects
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
+CREATE TABLE IF NOT EXISTS novel_story_treatments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
+  theme_core TEXT,
+  reader_promise TEXT,
+  mystery_stack JSONB NOT NULL DEFAULT '[]'::jsonb,
+  reveal_ladder JSONB NOT NULL DEFAULT '[]'::jsonb,
+  emotional_arc JSONB NOT NULL DEFAULT '[]'::jsonb,
+  protagonist_inner_wound TEXT,
+  symbolic_motifs JSONB NOT NULL DEFAULT '[]'::jsonb,
+  ending_payoff TEXT,
+  quality_notes TEXT,
+  generation_model TEXT,
+  raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_novel_story_treatments_project_id
+  ON novel_story_treatments(project_id);
+
+DROP TRIGGER IF EXISTS trg_novel_story_treatments_updated_at ON novel_story_treatments;
+CREATE TRIGGER trg_novel_story_treatments_updated_at
+BEFORE UPDATE ON novel_story_treatments
+FOR EACH ROW
+EXECUTE FUNCTION set_updated_at();
+
 CREATE TABLE IF NOT EXISTS novel_bibles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
@@ -97,6 +125,8 @@ CREATE TABLE IF NOT EXISTS novel_chapter_outlines (
   conflict_point TEXT,
   emotional_point TEXT,
   hook TEXT,
+  scene_beats JSONB NOT NULL DEFAULT '[]'::jsonb,
+  reader_questions JSONB NOT NULL DEFAULT '[]'::jsonb,
   status TEXT NOT NULL DEFAULT 'PLANNED' CHECK (status IN (
     'PLANNED',
     'GENERATING',
@@ -295,6 +325,7 @@ CREATE TABLE IF NOT EXISTS novel_generation_jobs (
   project_id UUID NOT NULL REFERENCES novel_projects(id) ON DELETE CASCADE,
   chapter_id UUID REFERENCES novel_chapters(id) ON DELETE SET NULL,
   job_type TEXT NOT NULL CHECK (job_type IN (
+    'GENERATE_STORY_TREATMENT',
     'GENERATE_BIBLE',
     'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
@@ -360,6 +391,7 @@ CREATE TABLE IF NOT EXISTS novel_ai_runs (
   chapter_id UUID REFERENCES novel_chapters(id) ON DELETE SET NULL,
   job_id UUID REFERENCES novel_generation_jobs(id) ON DELETE SET NULL,
   run_type TEXT NOT NULL CHECK (run_type IN (
+    'GENERATE_STORY_TREATMENT',
     'GENERATE_BIBLE',
     'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
@@ -664,6 +696,7 @@ CREATE TABLE IF NOT EXISTS novel_project_events (
   outline_id UUID REFERENCES novel_chapter_outlines(id) ON DELETE SET NULL,
   chapter_id UUID REFERENCES novel_chapters(id) ON DELETE SET NULL,
   event_type TEXT NOT NULL CHECK (event_type IN (
+    'STORY_TREATMENT_UPDATED',
     'BIBLE_UPDATED',
     'BIBLE_PATCH_CREATED',
     'BIBLE_PATCH_APPLIED',
@@ -679,6 +712,7 @@ CREATE TABLE IF NOT EXISTS novel_project_events (
     'CHAPTER_BLOCK_REVISION_SUGGESTED',
     'CHAPTER_MANUAL_EDIT_CREATED',
     'CHAPTER_MANUAL_EDIT_SAVED',
+    'STORY_TREATMENT_REGENERATE_REQUESTED',
     'BIBLE_REGENERATE_REQUESTED',
     'OUTLINE_REGENERATE_REQUESTED',
     'PROJECT_ARCHIVED',
@@ -777,6 +811,12 @@ ALTER TABLE novel_bibles
 ALTER TABLE novel_bibles
   ADD COLUMN IF NOT EXISTS expansion_notes TEXT;
 
+ALTER TABLE novel_chapter_outlines
+  ADD COLUMN IF NOT EXISTS scene_beats JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE novel_chapter_outlines
+  ADD COLUMN IF NOT EXISTS reader_questions JSONB NOT NULL DEFAULT '[]'::jsonb;
+
 ALTER TABLE novel_chapters
   DROP CONSTRAINT IF EXISTS novel_chapters_status_check;
 
@@ -800,6 +840,7 @@ ALTER TABLE novel_generation_jobs
 
 ALTER TABLE novel_generation_jobs
   ADD CONSTRAINT novel_generation_jobs_job_type_check CHECK (job_type IN (
+    'GENERATE_STORY_TREATMENT',
     'GENERATE_BIBLE',
     'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
@@ -816,6 +857,7 @@ ALTER TABLE novel_ai_runs
 
 ALTER TABLE novel_ai_runs
   ADD CONSTRAINT novel_ai_runs_run_type_check CHECK (run_type IN (
+    'GENERATE_STORY_TREATMENT',
     'GENERATE_BIBLE',
     'GENERATE_BIBLE_PATCH',
     'GENERATE_OUTLINE',
@@ -844,6 +886,7 @@ ALTER TABLE novel_project_events
 
 ALTER TABLE novel_project_events
   ADD CONSTRAINT novel_project_events_event_type_check CHECK (event_type IN (
+    'STORY_TREATMENT_UPDATED',
     'BIBLE_UPDATED',
     'BIBLE_PATCH_CREATED',
     'BIBLE_PATCH_APPLIED',
@@ -859,6 +902,7 @@ ALTER TABLE novel_project_events
     'CHAPTER_BLOCK_REVISION_SUGGESTED',
     'CHAPTER_MANUAL_EDIT_CREATED',
     'CHAPTER_MANUAL_EDIT_SAVED',
+    'STORY_TREATMENT_REGENERATE_REQUESTED',
     'BIBLE_REGENERATE_REQUESTED',
     'OUTLINE_REGENERATE_REQUESTED',
     'PROJECT_ARCHIVED',

@@ -11,6 +11,7 @@ function escapeHtml(value) {
 }
 
 const resultLabel = {
+  STORY_TREATMENT_JOB_CREATED: '已创建创作母本任务',
   BIBLE_JOB_CREATED: '已创建生成设定集任务',
   OUTLINE_JOB_CREATED: '已创建生成大纲任务',
   DIRECTOR_JOB_CREATED: '已创建导演台任务',
@@ -20,6 +21,7 @@ const resultLabel = {
   DIRECTOR_CARD_NOT_FOUND: '导演台不存在',
   DIRECTOR_CARD_NOT_READY: '导演台仍需调整',
   CHAPTER_JOB_CREATED: '已创建章节生成任务',
+  STORY_TREATMENT_REGENERATE_JOB_CREATED: '已创建重跑创作母本任务',
   BIBLE_REGENERATE_JOB_CREATED: '已创建重跑设定集任务',
   OUTLINE_REGENERATE_JOB_CREATED: '已创建重跑大纲任务',
   REGENERATE_JOB_ALREADY_EXISTS: '已有重跑任务',
@@ -94,6 +96,7 @@ const actionLabel = {
   CONTINUE_PROJECT: '继续写作',
   REQUEST_APPROVED_REWRITE: '申请重写此章',
   START_REWRITE_WORKER: '启动待执行重写',
+  REGENERATE_STORY_TREATMENT: '重新生成创作母本',
   REGENERATE_BIBLE: '重新生成设定集',
   REGENERATE_OUTLINE: '重新生成大纲',
   UPDATE_DIRECTOR_CARD: '编辑导演台',
@@ -122,7 +125,7 @@ const actionLabel = {
 };
 
 const projectStatusLabel = {
-  CREATED: '待生成设定集',
+  CREATED: '待生成创作母本',
   BIBLE_READY: '设定集已完成',
   OUTLINE_READY: '大纲已完成',
   WRITING: '写作中',
@@ -134,6 +137,7 @@ const projectStatusLabel = {
 };
 
 const jobTypeLabel = {
+  GENERATE_STORY_TREATMENT: '生成创作母本',
   GENERATE_BIBLE: '生成设定集',
   GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',

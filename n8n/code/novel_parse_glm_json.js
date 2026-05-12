@@ -495,6 +495,88 @@ function normalizeBiblePatchPayload(payload) {
   };
 }
 
+function normalizeStoryTreatmentPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+  const arrayField = (...names) => {
+    for (const name of names) {
+      if (Array.isArray(payload[name])) return payload[name];
+      if (typeof payload[name] === 'string') {
+        const parsed = jsonArray(payload[name]);
+        if (parsed.length) return parsed;
+      }
+    }
+    return [];
+  };
+  return {
+    theme_core: text(payload.theme_core || payload.主题内核 || payload.核心主题),
+    reader_promise: text(payload.reader_promise || payload.读者承诺 || payload.类型承诺),
+    mystery_stack: arrayField('mystery_stack', '悬念堆栈', '谜题堆栈', 'reader_questions'),
+    reveal_ladder: arrayField('reveal_ladder', '真相阶梯', '揭露阶梯'),
+    emotional_arc: arrayField('emotional_arc', '情绪弧线', '情感弧线'),
+    protagonist_inner_wound: text(payload.protagonist_inner_wound || payload.主角内伤 || payload.人物内伤),
+    symbolic_motifs: arrayField('symbolic_motifs', '象征意象', '意象系统'),
+    ending_payoff: text(payload.ending_payoff || payload.结尾兑现 || payload.终局兑现),
+    quality_notes: text(payload.quality_notes || payload.质量备注 || payload.创作备注),
+  };
+}
+
+function hasStoryTreatmentPayload(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  return Boolean(
+    text(payload.theme_core) ||
+    text(payload.reader_promise) ||
+    text(payload.protagonist_inner_wound) ||
+    text(payload.ending_payoff) ||
+    text(payload.quality_notes) ||
+    asArray(payload.mystery_stack).length ||
+    asArray(payload.reveal_ladder).length ||
+    asArray(payload.emotional_arc).length ||
+    asArray(payload.symbolic_motifs).length
+  );
+}
+
+function booleanValue(value) {
+  if (value === true || value === false) return value;
+  const raw = text(value).toLowerCase();
+  return ['true', '1', 'yes', 'y', '需要保密', '不可揭露', '保密'].includes(raw);
+}
+
+function normalizeSceneBeat(value, index) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      ...value,
+      beat_no: Math.max(1, Math.round(number(value.beat_no || value.no || value.index, index + 1))),
+      beat_goal: text(value.beat_goal || value.goal || value.目标 || value.场景目标),
+      scene_image: text(value.scene_image || value.image || value.画面 || value.场景画面),
+      new_information: text(value.new_information || value.information || value.新增信息 || value.线索),
+      emotional_shift: text(value.emotional_shift || value.emotion_turn || value.情绪变化 || value.情绪转折),
+      reader_question: text(value.reader_question || value.question || value.读者疑问),
+      do_not_reveal: booleanValue(value.do_not_reveal || value.keep_secret || value.不可揭露),
+    };
+  }
+  return {
+    beat_no: index + 1,
+    beat_goal: text(value),
+    scene_image: '',
+    new_information: '',
+    emotional_shift: '',
+    reader_question: '',
+    do_not_reveal: false,
+  };
+}
+
+function normalizeSceneBeats(value) {
+  return asArray(value)
+    .map((item, index) => normalizeSceneBeat(item, index))
+    .filter((beat) => beat.beat_goal || beat.scene_image || beat.new_information || beat.emotional_shift || beat.reader_question);
+}
+
+function normalizeReaderQuestions(value) {
+  return asArray(value)
+    .map((item) => text(item.reader_question || item.question || item))
+    .filter(Boolean);
+}
+
 const chapterPayloadKeys = new Set([
   'chapter_title',
   'title',
@@ -706,8 +788,26 @@ if (runType === 'GENERATE_BIBLE_PATCH') {
   });
 }
 
+const storyTreatmentPayload = normalizeStoryTreatmentPayload(parsed);
+if (runType === 'GENERATE_STORY_TREATMENT' || hasStoryTreatmentPayload(storyTreatmentPayload)) {
+  Object.assign(normalized, {
+    run_type: 'GENERATE_STORY_TREATMENT',
+    parsed_payload: storyTreatmentPayload,
+    parsed_payload_json: JSON.stringify(storyTreatmentPayload),
+    theme_core: storyTreatmentPayload.theme_core,
+    reader_promise: storyTreatmentPayload.reader_promise,
+    mystery_stack_json: JSON.stringify(asArray(storyTreatmentPayload.mystery_stack)),
+    reveal_ladder_json: JSON.stringify(asArray(storyTreatmentPayload.reveal_ladder)),
+    emotional_arc_json: JSON.stringify(asArray(storyTreatmentPayload.emotional_arc)),
+    protagonist_inner_wound: storyTreatmentPayload.protagonist_inner_wound,
+    symbolic_motifs_json: JSON.stringify(asArray(storyTreatmentPayload.symbolic_motifs)),
+    ending_payoff: storyTreatmentPayload.ending_payoff,
+    quality_notes: storyTreatmentPayload.quality_notes,
+  });
+}
+
 const biblePayload = normalizeBiblePayload(parsed);
-if (runType !== 'GENERATE_BIBLE_PATCH' && (biblePayload.world_setting || biblePayload.story_core || biblePayload.main_character)) {
+if (!['GENERATE_BIBLE_PATCH', 'GENERATE_STORY_TREATMENT'].includes(runType) && (biblePayload.world_setting || biblePayload.story_core || biblePayload.main_character)) {
   Object.assign(normalized, {
     run_type: runType || 'GENERATE_BIBLE',
     parsed_payload: biblePayload,
@@ -733,6 +833,8 @@ if (Array.isArray(parsed.chapters)) {
   const chapters = parsed.chapters.map((chapter) => ({
     ...chapter,
     title: normalizeChapterTitle(chapter.title),
+    scene_beats: normalizeSceneBeats(chapter.scene_beats || chapter.beats || chapter.场景阶梯 || chapter.场景拍点),
+    reader_questions: normalizeReaderQuestions(chapter.reader_questions || chapter.reader_question || chapter.读者疑问),
   }));
   assertOutlineCoverage(chapters, response);
   assertNoPrematureFinale(chapters, response);

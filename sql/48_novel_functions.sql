@@ -1069,6 +1069,7 @@ DECLARE
   v_need_review_count INTEGER;
   v_active_job_count INTEGER;
   v_failed_job_count INTEGER;
+  v_treatment_count INTEGER;
   v_bible_count INTEGER;
   v_outline_count INTEGER;
   v_max_current_chapter_no INTEGER;
@@ -1188,6 +1189,49 @@ BEGIN
       NULL::integer,
       NULL::uuid,
       '项目已暂停，暂不继续写作。'::text;
+    RETURN;
+  END IF;
+
+  SELECT COUNT(*)::integer
+  INTO v_treatment_count
+  FROM novel_story_treatments t
+  WHERE t.project_id = p_project_id
+    AND (
+      NULLIF(BTRIM(COALESCE(t.theme_core, '')), '') IS NOT NULL
+      OR NULLIF(BTRIM(COALESCE(t.reader_promise, '')), '') IS NOT NULL
+      OR NULLIF(BTRIM(COALESCE(t.protagonist_inner_wound, '')), '') IS NOT NULL
+      OR NULLIF(BTRIM(COALESCE(t.ending_payoff, '')), '') IS NOT NULL
+      OR NULLIF(BTRIM(COALESCE(t.quality_notes, '')), '') IS NOT NULL
+      OR jsonb_array_length(COALESCE(t.mystery_stack, '[]'::jsonb)) > 0
+      OR jsonb_array_length(COALESCE(t.reveal_ladder, '[]'::jsonb)) > 0
+      OR jsonb_array_length(COALESCE(t.emotional_arc, '[]'::jsonb)) > 0
+      OR jsonb_array_length(COALESCE(t.symbolic_motifs, '[]'::jsonb)) > 0
+    );
+
+  IF v_treatment_count = 0 THEN
+    INSERT INTO novel_generation_jobs (project_id, job_type, status, payload)
+    VALUES (
+      p_project_id,
+      'GENERATE_STORY_TREATMENT',
+      'PENDING',
+      jsonb_build_object(
+        'requested_by', COALESCE(NULLIF(p_reviewer, ''), 'local_user'),
+        'comment', NULLIF(p_comment, '')
+      )
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING * INTO v_job;
+
+    RETURN QUERY SELECT
+      TRUE,
+      'STORY_TREATMENT_JOB_CREATED'::text,
+      'CONTINUE_PROJECT'::text,
+      v_project.id,
+      v_project.status,
+      'GENERATE_STORY_TREATMENT'::text,
+      NULL::integer,
+      v_job.id,
+      '已创建生成创作母本任务。'::text;
     RETURN;
   END IF;
 
@@ -1427,6 +1471,146 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS replan_novel_director_cards(UUID, INTEGER, INTEGER, TEXT, TEXT, BOOLEAN);
+
+CREATE OR REPLACE FUNCTION replan_novel_director_cards(
+  p_project_id UUID,
+  p_from_chapter INTEGER DEFAULT NULL,
+  p_to_chapter INTEGER DEFAULT NULL,
+  p_reason TEXT DEFAULT 'upstream_changed',
+  p_actor TEXT DEFAULT 'system',
+  p_enqueue_director_jobs BOOLEAN DEFAULT TRUE
+)
+RETURNS TABLE (
+  affected_chapter_count INTEGER,
+  superseded_director_count INTEGER,
+  cancelled_job_count INTEGER,
+  enqueued_director_job_count INTEGER,
+  first_affected_chapter INTEGER
+) AS $$
+DECLARE
+  v_affected_chapters INTEGER[] := ARRAY[]::integer[];
+  v_reason TEXT := COALESCE(NULLIF(trim(COALESCE(p_reason, '')), ''), 'upstream_changed');
+  v_actor TEXT := COALESCE(NULLIF(trim(COALESCE(p_actor, '')), ''), 'system');
+  v_affected_count INTEGER := 0;
+  v_superseded_count INTEGER := 0;
+  v_cancelled_count INTEGER := 0;
+  v_enqueued_count INTEGER := 0;
+  v_first_chapter INTEGER := NULL;
+BEGIN
+  SELECT COALESCE(array_agg(chapter_no ORDER BY chapter_no), ARRAY[]::integer[])
+  INTO v_affected_chapters
+  FROM (
+    SELECT DISTINCT o.chapter_no
+    FROM novel_chapter_outlines o
+    WHERE o.project_id = p_project_id
+      AND o.status = 'READY'
+      AND (p_from_chapter IS NULL OR o.chapter_no >= p_from_chapter)
+      AND (p_to_chapter IS NULL OR o.chapter_no <= p_to_chapter)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM novel_chapters approved
+        WHERE approved.project_id = o.project_id
+          AND approved.chapter_no = o.chapter_no
+          AND approved.is_current = TRUE
+          AND approved.status IN ('APPROVED', 'PUBLISHED')
+      )
+  ) affected;
+
+  v_affected_count := COALESCE(array_length(v_affected_chapters, 1), 0);
+  IF v_affected_count = 0 THEN
+    RETURN QUERY SELECT 0, 0, 0, 0, NULL::integer;
+    RETURN;
+  END IF;
+
+  v_first_chapter := v_affected_chapters[1];
+
+  UPDATE novel_chapter_director_cards d
+  SET
+    is_current = FALSE,
+    status = 'SUPERSEDED',
+    error = COALESCE(d.error, format('因 %s 触发重新规划，旧导演台已失效。', v_reason)),
+    updated_at = NOW()
+  WHERE d.project_id = p_project_id
+    AND d.chapter_no = ANY(v_affected_chapters)
+    AND d.is_current = TRUE
+    AND d.status IN ('READY', 'NEEDS_REVIEW', 'FAILED');
+
+  GET DIAGNOSTICS v_superseded_count = ROW_COUNT;
+
+  UPDATE novel_generation_jobs j
+  SET
+    status = 'CANCELLED',
+    error_message = COALESCE(j.error_message, format('因 %s 触发重新规划，旧下游任务已取消。', v_reason)),
+    finished_at = COALESCE(j.finished_at, NOW()),
+    updated_at = NOW()
+  WHERE j.project_id = p_project_id
+    AND j.status = 'PENDING'
+    AND j.job_type IN (
+      'PLAN_CHAPTER_DIRECTOR',
+      'GENERATE_CHAPTER',
+      'REVIEW_CHAPTER',
+      'REWRITE_CHAPTER',
+      'REVISE_CHAPTER_BLOCK',
+      'NOTIFY_REVIEW'
+    )
+    AND (
+      j.chapter_no = ANY(v_affected_chapters)
+      OR (
+        j.chapter_no IS NULL
+        AND j.chapter_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM novel_chapters c
+          WHERE c.id = j.chapter_id
+            AND c.chapter_no = ANY(v_affected_chapters)
+        )
+      )
+    );
+
+  GET DIAGNOSTICS v_cancelled_count = ROW_COUNT;
+
+  IF p_enqueue_director_jobs THEN
+    INSERT INTO novel_generation_jobs (
+      project_id,
+      job_type,
+      chapter_no,
+      payload,
+      status
+    )
+    SELECT
+      p_project_id,
+      'PLAN_CHAPTER_DIRECTOR',
+      affected.chapter_no,
+      jsonb_build_object(
+        'trigger_source', v_reason,
+        'requested_by', v_actor,
+        'replan_reason', v_reason
+      ),
+      'PENDING'
+    FROM unnest(v_affected_chapters) AS affected(chapter_no)
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM novel_generation_jobs active
+      WHERE active.project_id = p_project_id
+        AND active.job_type = 'PLAN_CHAPTER_DIRECTOR'
+        AND active.chapter_no = affected.chapter_no
+        AND active.status IN ('PENDING', 'RUNNING')
+    )
+    ON CONFLICT DO NOTHING;
+
+    GET DIAGNOSTICS v_enqueued_count = ROW_COUNT;
+  END IF;
+
+  RETURN QUERY SELECT
+    v_affected_count,
+    v_superseded_count,
+    v_cancelled_count,
+    v_enqueued_count,
+    v_first_chapter;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION request_novel_project_regeneration(
   p_project_id UUID,
   p_step TEXT,
@@ -1468,7 +1652,13 @@ DECLARE
   v_old_premise TEXT;
   v_inactivated_fact_count INTEGER := 0;
 BEGIN
-  IF v_step IN ('BIBLE', 'GENERATE_BIBLE', '设定集') THEN
+  IF v_step IN ('TREATMENT', 'STORY_TREATMENT', 'GENERATE_STORY_TREATMENT', '创作母本', '母本') THEN
+    v_step := 'TREATMENT';
+    v_job_type := 'GENERATE_STORY_TREATMENT';
+    v_action := 'REGENERATE_STORY_TREATMENT';
+    v_event_type := 'STORY_TREATMENT_REGENERATE_REQUESTED';
+    v_status_after := 'CREATED';
+  ELSIF v_step IN ('BIBLE', 'GENERATE_BIBLE', '设定集') THEN
     v_step := 'BIBLE';
     v_job_type := 'GENERATE_BIBLE';
     v_action := 'REGENERATE_BIBLE';
@@ -1493,7 +1683,7 @@ BEGIN
       NULL::text,
       NULL::uuid,
       0::integer,
-      '重跑类型无效，只支持设定集或大纲。'::text;
+      '重跑类型无效，只支持创作母本、设定集或大纲。'::text;
     RETURN;
   END IF;
 
@@ -1610,7 +1800,7 @@ BEGIN
   LIMIT 1;
 
   IF FOUND THEN
-    IF v_step = 'BIBLE' THEN
+    IF v_step IN ('TREATMENT', 'BIBLE') THEN
       UPDATE novel_continuity_facts f
       SET status = 'INACTIVE'
       WHERE f.project_id = p_project_id
@@ -1620,12 +1810,19 @@ BEGIN
       GET DIAGNOSTICS v_inactivated_fact_count = ROW_COUNT;
     END IF;
 
-    IF v_step = 'BIBLE' AND v_regenerate_prompt IS NOT NULL THEN
+    UPDATE novel_projects
+    SET
+      status = v_status_after,
+      error = NULL
+    WHERE id = p_project_id
+    RETURNING * INTO v_project;
+
+    IF v_step IN ('TREATMENT', 'BIBLE') AND v_regenerate_prompt IS NOT NULL THEN
       v_old_premise := v_project.premise;
 
       UPDATE novel_projects
       SET
-        premise = v_regenerate_prompt,
+        premise = CASE WHEN v_step = 'BIBLE' THEN v_regenerate_prompt ELSE premise END,
         status = v_status_after,
         error = NULL
       WHERE id = p_project_id
@@ -1637,7 +1834,7 @@ BEGIN
           'requested_by', v_actor,
           'comment', COALESCE(NULLIF(p_comment, ''), payload->>'comment'),
           'regenerate_prompt', v_regenerate_prompt,
-          'premise_override', v_regenerate_prompt,
+          'premise_override', CASE WHEN v_step IN ('TREATMENT', 'BIBLE') THEN v_regenerate_prompt ELSE NULL END,
           'old_premise', COALESCE(payload->>'old_premise', v_old_premise),
           'inactivated_pending_ai_fact_count', v_inactivated_fact_count
         ),
@@ -1659,6 +1856,8 @@ BEGIN
       v_existing_job.id,
       0::integer,
       CASE
+        WHEN v_step = 'TREATMENT' AND v_regenerate_prompt IS NOT NULL THEN format('已有待处理的创作母本重跑任务，已更新为新的母本要求，并将 %s 条旧候选事实设为失效，请直接启动或查看队列。', v_inactivated_fact_count)
+        WHEN v_step = 'TREATMENT' THEN format('已有待处理的创作母本重跑任务，并将 %s 条旧候选事实设为失效，请直接启动或查看队列。', v_inactivated_fact_count)
         WHEN v_step = 'BIBLE' AND v_regenerate_prompt IS NOT NULL THEN format('已有待处理的设定集重跑任务，已更新为新的核心创意，并将 %s 条旧候选事实设为失效，请直接启动或查看队列。', v_inactivated_fact_count)
         WHEN v_step = 'BIBLE' THEN format('已有待处理的设定集重跑任务，并将 %s 条旧候选事实设为失效，请直接启动或查看队列。', v_inactivated_fact_count)
         ELSE '已有待处理的大纲重跑任务，请直接启动或查看队列。'
@@ -1672,11 +1871,14 @@ BEGIN
     'pending_job_count', (SELECT COUNT(*) FROM novel_generation_jobs j WHERE j.project_id = p_project_id AND j.status = 'PENDING')
   );
 
-  IF v_step = 'BIBLE' THEN
+  IF v_step IN ('TREATMENT', 'BIBLE') THEN
     UPDATE novel_generation_jobs j
     SET
       status = 'CANCELLED',
-      error_message = COALESCE(error_message, '重新生成设定集，旧待处理任务已取消。'),
+      error_message = COALESCE(error_message, CASE
+        WHEN v_step = 'TREATMENT' THEN '重新生成创作母本，旧待处理任务已取消。'
+        ELSE '重新生成设定集，旧待处理任务已取消。'
+      END),
       finished_at = NOW(),
       updated_at = NOW()
     WHERE j.project_id = p_project_id
@@ -1695,7 +1897,7 @@ BEGIN
 
   GET DIAGNOSTICS v_cancelled_job_count = ROW_COUNT;
 
-  IF v_step = 'BIBLE' THEN
+  IF v_step IN ('TREATMENT', 'BIBLE') THEN
     UPDATE novel_continuity_facts f
     SET status = 'INACTIVE'
     WHERE f.project_id = p_project_id
@@ -1725,8 +1927,8 @@ BEGIN
       'requested_by', v_actor,
       'comment', NULLIF(p_comment, ''),
       'regenerate_prompt', v_regenerate_prompt,
-      'premise_override', CASE WHEN v_step = 'BIBLE' THEN v_regenerate_prompt ELSE NULL END,
-      'old_premise', CASE WHEN v_step = 'BIBLE' THEN v_before->>'premise' ELSE NULL END,
+      'premise_override', CASE WHEN v_step IN ('TREATMENT', 'BIBLE') THEN v_regenerate_prompt ELSE NULL END,
+      'old_premise', CASE WHEN v_step IN ('TREATMENT', 'BIBLE') THEN v_before->>'premise' ELSE NULL END,
       'reason', 'manual_regenerate',
       'regenerate_step', lower(v_step),
       'cancelled_job_count', v_cancelled_job_count,
@@ -1774,7 +1976,11 @@ BEGIN
 
   RETURN QUERY SELECT
     TRUE,
-    CASE WHEN v_step = 'BIBLE' THEN 'BIBLE_REGENERATE_JOB_CREATED' ELSE 'OUTLINE_REGENERATE_JOB_CREATED' END::text,
+    CASE
+      WHEN v_step = 'TREATMENT' THEN 'STORY_TREATMENT_REGENERATE_JOB_CREATED'
+      WHEN v_step = 'BIBLE' THEN 'BIBLE_REGENERATE_JOB_CREATED'
+      ELSE 'OUTLINE_REGENERATE_JOB_CREATED'
+    END::text,
     v_action,
     p_project_id,
     v_project.status,
@@ -1785,6 +1991,8 @@ BEGIN
     v_job.id,
     v_cancelled_job_count,
     CASE
+      WHEN v_step = 'TREATMENT' AND v_regenerate_prompt IS NOT NULL THEN format('已用新的母本要求创建重新生成创作母本任务，取消 %s 个旧待处理任务，并将 %s 条旧候选事实设为失效。完成后会继续创建新的设定集生成任务。', v_cancelled_job_count, v_inactivated_fact_count)
+      WHEN v_step = 'TREATMENT' THEN format('已创建重新生成创作母本任务，取消 %s 个旧待处理任务，并将 %s 条旧候选事实设为失效。完成后会继续创建新的设定集生成任务。', v_cancelled_job_count, v_inactivated_fact_count)
       WHEN v_step = 'BIBLE' AND v_regenerate_prompt IS NOT NULL THEN format('已用新的核心创意创建重新生成设定集任务，取消 %s 个旧待处理任务，并将 %s 条旧候选事实设为失效。完成后会继续创建新的大纲生成任务。', v_cancelled_job_count, v_inactivated_fact_count)
       WHEN v_step = 'BIBLE' THEN format('已创建重新生成设定集任务，取消 %s 个旧待处理任务，并将 %s 条旧候选事实设为失效。完成后会继续创建新的大纲生成任务。', v_cancelled_job_count, v_inactivated_fact_count)
       ELSE format('已创建重新生成大纲任务，并取消 %s 个旧待处理任务。已生成章节不会自动删除。', v_cancelled_job_count)
@@ -1955,6 +2163,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS update_novel_outline_manual(UUID, UUID, INTEGER, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT);
+DROP FUNCTION IF EXISTS update_novel_outline_manual(UUID, UUID, INTEGER, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB, JSONB, TEXT, TEXT);
+
 CREATE OR REPLACE FUNCTION update_novel_outline_manual(
   p_project_id UUID,
   p_outline_id UUID,
@@ -1966,7 +2177,9 @@ CREATE OR REPLACE FUNCTION update_novel_outline_manual(
   p_emotional_point TEXT,
   p_hook TEXT,
   p_comment TEXT DEFAULT NULL,
-  p_reviewer TEXT DEFAULT 'local_user'
+  p_reviewer TEXT DEFAULT 'local_user',
+  p_scene_beats JSONB DEFAULT '[]'::jsonb,
+  p_reader_questions JSONB DEFAULT '[]'::jsonb
 )
 RETURNS TABLE (
   success BOOLEAN,
@@ -1985,6 +2198,7 @@ DECLARE
   v_before JSONB := '{}'::jsonb;
   v_after JSONB := '{}'::jsonb;
   v_actor TEXT := COALESCE(NULLIF(p_reviewer, ''), 'local_user');
+  v_replan RECORD;
 BEGIN
   SELECT *
   INTO v_project
@@ -2052,6 +2266,8 @@ BEGIN
     conflict_point = NULLIF(p_conflict_point, ''),
     emotional_point = NULLIF(p_emotional_point, ''),
     hook = NULLIF(p_hook, ''),
+    scene_beats = COALESCE(p_scene_beats, '[]'::jsonb),
+    reader_questions = COALESCE(p_reader_questions, '[]'::jsonb),
     status = 'READY'
   WHERE id = p_outline_id
   RETURNING * INTO v_outline;
@@ -2062,6 +2278,17 @@ BEGIN
   SET status = CASE WHEN status IN ('CREATED', 'BIBLE_READY') THEN 'OUTLINE_READY' ELSE status END
   WHERE id = p_project_id
   RETURNING * INTO v_project;
+
+  SELECT *
+  INTO v_replan
+  FROM replan_novel_director_cards(
+    p_project_id,
+    v_outline.chapter_no,
+    v_outline.chapter_no,
+    'outline_updated',
+    v_actor,
+    TRUE
+  );
 
   INSERT INTO novel_project_events (
     project_id,
@@ -2079,7 +2306,7 @@ BEGIN
     v_actor,
     NULLIF(p_comment, ''),
     v_before,
-    v_after
+    v_after || jsonb_build_object('director_replan', to_jsonb(v_replan))
   );
 
   RETURN QUERY SELECT
@@ -2091,7 +2318,15 @@ BEGIN
     NULL::uuid,
     p_outline_id,
     v_outline.chapter_no,
-    format('第 %s 章大纲已保存。', v_outline.chapter_no)::text;
+    CASE
+      WHEN COALESCE(v_replan.superseded_director_count, 0) > 0
+        OR COALESCE(v_replan.enqueued_director_job_count, 0) > 0
+      THEN format(
+        '第 %s 章大纲已保存；旧导演台已失效，并已重新排队导演台规划。',
+        v_outline.chapter_no
+      )
+      ELSE format('第 %s 章大纲已保存。', v_outline.chapter_no)
+    END::text;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -2129,6 +2364,8 @@ DECLARE
   v_expansion_scope TEXT := COALESCE(NULLIF(trim(COALESCE(p_expansion_scope, '')), ''), 'append_only');
   v_expansion_constraints TEXT := NULLIF(trim(COALESCE(p_expansion_constraints, '')), '');
   v_bible_patch_job_id UUID;
+  v_replan_from_chapter INTEGER := NULL;
+  v_replan RECORD;
 BEGIN
   SELECT *
   INTO v_project
@@ -2259,6 +2496,27 @@ BEGIN
     RETURNING id INTO v_bible_patch_job_id;
   END IF;
 
+  SELECT GREATEST(
+    COALESCE(v_project.current_chapter_no, 0),
+    COALESCE(MAX(c.chapter_no), 0)
+  ) + 1
+  INTO v_replan_from_chapter
+  FROM novel_chapters c
+  WHERE c.project_id = p_project_id
+    AND c.is_current = TRUE
+    AND c.status IN ('APPROVED', 'PUBLISHED');
+
+  SELECT *
+  INTO v_replan
+  FROM replan_novel_director_cards(
+    p_project_id,
+    v_replan_from_chapter,
+    NULL,
+    'project_target_updated',
+    v_actor,
+    v_expansion_request IS NULL
+  );
+
   INSERT INTO novel_project_events (
     project_id,
     event_type,
@@ -2277,7 +2535,8 @@ BEGIN
       'expansion_request', v_expansion_request,
       'expansion_scope', v_expansion_scope,
       'expansion_constraints', v_expansion_constraints,
-      'bible_patch_job_id', v_bible_patch_job_id
+      'bible_patch_job_id', v_bible_patch_job_id,
+      'director_replan', to_jsonb(v_replan)
     )
   );
 
@@ -2292,11 +2551,23 @@ BEGIN
     NULL::integer,
     v_project.target_total_chapters,
     v_project.target_words_per_chapter,
-    CASE
+    (
+      CASE
       WHEN v_expansion_request IS NOT NULL AND v_bible_patch_job_id IS NOT NULL THEN '项目目标与扩写计划已保存；已创建扩写设定补丁任务，确认补丁后再生成后续大纲更稳。'
       WHEN v_expansion_request IS NOT NULL THEN '项目目标与扩写计划已保存；后续大纲和导演台会读取扩写要求，已批准正文仍不会自动改写。'
       ELSE '项目目标已保存；新字数只影响后续章节生成和重写，已生成章节不会自动改写。'
-    END::text;
+      END ||
+      CASE
+        WHEN COALESCE(v_replan.superseded_director_count, 0) > 0
+          OR COALESCE(v_replan.cancelled_job_count, 0) > 0
+          OR COALESCE(v_replan.enqueued_director_job_count, 0) > 0
+        THEN format(
+          ' 已将 %s 个未写章节进入重新规划，旧导演台/旧下游任务不会继续驱动正文。',
+          COALESCE(v_replan.affected_chapter_count, 0)
+        )
+        ELSE ''
+      END
+    )::text;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -2341,6 +2612,8 @@ DECLARE
   v_existing_outline_job_id UUID;
   v_cancelled_job_count INTEGER := 0;
   v_rewrite_from_chapter INTEGER := NULL;
+  v_replan RECORD;
+  v_total_cancelled_job_count INTEGER := 0;
 BEGIN
   SELECT *
   INTO v_patch
@@ -2595,6 +2868,17 @@ BEGIN
       AND c.status IN ('APPROVED', 'PUBLISHED');
   END IF;
 
+  SELECT *
+  INTO v_replan
+  FROM replan_novel_director_cards(
+    v_project.id,
+    v_rewrite_from_chapter,
+    NULL,
+    'bible_patch_applied',
+    v_actor,
+    FALSE
+  );
+
   UPDATE novel_generation_jobs j
   SET
     status = 'CANCELLED',
@@ -2617,6 +2901,7 @@ BEGIN
     );
 
   GET DIAGNOSTICS v_cancelled_job_count = ROW_COUNT;
+  v_total_cancelled_job_count := v_cancelled_job_count + COALESCE(v_replan.cancelled_job_count, 0);
 
   INSERT INTO novel_generation_jobs (
     project_id,
@@ -2636,7 +2921,8 @@ BEGIN
       'expansion_scope', COALESCE(v_patch.expansion_scope, v_project.expansion_scope, 'append_only'),
       'expansion_constraints', COALESCE(v_patch.expansion_constraints, v_project.expansion_constraints, ''),
       'rewrite_from_chapter', v_rewrite_from_chapter,
-      'cancelled_downstream_job_count', v_cancelled_job_count
+      'cancelled_downstream_job_count', v_total_cancelled_job_count,
+      'director_replan', to_jsonb(v_replan)
     ),
     'PENDING'
   )
@@ -2684,8 +2970,9 @@ BEGIN
       'bible', v_after,
       'patch', to_jsonb(v_patch),
       'outline_job_id', COALESCE(v_outline_job_id, v_existing_outline_job_id),
-      'cancelled_downstream_job_count', v_cancelled_job_count,
-      'rewrite_from_chapter', v_rewrite_from_chapter
+      'cancelled_downstream_job_count', v_total_cancelled_job_count,
+      'rewrite_from_chapter', v_rewrite_from_chapter,
+      'director_replan', to_jsonb(v_replan)
     )
   );
 
@@ -2703,7 +2990,14 @@ BEGIN
     v_patch.id,
     CASE
       WHEN COALESCE(v_outline_job_id, v_existing_outline_job_id) IS NULL THEN '扩写设定补丁已应用到正式设定集；当前没有创建新的大纲任务，请检查是否已有运行中的大纲流程。'
-      WHEN v_cancelled_job_count > 0 THEN format('扩写设定补丁已应用到正式设定集；已取消 %s 个旧待处理下游任务，并创建后续大纲重算任务。', v_cancelled_job_count)
+      WHEN v_total_cancelled_job_count > 0 THEN format(
+        '扩写设定补丁已应用到正式设定集；已取消 %s 个旧待处理下游任务，旧导演台已失效，并创建后续大纲重算任务。',
+        v_total_cancelled_job_count
+      )
+      WHEN COALESCE(v_replan.superseded_director_count, 0) > 0 THEN format(
+        '扩写设定补丁已应用到正式设定集；已将 %s 张旧导演台置为失效，并创建后续大纲重算任务。',
+        COALESCE(v_replan.superseded_director_count, 0)
+      )
       ELSE '扩写设定补丁已应用到正式设定集；已创建后续大纲重算任务。'
     END::text;
 END;

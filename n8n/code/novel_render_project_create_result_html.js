@@ -11,7 +11,7 @@ function escapeHtml(value) {
 }
 
 const projectStatusLabel = {
-  CREATED: '待生成设定集',
+  CREATED: '待生成创作母本',
   BIBLE_READY: '设定集已完成',
   OUTLINE_READY: '大纲已完成',
   WRITING: '写作中',
@@ -22,6 +22,7 @@ const projectStatusLabel = {
 };
 
 const jobTypeLabel = {
+  GENERATE_STORY_TREATMENT: '生成创作母本',
   GENERATE_BIBLE: '生成设定集',
   GENERATE_OUTLINE: '生成大纲',
   PLAN_CHAPTER_DIRECTOR: '导演台规划',
@@ -49,12 +50,12 @@ function formHidden(name, value) {
 }
 
 function generationForm(projectId, jobType) {
-  if (!projectId || jobType !== 'GENERATE_BIBLE') return '';
+  if (!projectId || jobType !== 'GENERATE_STORY_TREATMENT') return '';
   return `
-    <form class="inline-form action-now" method="POST" action="/webhook/novel-generate-bible-now" data-confirm="这会启动后台模型任务；提交完成后会回到项目控制台刷新状态。确认启动？">
+    <form class="inline-form action-now" method="POST" action="/webhook/novel-generate-treatment-now" data-confirm="这会启动后台模型任务；提交完成后会回到项目控制台刷新状态。确认启动？">
       ${formHidden('project_id', projectId)}
-      ${formHidden('step', 'bible')}
-      <button class="button primary" type="submit"><span>启动设定集生成</span><small>后台执行并刷新状态</small></button>
+      ${formHidden('step', 'treatment')}
+      <button class="button primary" type="submit"><span>启动创作母本生成</span><small>后台执行并刷新状态</small></button>
     </form>`;
 }
 
@@ -69,7 +70,7 @@ const queueHref = projectId
 const isSuccess = row.success !== false && Boolean(projectId);
 const title = isSuccess ? '创建项目成功' : '创建项目未完成';
 const summary = isSuccess
-  ? '项目已经创建，已创建设定集生成任务并进入队列。当前状态显示待生成设定集，意思是任务已排队但设定内容尚未生成；你可以点击下方按钮启动后台生成，完成提交后会回到项目控制台刷新状态。'
+  ? '项目已经创建，已创建创作母本生成任务并进入队列。系统会先生成主题内核、悬念栈、真相阶梯和情绪弧线，再继续生成设定集与大纲；你可以点击下方按钮启动后台生成。'
   : '没有拿到项目创建结果。请返回创建页检查标题和核心创意，再重新提交。';
 
 const html = `<!doctype html>
@@ -149,7 +150,7 @@ const html = `<!doctype html>
           <dt>项目状态</dt><dd>${escapeHtml(label(projectStatusLabel, row.status, '未记录'))}</dd>
           <dt>目标章节</dt><dd>${escapeHtml(row.target_total_chapters || 0)}</dd>
           <dt>每章字数</dt><dd>${escapeHtml(row.target_words_per_chapter || 0)}</dd>
-          <dt>队列任务</dt><dd>${escapeHtml(label(jobTypeLabel, row.job_type, '已创建设定集生成任务'))} / ${escapeHtml(label(jobStatusLabel, row.job_status, '待处理'))}</dd>
+          <dt>队列任务</dt><dd>${escapeHtml(label(jobTypeLabel, row.job_type, '已创建创作母本生成任务'))} / ${escapeHtml(label(jobStatusLabel, row.job_status, '待处理'))}</dd>
           <dt>项目编号</dt><dd translate="no">${escapeHtml(projectId || '未返回')}</dd>
         </dl>
       </div>
@@ -161,7 +162,7 @@ const html = `<!doctype html>
         <a class="button" href="/webhook/novel-center">返回工作台</a>
         <a class="button" href="/webhook/novel-project-new">继续创建</a>
       </div>
-      <div class="mode-note">“启动设定集生成”会先领取任务并返回后台执行页；模型结果稍后可在项目控制台或队列状态中查看。其他查看入口只读，不会推进队列。</div>
+      <div class="mode-note">“启动创作母本生成”会先领取任务并返回后台执行页；模型结果稍后可在项目控制台或队列状态中查看。其他查看入口只读，不会推进队列。</div>
     </section>
   </main>
   <script>

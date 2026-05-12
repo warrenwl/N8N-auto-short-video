@@ -11,6 +11,7 @@ function escapeHtml(value) {
 }
 
 const stepLabel = {
+  GENERATE_STORY_TREATMENT: '创作母本',
   GENERATE_BIBLE: '设定集',
   GENERATE_BIBLE_PATCH: '扩写设定补丁',
   GENERATE_OUTLINE: '大纲',
@@ -42,6 +43,7 @@ const projectId = row.project_id || row.id || '';
 const jobType = row.job_type || row.requested_step || '';
 const claimSuccess = row.claim_success !== false && row.claim_success !== 'false';
 const isBible = jobType === 'GENERATE_BIBLE';
+const isTreatment = jobType === 'GENERATE_STORY_TREATMENT';
 const isBiblePatch = jobType === 'GENERATE_BIBLE_PATCH';
 const isOutline = jobType === 'GENERATE_OUTLINE';
 const isDirector = jobType === 'PLAN_CHAPTER_DIRECTOR';
@@ -54,12 +56,16 @@ const claimReasonLabel = {
   JOB_NOT_FOUND_OR_ALREADY_CLAIMED: '没有可立即执行的待处理任务。它可能已经被后台队列领取、已经完成，或当前项目状态不允许执行。',
   PROJECT_PAUSED: '项目已暂停，当前不会领取生成任务。',
   PROJECT_ARCHIVED: '项目已归档，当前不会领取生成任务。',
+  RUNNING_JOB_BLOCKED: '项目仍有任务正在运行，暂不启动新的生成任务。',
+  REGENERATE_JOB_ALREADY_EXISTS: '已有待处理的重生成任务，请回项目控制台再次启动或查看队列。',
 };
 const title = claimSuccess
-  ? (isBible ? '设定集生成已启动' : (isBiblePatch ? '扩写设定补丁生成已启动' : (isOutline ? '大纲生成已启动' : (isDirector ? (isRejectedRetry ? `${chapterNo}继续重写已启动` : `${chapterNo}导演台已启动`) : (isChapter ? `${chapterNo}生成已启动` : '生成任务已启动')))))
+  ? (isTreatment ? '创作母本生成已启动' : (isBible ? '设定集生成已启动' : (isBiblePatch ? '扩写设定补丁生成已启动' : (isOutline ? '大纲生成已启动' : (isDirector ? (isRejectedRetry ? `${chapterNo}继续重写已启动` : `${chapterNo}导演台已启动`) : (isChapter ? `${chapterNo}生成已启动` : '生成任务已启动'))))))
   : '未开始模型调用';
 const summary = claimSuccess
-  ? (isBible
+  ? (isTreatment
+    ? '创作母本任务已领取，模型会先生成主题内核、读者承诺、悬念栈、真相阶梯和情绪弧线；完成后会自动创建设定集生成任务。'
+    : (isBible
     ? '设定集任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；完成后可回项目控制台查看设定内容。'
     : (isBiblePatch
       ? '扩写设定补丁任务已领取，模型会根据扩写计划、当前设定集、已批准正文和事实库生成待确认补丁。完成后回项目控制台确认应用。'
@@ -71,7 +77,7 @@ const summary = claimSuccess
           : `${chapterNo}导演台规划任务已领取，模型调用会继续在 n8n 后台执行。通过质量闸门后会自动排队正文生成；如需调整，项目页会显示导演台卡片。`)
         : (isChapter
         ? `${chapterNo}生成任务已领取，模型调用会继续在 n8n 后台执行。页面会自动跳到队列状态；生成候选稿后会进入智能审稿队列，审稿完成后再到审核中心处理。`
-        : '当前生成步骤已交给后台执行。')))))
+        : '当前生成步骤已交给后台执行。'))))))
   : (claimReasonLabel[row.claim_reason] || claimReasonLabel.JOB_NOT_FOUND_OR_ALREADY_CLAIMED);
 const detailHref = projectId
   ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}`

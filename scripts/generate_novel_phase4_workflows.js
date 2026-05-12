@@ -378,6 +378,8 @@ SELECT
   o.conflict_point,
   o.emotional_point,
   o.hook,
+  o.scene_beats,
+  o.reader_questions,
   prev.id AS previous_chapter_id,
   prev.title AS previous_chapter_title,
   prev.summary AS previous_chapter_summary,

@@ -79,17 +79,113 @@ const createHtml = runListCodeNode('n8n/code/novel_render_project_create_result_
   target_total_chapters: 5,
   target_words_per_chapter: 1600,
   generation_job_id: '21000000-0000-0000-0000-000000000011',
-  job_type: 'GENERATE_BIBLE',
+  job_type: 'GENERATE_STORY_TREATMENT',
   job_status: 'PENDING',
 }])[0].json.response_html;
 
-assert(createHtml.includes('action="/webhook/novel-generate-bible-now"'), 'create result should provide POST action for starting Bible generation');
-assert(createHtml.includes('启动设定集生成'), 'create result should show background Bible generation button');
+assert(createHtml.includes('action="/webhook/novel-generate-treatment-now"'), 'create result should provide POST action for starting story treatment generation');
+assert(createHtml.includes('启动创作母本生成'), 'create result should show background story treatment generation button');
 assert(createHtml.includes('后台执行并刷新状态'), 'create result should explain that generation continues in the background without a second result page');
 assert(createHtml.includes('fetch(form.action'), 'create result should start generation in-place instead of navigating to another result page');
 assert(createHtml.includes("window.location.href = '/webhook/novel-project-detail?project_id="), 'create result should return users to the project console after starting generation');
-assert(!/href=["'][^"']*novel-generate-bible-now/i.test(createHtml), 'Bible generation must not be exposed as GET link');
-assert(visibleText(createHtml).includes('当前状态显示待生成设定集'), 'create result should explain queued-but-not-generated status');
+assert(!/href=["'][^"']*novel-generate-treatment-now/i.test(createHtml), 'story treatment generation must not be exposed as GET link');
+assert(visibleText(createHtml).includes('创作母本生成任务'), 'create result should explain queued story-treatment status');
+
+const detailWithTreatmentJob = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  title: '第二十一阶段项目',
+  genre: '都市逆袭',
+  audience: '中文读者',
+  style: '节奏快',
+  premise: '验证前端推进生成。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 0,
+  status: 'CREATED',
+  bible: JSON.stringify({}),
+  outlines: JSON.stringify([]),
+  chapters: JSON.stringify([]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([
+    {id: '21000000-0000-0000-0000-000000000020', job_type: 'GENERATE_STORY_TREATMENT', status: 'PENDING', attempt_count: 0, updated_at: '2026-05-04T00:58:00.000Z'},
+  ]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const detailTreatmentText = visibleText(detailWithTreatmentJob);
+assert(detailWithTreatmentJob.includes('action="/webhook/novel-generate-treatment-now"'), 'project console should provide POST action for pending story treatment job');
+assert(detailTreatmentText.includes('启动创作母本生成'), 'project console should tell users to start story treatment generation');
+assert(detailTreatmentText.includes('主题内核'), 'project console should explain story treatment purpose');
+assert(detailWithTreatmentJob.includes('view=treatment'), 'project console should expose a visible story treatment asset view');
+assert(!detailWithTreatmentJob.includes('action="/webhook/novel-project-continue"'), 'project console should avoid competing queue action while story treatment start is pending');
+assert(!/href=["'][^"']*novel-generate-treatment-now/i.test(detailWithTreatmentJob), 'project console story treatment generation must not be GET link');
+
+const detailTreatmentViewWithAsset = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  requested_view: 'treatment',
+  title: '第二十一阶段项目',
+  genre: '都市灵异',
+  audience: '中文读者',
+  style: '悬疑克制',
+  premise: '验证创作母本前端资产页。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 0,
+  status: 'CREATED',
+  story_treatment: JSON.stringify({
+    theme_core: '阴阳引渡人不是抓鬼，而是在误解和执念之间替亡者交出最后一句话。',
+    reader_promise: '每章都有灵异谜面、现实债和情感反转。',
+    protagonist_inner_wound: '主角怕再次误判一个求救者。',
+    ending_payoff: '红凶真相兑现为一场迟到的引渡。',
+    mystery_stack: [{question: '红伞为何只在雨夜出现', misdirection: '以为是厉鬼索命', payoff: '她在保护被替换的孩子'}],
+    reveal_ladder: [{stage: '第一幕', reveal: '红伞只跟着欠债人'}, {stage: '终局', reveal: '债不是钱，而是一句未说出口的证词'}],
+    emotional_arc: [{chapter_range: '1-2', emotion: '疑惧到怜悯'}],
+    symbolic_motifs: [{motif: '红伞', meaning: '保护与血债重叠'}],
+    quality_notes: '所有后续设定集、大纲和导演台都要围绕悬念栈推进。',
+  }),
+  bible: JSON.stringify({}),
+  outlines: JSON.stringify([]),
+  chapters: JSON.stringify([]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const detailTreatmentAssetText = visibleText(detailTreatmentViewWithAsset);
+assert(detailTreatmentViewWithAsset.includes('id="treatment-section"'), 'story treatment view should render its own section');
+assert(detailTreatmentAssetText.includes('创作母本'), 'story treatment view should be visible in project tabs');
+assert(detailTreatmentAssetText.includes('母本核心'), 'story treatment view should group core premise fields');
+assert(detailTreatmentAssetText.includes('叙事阶梯'), 'story treatment view should group mystery and reveal ladder fields');
+assert(detailTreatmentAssetText.includes('红伞为何只在雨夜出现'), 'story treatment view should render mystery stack content');
+assert(detailTreatmentAssetText.includes('真相阶梯'), 'story treatment view should render reveal ladder content');
+
+const detailTreatmentViewWithEmptyLegacyRecord = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  requested_view: 'treatment',
+  title: '第二十一阶段旧项目',
+  genre: '都市灵异',
+  audience: '中文读者',
+  style: '悬疑克制',
+  premise: '验证旧项目空母本记录不误判为已生成。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 2,
+  status: 'OUTLINE_READY',
+  story_treatment: JSON.stringify({id: '21000000-0000-0000-0000-000000000099', theme_core: null, reader_promise: null, mystery_stack: [], reveal_ladder: [], emotional_arc: [], symbolic_motifs: []}),
+  bible: JSON.stringify({story_core: '旧项目已有设定集。'}),
+  outlines: JSON.stringify([{chapter_no: 1, title: '第一章', summary: '旧大纲', status: 'READY'}]),
+  chapters: JSON.stringify([]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const detailTreatmentEmptyLegacyText = visibleText(detailTreatmentViewWithEmptyLegacyRecord);
+assert(detailTreatmentEmptyLegacyText.includes('暂无创作母本'), 'empty legacy story treatment rows should not be shown as generated assets');
+assert(!detailTreatmentEmptyLegacyText.includes('主题内核、悬念栈、真相阶梯和情绪弧线已可查看'), 'empty legacy story treatment rows should not claim generated content is available');
 
 const detailWithBibleJob = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
   is_empty: false,
@@ -707,6 +803,17 @@ const chapterValidation = runSingleCodeNode('n8n/code/novel_validate_project_gen
   },
 })[0].json;
 assert.strictEqual(chapterValidation.requested_step, 'GENERATE_CHAPTER', 'generation validator should normalize chapter step');
+const treatmentValidation = runSingleCodeNode('n8n/code/novel_validate_project_generation_step.js', {
+  body: {
+    project_id: projectId,
+    step: '创作母本',
+    regenerate_existing: 'true',
+    regenerate_prompt: '强化民俗恐怖外壳和救赎内核。',
+  },
+})[0].json;
+assert.strictEqual(treatmentValidation.requested_step, 'GENERATE_STORY_TREATMENT', 'generation validator should normalize story treatment step');
+assert.strictEqual(treatmentValidation.regenerate_existing, true, 'generation validator should preserve treatment regeneration intent');
+assert.strictEqual(treatmentValidation.regenerate_prompt, '强化民俗恐怖外壳和救赎内核。', 'generation validator should preserve treatment regeneration prompt');
 assert.throws(
   () => runSingleCodeNode('n8n/code/novel_validate_project_generation_step.js', {query: {project_id: projectId}}),
   /POST body/,
@@ -732,6 +839,16 @@ const regenerateBibleValidation = runSingleCodeNode('n8n/code/novel_validate_pro
 assert.strictEqual(regenerateBibleValidation.step, 'BIBLE', 'regenerate validator should normalize Bible step');
 assert.strictEqual(regenerateBibleValidation.regenerate_prompt, '一女主三男主，前期甜宠，后期身份揭露转虐恋。', 'Bible regenerate should preserve the new core idea prompt');
 assert.strictEqual(regenerateBibleValidation.action, 'REGENERATE_BIBLE', 'Bible regenerate should expose action for result rendering');
+const regenerateTreatmentValidation = runSingleCodeNode('n8n/code/novel_validate_project_regenerate.js', {
+  body: {
+    project_id: projectId,
+    step: '创作母本',
+    regenerate_prompt: '强化民俗恐怖外壳、救赎内核和真相阶梯。',
+  },
+})[0].json;
+assert.strictEqual(regenerateTreatmentValidation.step, 'TREATMENT', 'regenerate validator should normalize story treatment step');
+assert.strictEqual(regenerateTreatmentValidation.regenerate_prompt, '强化民俗恐怖外壳、救赎内核和真相阶梯。', 'story treatment regenerate should preserve treatment prompt');
+assert.strictEqual(regenerateTreatmentValidation.action, 'REGENERATE_STORY_TREATMENT', 'story treatment regenerate should expose action for result rendering');
 
 const createFactValidation = runSingleCodeNode('n8n/code/novel_validate_project_fact_action.js', {
   body: {
@@ -772,6 +889,16 @@ assert(visibleText(resultHtml).includes('后台执行中'), 'generation result s
 assert(visibleText(resultHtml).includes('查看队列'), 'generation result should guide users to queue status');
 assert(visibleText(resultHtml).includes('页面会自动跳到队列状态'), 'generation result should explain automatic queue redirect');
 assert(!/\b(GENERATE_BIBLE|GENERATE_OUTLINE|SUCCEEDED|PENDING)\b/.test(visibleText(resultHtml)), 'generation result should not expose internal enums in visible text');
+
+const treatmentResultHtml = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
+  project_id: projectId,
+  job_type: 'GENERATE_STORY_TREATMENT',
+  status: 'RUNNING',
+})[0].json.response_html;
+const treatmentResultText = visibleText(treatmentResultHtml);
+assert(treatmentResultText.includes('创作母本生成已启动'), 'generation result should render story treatment background start in Chinese');
+assert(treatmentResultText.includes('真相阶梯'), 'story treatment result should explain what the step creates');
+assert(!/\b(GENERATE_STORY_TREATMENT|SUCCEEDED|PENDING)\b/.test(treatmentResultText), 'story treatment result should not expose internal enums in visible text');
 
 const biblePatchResultHtml = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
   project_id: projectId,
@@ -818,6 +945,8 @@ assert.deepStrictEqual(
   ['代码 - 校验小说项目重新生成'],
   'project regeneration webhook should validate before touching DB'
 );
+assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成创作母本').parameters.httpMethod, 'POST', 'story treatment direct generation webhook must be POST');
+assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成创作母本').parameters.path, 'novel-generate-treatment-now', 'story treatment direct generation webhook path should match page form');
 assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集').parameters.httpMethod, 'POST', 'Bible direct generation webhook must be POST');
 assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集').parameters.path, 'novel-generate-bible-now', 'Bible direct generation webhook path should match page form');
 assert.strictEqual(workflowNode(workflow12, 'Webhook - 前端立即生成设定集补丁').parameters.httpMethod, 'POST', 'Bible patch direct generation webhook must be POST');
@@ -827,9 +956,15 @@ assert.strictEqual(workflowNode(workflow13, 'Webhook - 前端立即生成大纲'
 assert.strictEqual(workflowNode(workflow14, 'Webhook - 前端立即生成章节').parameters.httpMethod, 'POST', 'chapter direct generation webhook must be POST');
 assert.strictEqual(workflowNode(workflow14, 'Webhook - 前端立即生成章节').parameters.path, 'novel-generate-chapter-now', 'chapter direct generation webhook path should match page form');
 assert(workflowNode(workflow12, '条件判断 - 前端设定集任务已领取'), 'Bible direct generation should branch on claim result before calling GLM');
+assert(workflowNode(workflow12, '条件判断 - 前端创作母本任务已领取'), 'story treatment direct generation should branch on claim result before calling GLM');
 assert(workflowNode(workflow12, '条件判断 - 前端设定集补丁任务已领取'), 'Bible patch direct generation should branch on claim result before calling GLM');
 assert(workflowNode(workflow13, '条件判断 - 前端大纲任务已领取'), 'outline direct generation should branch on claim result before calling GLM');
 assert(workflowNode(workflow14, '条件判断 - 前端章节任务已领取'), 'chapter direct generation should branch on claim result before calling GLM');
+assert.deepStrictEqual(
+  connectionTargets(workflow12, '条件判断 - 前端创作母本任务已领取', 0),
+  ['代码 - 生成前端创作母本结果页', '数据库 - 读取前端创作母本生成上下文'],
+  'story treatment claim success should respond first and continue the model branch in the background'
+);
 assert.deepStrictEqual(
   connectionTargets(workflow12, '条件判断 - 前端设定集任务已领取', 0),
   ['代码 - 生成前端设定集生成结果页', '数据库 - 读取前端Bible生成上下文'],
@@ -851,6 +986,7 @@ assert.deepStrictEqual(
   'chapter claim success should respond first and launch the segmented model branch asynchronously'
 );
 assert(!connectionTargets(workflow12, '数据库 - 标记前端Bible任务成功').includes('代码 - 生成前端设定集生成结果页'), 'Bible success marker should not be on the browser response path');
+assert(!connectionTargets(workflow12, '数据库 - 标记前端创作母本任务成功').includes('代码 - 生成前端创作母本结果页'), 'story treatment success marker should not be on the browser response path');
 assert(!connectionTargets(workflow12, '数据库 - 标记前端Bible补丁任务成功').includes('代码 - 生成前端设定集补丁结果页'), 'Bible patch success marker should not be on the browser response path');
 assert(!connectionTargets(workflow13, '数据库 - 标记前端大纲任务成功').includes('代码 - 生成前端大纲生成结果页'), 'outline success marker should not be on the browser response path');
 assert(!connectionTargets(workflow14, '数据库 - 标记章节生成任务成功').includes('代码 - 生成前端章节生成结果页'), 'chapter success marker should not be on the browser response path');
@@ -859,9 +995,9 @@ console.log(JSON.stringify({
   ok: true,
   phase: 21,
   checks: [
-    '创建结果页可以启动后台设定集生成',
+    '创建结果页可以启动后台创作母本生成',
     '项目控制台按当前待处理任务显示后台启动入口',
-    '设定集和大纲生成入口只走 POST',
+    '创作母本、设定集和大纲生成入口只走 POST',
     '章节生成入口也只走 POST 并从项目页直接处理',
     '前端区分排队补齐和后台执行状态',
     '按钮操作提交后刷新当前上下文',

@@ -63,6 +63,7 @@ function formatDuration(value) {
 }
 
 const jobTypeLabel = {
+  GENERATE_STORY_TREATMENT: '生成创作母本',
   GENERATE_BIBLE: '生成设定集',
   GENERATE_BIBLE_PATCH: '生成扩写设定补丁',
   GENERATE_OUTLINE: '生成大纲',

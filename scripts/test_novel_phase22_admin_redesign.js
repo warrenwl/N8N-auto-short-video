@@ -44,7 +44,7 @@ function visibleText(html) {
 
 function assertNoGetWriteLinks(html, label) {
   assert(
-    !/href=["'][^"']*(novel-project-create|novel-project-continue|novel-project-regenerate|novel-generate-bible-now|novel-generate-outline-now|novel-generate-chapter-now|novel-chapter-rewrite-request|novel-rewrite-start|novel-review-remind|novel-bible-update|novel-outline-update|novel-project-targets-update|novel-project-status-toggle|novel-chapter-manual-edit|novel-project-archive-toggle|novel-archived-projects-cleanup|novel-project-fact-action|novel-stale-chapters-cleanup|novel-review-action|novel-review-manual-edit)/i.test(html),
+    !/href=["'][^"']*(novel-project-create|novel-project-continue|novel-project-regenerate|novel-generate-treatment-now|novel-generate-bible-now|novel-generate-outline-now|novel-generate-chapter-now|novel-chapter-rewrite-request|novel-rewrite-start|novel-review-remind|novel-bible-update|novel-outline-update|novel-project-targets-update|novel-project-status-toggle|novel-chapter-manual-edit|novel-project-archive-toggle|novel-archived-projects-cleanup|novel-project-fact-action|novel-stale-chapters-cleanup|novel-review-action|novel-review-manual-edit)/i.test(html),
     `${label} must not expose write actions as GET links`
   );
 }
@@ -190,6 +190,16 @@ const detailRow = {
   current_chapter_no: 1,
   target_total_chapters: 3,
   target_words_per_chapter: 1800,
+  story_treatment: JSON.stringify({
+    theme_core: '主角用阴阳引渡补上一句迟到的真相。',
+    reader_promise: '每个案件都有民俗谜面、现实误导和情感兑现。',
+    protagonist_inner_wound: '误判求救者造成旧案遗憾。',
+    ending_payoff: '终局让红凶从诅咒变成守护证词。',
+    mystery_stack: [{question: '红线为何缠住活人', misdirection: '厉鬼复仇', payoff: '活人替亡者藏证'}],
+    reveal_ladder: [{stage: '开局', reveal: '红线只缠欠证之人'}],
+    emotional_arc: [{chapter_range: '1-3', emotion: '惊疑到共情'}],
+    symbolic_motifs: [{motif: '红线', meaning: '血债与引渡'}],
+  }),
   bible: JSON.stringify({
     story_core: '主角回城翻盘。',
     main_character: {name: '陆明', aliases: ['阿明'], public_name: '陆师傅', identity: '旧城修表师', identity_note: '真实身份暂时隐藏', goal: '翻身'},
@@ -197,7 +207,24 @@ const detailRow = {
     villain_setting: [{name: '赵衡', motivation: '控制旧城', conflict_with_mc: '争夺旧城控制权', threat_level: '高'}],
     selling_points: ['逆袭', '爽点'],
   }),
-  outlines: JSON.stringify([{id: '22000000-0000-0000-0000-000000000022', chapter_no: 1, title: '第一章：旧城灯火', summary: '主角回城。', status: 'READY'}]),
+  outlines: JSON.stringify([{
+    id: '22000000-0000-0000-0000-000000000022',
+    chapter_no: 1,
+    title: '第一章：旧城灯火',
+    summary: '主角回城。',
+    chapter_goal: '建立旧城债务谜面。',
+    status: 'READY',
+    scene_beats: [{
+      beat_no: 1,
+      beat_goal: '旧城雨夜入场',
+      scene_image: '陆明撑伞走进旧街，钟楼灯光忽明忽暗',
+      new_information: '旧城账本仍在暗格',
+      emotional_shift: '戒备转为主动',
+      reader_question: '旧城账本为什么还在？',
+      do_not_reveal: true,
+    }],
+    reader_questions: ['旧城账本为什么还在？'],
+  }]),
   chapters: JSON.stringify([
     {
       id: '22000000-0000-0000-0000-000000000021',
@@ -233,6 +260,8 @@ assertFullWidthShell(detailOverviewHtml, 'project detail');
 for (const expected of ['下一步动作区', '项目资产入口', '关键风险与资产完成度', '项目二级视图']) {
   assert(detailOverviewText.includes(expected), `project overview should include command marker: ${expected}`);
 }
+assert(detailOverviewText.includes('创作母本'), 'project overview should expose the story treatment asset entry');
+assert(detailOverviewHtml.includes('view=treatment'), 'project overview should link to the story treatment view');
 for (const expected of ['project-actions-drawer', '项目操作抽屉', 'project-command-center', 'asset-status-grid', 'data-open-dialog="project-actions-drawer"', 'project-action-danger-zone']) {
   assert(detailOverviewHtml.includes(expected), `project overview should expose drawer/collapsed interaction: ${expected}`);
 }
@@ -271,12 +300,33 @@ for (const expected of [
 ]) {
   assert(detailOverviewHtml.includes(expected), `project operation drawer should keep target word controls consistent with create page: ${expected}`);
 }
-for (const expected of ['.project-command-center { display: grid; gap: 10px;', '.project-identity-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto;', '.next-action-strip { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, auto);', '.asset-status-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));']) {
+for (const expected of ['.project-command-center { display: grid; gap: 10px;', '.project-identity-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto;', '.next-action-strip { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, auto);', '.asset-status-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));']) {
   assert(detailOverviewHtml.includes(expected), `project overview should use compact command center layout: ${expected}`);
 }
 assert(!detailOverviewHtml.includes('class="project-info"'), 'project overview should no longer render the old tall left project card');
 assert(!detailOverviewText.includes('第一章正文不应出现在默认总览'), 'project overview should not render long body text');
 assertNoGetWriteLinks(detailOverviewHtml, 'project overview');
+
+const detailTreatmentHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'treatment'}])[0].json.response_html;
+const detailTreatmentText = visibleText(detailTreatmentHtml);
+for (const expected of ['id="treatment-section"', '母本核心', '叙事阶梯', '主题内核', '真相阶梯', '红线为何缠住活人']) {
+  assert(detailTreatmentHtml.includes(expected) || detailTreatmentText.includes(expected), `project treatment view should expose story treatment marker: ${expected}`);
+}
+for (const expected of ['重新生成母本', '清理下游并立即启动', 'action="/webhook/novel-generate-treatment-now"', 'name="regenerate_existing" value="true"', '新的母本要求']) {
+  assert(detailTreatmentHtml.includes(expected), `project treatment view should expose treatment regeneration control: ${expected}`);
+}
+assertNoGetWriteLinks(detailTreatmentHtml, 'project treatment view');
+
+const detailMissingTreatmentHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  ...detailRow,
+  requested_view: 'treatment',
+  story_treatment: JSON.stringify({}),
+  jobs: JSON.stringify([]),
+}])[0].json.response_html;
+for (const expected of ['暂无创作母本', '立即生成创作母本', '自动补任务并启动', 'action="/webhook/novel-generate-treatment-now"', 'name="step" value="treatment"']) {
+  assert(detailMissingTreatmentHtml.includes(expected), `missing treatment view should expose immediate generation control: ${expected}`);
+}
+assertNoGetWriteLinks(detailMissingTreatmentHtml, 'missing treatment view');
 
 const detailFactsHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'facts'}])[0].json.response_html;
 for (const expected of [
@@ -409,6 +459,11 @@ assert(detailOutlineHtml.includes('class="outline-dashboard"'), 'outline view sh
 assert(detailOutlineHtml.includes('data-catalog-action="expand-all"'), 'outline view should expose expand/collapse controls for chapter panels');
 assert(detailOutlineHtml.includes('class="side-dialog outline-edit-dialog"'), 'outline chapter editing should live in a right-side drawer');
 assert(detailOutlineHtml.includes('data-open-dialog="outline-edit-'), 'outline chapter edit buttons should open right-side drawers');
+assert(detailOutlineHtml.includes('class="outline-scene-workspace"'), 'outline view should render scene beats as a visible workspace');
+assert(detailOutlineHtml.includes('旧城雨夜入场'), 'outline view should show scene beat goals');
+assert(detailOutlineHtml.includes('旧城账本为什么还在？'), 'outline view should show reader questions');
+assert(detailOutlineHtml.includes('name="scene_beats_json"'), 'outline edit drawer should submit editable scene beats');
+assert(detailOutlineHtml.includes('name="reader_questions_json"'), 'outline edit drawer should submit editable reader questions');
 assert(!detailOutlineHtml.includes('<summary>编辑本章大纲</summary>'), 'outline chapter edit forms should not render as inline details');
 assert(detailOutlineHtml.includes('class="readonly-field"><span>卷号</span>'), 'outline edit drawer should show volume as a read-only field');
 assert(detailOutlineHtml.includes('<input type="hidden" name="volume_no"'), 'outline edit drawer should still submit the current volume number');

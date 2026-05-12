@@ -296,6 +296,8 @@ SELECT
   o.conflict_point,
   o.emotional_point,
   o.hook,
+  o.scene_beats,
+  o.reader_questions,
   director.id AS director_card_id,
   director.version AS director_card_version,
   director.card_payload AS director_card,

@@ -300,6 +300,8 @@ SELECT
   o.conflict_point,
   o.emotional_point,
   o.hook,
+  o.scene_beats,
+  o.reader_questions,
   CASE
     WHEN p.target_words_per_chapter <= 1500 THEN 1
     WHEN p.target_words_per_chapter <= 2500 THEN 2
@@ -389,10 +391,12 @@ LEFT JOIN LATERAL (
     'summary', picked.summary,
     'chapter_goal', picked.chapter_goal,
     'conflict_point', picked.conflict_point,
-    'hook', picked.hook
+    'hook', picked.hook,
+    'scene_beats', picked.scene_beats,
+    'reader_questions', picked.reader_questions
   ) ORDER BY picked.chapter_no) AS future_outlines
   FROM (
-    SELECT chapter_no, title, summary, chapter_goal, conflict_point, hook
+    SELECT chapter_no, title, summary, chapter_goal, conflict_point, hook, scene_beats, reader_questions
     FROM novel_chapter_outlines
     WHERE project_id = p.id
       AND chapter_no > o.chapter_no

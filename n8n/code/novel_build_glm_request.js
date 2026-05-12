@@ -11,6 +11,7 @@ const fallbackConfig = {
   temperature: 0.75,
   max_tokens: 12000,
   max_tokens_by_prompt: {
+    story_treatment: 2800,
     director: 2200,
     chapter: 6000,
   },
@@ -27,6 +28,7 @@ const fallbackConfig = {
   },
   blocked_topics: ['未成年人不当内容', '高风险违法行为教学', '现实个人隐私'],
   system_prompts: {
+    story_treatment: '你是一名成熟的小说开发编辑和类型片策划。必须只输出严格 JSON。',
     bible: '你是一名成熟的商业网文策划编辑。必须只输出严格 JSON。',
     outline: '你是一名商业网文大纲策划。必须只输出严格 JSON。',
     director: '你是一名商业网文导演和连续性编辑。必须只输出严格 JSON，不写正文。',
@@ -35,6 +37,7 @@ const fallbackConfig = {
     rewrite: '你是一名商业网文改稿编辑。必须只输出严格 JSON。',
   },
   user_prompt_templates: {
+    story_treatment: '请根据小说项目资料生成创作母本 Story Treatment。输出严格 JSON。',
     bible: '请根据小说项目资料生成小说 Bible。输出严格 JSON。',
     outline: '请根据小说 Bible 生成章节大纲。输出严格 JSON。',
     director: '请为当前章节生成导演台规划。只输出严格 JSON，不写正文。',
@@ -81,6 +84,7 @@ function readConfig() {
 
 function normalizeRunType(value) {
   const raw = String(value || '').trim().toUpperCase();
+  if (['GENERATE_STORY_TREATMENT', 'STORY_TREATMENT', 'TREATMENT', '创作母本'].includes(raw)) return 'GENERATE_STORY_TREATMENT';
   if (['GENERATE_BIBLE', 'BIBLE'].includes(raw)) return 'GENERATE_BIBLE';
   if (['GENERATE_BIBLE_PATCH', 'BIBLE_PATCH', 'PATCH_BIBLE'].includes(raw)) return 'GENERATE_BIBLE_PATCH';
   if (['GENERATE_OUTLINE', 'OUTLINE'].includes(raw)) return 'GENERATE_OUTLINE';
@@ -93,6 +97,7 @@ function normalizeRunType(value) {
 
 function promptKey(runType) {
   return {
+    GENERATE_STORY_TREATMENT: 'story_treatment',
     GENERATE_BIBLE: 'bible',
     GENERATE_BIBLE_PATCH: 'bible_patch',
     GENERATE_OUTLINE: 'outline',
@@ -149,6 +154,63 @@ function buildCreativeBrief(values) {
     `目标读者：${audience}。情绪兑现、信息密度和追更理由都要贴合这类读者。`,
     `文风：${style}。这是硬约束，正文、标题、钩子、审稿和重写都要按它执行。`,
     `篇幅：目标共 ${totalChapters} 章，每章 ${words} 字左右；正文允许上下浮动 15%，但不得明显短章或灌水。`,
+  ].join('\n');
+}
+
+function buildStoryTreatmentInstruction(runType) {
+  if (runType !== 'GENERATE_STORY_TREATMENT') return '';
+  return [
+    '【创作母本规则】',
+    'Story Treatment 只负责小说感、情绪引擎、真相阶梯和读者承诺；不要写成角色表或世界观百科。',
+    '必须把恐惧/爽点/情感兑现拆成可执行的 reveal_ladder 和 emotional_arc，避免只写一句“揭示真相”。',
+    'mystery_stack 必须区分 reader_question、misdirection、truth、payoff_hint。',
+    'reveal_ladder 每一项必须包含 chapter_range、visible_clue、misread、truth_progress、emotional_payoff、do_not_reveal。',
+    'symbolic_motifs 要写清 motif、meaning、first_use、payoff_use。',
+  ].join('\n');
+}
+
+function buildBibleTreatmentInstruction(runType, values) {
+  if (runType !== 'GENERATE_BIBLE' || isBlankPromptValue(values.story_treatment)) return '';
+  return [
+    '【创作母本】',
+    values.story_treatment,
+    '设定集必须服务创作母本：保留主题内核、读者承诺、真相阶梯、情绪弧线、主角内伤、象征意象和结尾兑现。',
+    '不要把创作母本压缩成几条设定；需要把它转化为角色动机、关系张力、长期约束、locations/organizations/plot_constraints 和 tone_rules。',
+  ].join('\n');
+}
+
+function buildOutlineSceneBeatInstruction(runType, values) {
+  if (runType !== 'GENERATE_OUTLINE') return '';
+  return [
+    '【场景阶梯硬规则】',
+    isBlankPromptValue(values.story_treatment) ? '' : `创作母本：${values.story_treatment}`,
+    '每个 chapters[] 对象必须包含 scene_beats，数量 4-8 个；每个 beat 是一个独立阅读体验，不是 summary 的改写。',
+    'scene_beats[].beat_no 必须从 1 连续编号；每项必须包含 beat_goal、scene_image、new_information、emotional_shift、reader_question、do_not_reveal。',
+    '如果本章承担真相揭露，必须拆成“线索 -> 误判 -> 修正 -> 情绪兑现”，不要用一句“揭示真相”概括。',
+    '每章可额外包含 reader_questions 数组，记录读者读完本章应该继续追问的问题。',
+  ].filter(Boolean).join('\n');
+}
+
+function buildDirectorSceneBeatInstruction(runType, values) {
+  if (runType !== 'PLAN_CHAPTER_DIRECTOR') return '';
+  return [
+    '【本章场景阶梯】',
+    values.scene_beats || '[]',
+    '导演台必须优先使用 scene_beats 组织 segment_plan：每个 segment_plan 至少承接一个 beat_goal 或 emotional_shift。',
+    'segment_plan 每项必须包含 source_beat_nos 数组，列出本段承接的 scene_beats[].beat_no；所有 scene_beats 至少被一个 segment_plan 覆盖。',
+    '如果某个 beat 被合并、拆分或延后，必须在 causal_chain 或 abruptness_risks 说明原因。',
+    '不得跳过 scene_beats 中标记 do_not_reveal 的保密边界；如果需要调整顺序，必须在 causal_chain 或 abruptness_risks 说明原因。',
+  ].join('\n');
+}
+
+function buildChapterSceneBeatInstruction(runType, values) {
+  if (!['GENERATE_CHAPTER', 'REWRITE_CHAPTER'].includes(runType) || isBlankPromptValue(values.scene_beats)) return '';
+  return [
+    '【正文场景阶梯】',
+    values.scene_beats,
+    '正文必须按 scene_beats 的场景推进写成具体场景；每个 beat 至少落实为可见动作、线索、情绪变化或读者疑问。',
+    '正文不能把多个 beat 压缩成摘要句；每个 beat 至少要有一段可见场景承接。',
+    '不得提前揭露 do_not_reveal 标记的内容。',
   ].join('\n');
 }
 
@@ -461,6 +523,9 @@ const baseValues = {
   plot_constraints: stringifyForPrompt(source.plot_constraints),
   expansion_notes: String(source.expansion_notes || ''),
   selling_points: stringifyForPrompt(source.selling_points),
+  story_treatment: stringifyForPrompt(source.story_treatment),
+  scene_beats: stringifyForPrompt(source.scene_beats || source.outline_scene_beats),
+  reader_questions: stringifyForPrompt(source.reader_questions || source.outline_reader_questions),
   existing_outlines: stringifyForPrompt(source.existing_outlines),
   existing_outlines_raw: source.existing_outlines,
   approved_chapters: stringifyForPrompt(source.approved_chapters),
@@ -502,8 +567,17 @@ if (runType === 'PLAN_CHAPTER_DIRECTOR' && source.max_tokens === undefined) {
 const userPromptWithBrief = renderedUserPrompt.includes('【创作约束】')
   ? renderedUserPrompt
   : `${renderedUserPrompt}\n\n${values.creative_brief}`;
+const userPromptWithTreatment = appendInstructionOnce(
+  appendInstructionOnce(
+    userPromptWithBrief,
+    '【创作母本规则】',
+    buildStoryTreatmentInstruction(runType)
+  ),
+  '【创作母本】',
+  buildBibleTreatmentInstruction(runType, values)
+);
 const userPromptWithNaming = appendInstructionOnce(
-  userPromptWithBrief,
+  userPromptWithTreatment,
   ['角色命名必须建立唯一主名', '【角色命名一致性】', '角色称呼一致性'],
   buildNamingInstruction(runType)
 );
@@ -518,7 +592,11 @@ const userPromptWithExpansion = appendInstructionOnce(
   buildExpansionInstruction(runType, values)
 );
 const userPromptWithOutlineContinuity = appendInstructionOnce(
-  userPromptWithExpansion,
+  appendInstructionOnce(
+    userPromptWithExpansion,
+    '【场景阶梯硬规则】',
+    buildOutlineSceneBeatInstruction(runType, values)
+  ),
   '【章节连续性与镜头转换】',
   buildOutlineContinuityInstruction(runType)
 );
@@ -538,7 +616,15 @@ const userPromptWithFactGrounding = appendInstructionOnce(
   buildFactGroundingInstruction(runType, values)
 );
 const userPromptWithDirectorTransition = appendInstructionOnce(
-  userPromptWithFactGrounding,
+  appendInstructionOnce(
+    appendInstructionOnce(
+      userPromptWithFactGrounding,
+      '【本章场景阶梯】',
+      buildDirectorSceneBeatInstruction(runType, values)
+    ),
+    '【正文场景阶梯】',
+    buildChapterSceneBeatInstruction(runType, values)
+  ),
   '【跨章镜头调度】',
   buildDirectorTransitionInstruction(runType, values)
 );

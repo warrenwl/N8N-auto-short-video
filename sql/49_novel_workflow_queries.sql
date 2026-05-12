@@ -1,7 +1,7 @@
 -- Novel workflow V1 query snippets for n8n Postgres nodes.
 -- These are intended to be copied into individual Postgres nodes as needed.
 
--- 1) Create a project and enqueue Bible generation.
+-- 1) Create a project and enqueue story treatment generation.
 -- $1 title
 -- $2 genre
 -- $3 audience
@@ -33,7 +33,7 @@ WITH project AS (
   RETURNING *
 ), job AS (
   INSERT INTO novel_generation_jobs (project_id, job_type, status)
-  SELECT id, 'GENERATE_BIBLE', 'PENDING'
+  SELECT id, 'GENERATE_STORY_TREATMENT', 'PENDING'
   FROM project
   ON CONFLICT DO NOTHING
   RETURNING *

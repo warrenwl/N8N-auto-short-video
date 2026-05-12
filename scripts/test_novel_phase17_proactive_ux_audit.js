@@ -83,17 +83,17 @@ const createResultHtml = runCodeNode('n8n/code/novel_render_project_create_resul
   target_total_chapters: 12,
   target_words_per_chapter: 1800,
   generation_job_id: '33333333-3333-3333-3333-333333333333',
-  job_type: 'GENERATE_BIBLE',
+  job_type: 'GENERATE_STORY_TREATMENT',
   job_status: 'PENDING',
   response_status_code: 201,
 }])[0].json.response_html;
 const createResultText = visibleText(createResultHtml);
-for (const expected of ['创建项目成功', '主动体验复查项目', '已创建设定集生成任务', '启动设定集生成', '查看项目控制台', '查看队列']) {
+for (const expected of ['创建项目成功', '主动体验复查项目', '已创建创作母本生成任务', '启动创作母本生成', '查看项目控制台', '查看队列']) {
   assert(createResultText.includes(expected), `create result visible text should include: ${expected}`);
 }
 assert(createResultHtml.includes('/webhook/novel-project-detail?project_id=22222222-2222-2222-2222-222222222222'), 'create result should link to project detail');
 assert(createResultHtml.includes('/webhook/novel-queue-status?project_id=22222222-2222-2222-2222-222222222222'), 'create result should link to filtered queue');
-assert(!/\b(CREATED|GENERATE_BIBLE|PENDING|NOVEL_PROJECT_CREATED)\b/.test(createResultText), 'create result visible text should not expose internal enums');
+assert(!/\b(CREATED|GENERATE_STORY_TREATMENT|GENERATE_BIBLE|PENDING|NOVEL_PROJECT_CREATED)\b/.test(createResultText), 'create result visible text should not expose internal enums');
 
 const detailCode = read('n8n/code/novel_render_project_detail_html.js');
 assert(detailCode.includes('正文工具条'), 'project detail should include a body reading toolbar');

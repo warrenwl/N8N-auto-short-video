@@ -34,6 +34,21 @@ function positiveInt(value, label) {
   return parsed;
 }
 
+function jsonArray(value, label) {
+  const raw = text(value);
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${label} 必须是合法 JSON 数组。`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${label} 必须是 JSON 数组。`);
+  }
+  return parsed;
+}
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const projectId = text(body.project_id);
 const outlineId = text(body.outline_id || body.id);
@@ -59,6 +74,8 @@ return [{
     conflict_point: text(body.conflict_point),
     emotional_point: text(body.emotional_point),
     hook: text(body.hook),
+    scene_beats_json: JSON.stringify(jsonArray(body.scene_beats_json, '场景阶梯')),
+    reader_questions_json: JSON.stringify(jsonArray(body.reader_questions_json, '读者追问')),
     comment,
     reviewer,
     action: 'UPDATE_OUTLINE',
