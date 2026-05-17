@@ -61,6 +61,7 @@ function generationForm(projectId, jobType) {
 
 const row = ($input.all()[0] || {}).json || {};
 const projectId = row.id ? String(row.id) : '';
+const autoStartTreatment = row.auto_start_treatment === true || row.auto_start_treatment === 'true';
 const detailHref = projectId
   ? `/webhook/novel-project-detail?project_id=${encodeURIComponent(projectId)}`
   : '/webhook/novel-project-list';
@@ -70,7 +71,9 @@ const queueHref = projectId
 const isSuccess = row.success !== false && Boolean(projectId);
 const title = isSuccess ? '创建项目成功' : '创建项目未完成';
 const summary = isSuccess
-  ? '项目已经创建，已创建创作母本生成任务并进入队列。系统会先生成主题内核、悬念栈、真相阶梯和情绪弧线，再继续生成设定集与大纲；你可以点击下方按钮启动后台生成。'
+  ? (autoStartTreatment
+    ? '项目已经创建，上传文本已进入创作母本生成任务。页面会自动启动后台生成，GLM 会先识别文档内容并提炼主题内核、悬念栈、真相阶梯和情绪弧线。'
+    : '项目已经创建，已创建创作母本生成任务并进入队列。系统会先生成主题内核、悬念栈、真相阶梯和情绪弧线，再继续生成设定集与大纲；你可以点击下方按钮启动后台生成。')
   : '没有拿到项目创建结果。请返回创建页检查标题和核心创意，再重新提交。';
 
 const html = `<!doctype html>
@@ -150,23 +153,67 @@ const html = `<!doctype html>
           <dt>项目状态</dt><dd>${escapeHtml(label(projectStatusLabel, row.status, '未记录'))}</dd>
           <dt>目标章节</dt><dd>${escapeHtml(row.target_total_chapters || 0)}</dd>
           <dt>每章字数</dt><dd>${escapeHtml(row.target_words_per_chapter || 0)}</dd>
+          <dt>创建方式</dt><dd>${autoStartTreatment ? `上传文档：${escapeHtml(row.source_document_name || '未命名文档')}` : '手动填写核心创意'}</dd>
+          ${autoStartTreatment ? `<dt>文档长度</dt><dd>${escapeHtml(row.source_document_char_count || 0)} 字符${row.source_document_truncated ? '（已截取）' : ''}</dd>` : ''}
           <dt>队列任务</dt><dd>${escapeHtml(label(jobTypeLabel, row.job_type, '已创建创作母本生成任务'))} / ${escapeHtml(label(jobStatusLabel, row.job_status, '待处理'))}</dd>
           <dt>项目编号</dt><dd translate="no">${escapeHtml(projectId || '未返回')}</dd>
         </dl>
       </div>
       <div class="actions">
-        ${generationForm(projectId, row.job_type)}
+        ${autoStartTreatment ? '<span class="button primary" data-auto-start-label>正在自动启动创作母本生成...</span>' : generationForm(projectId, row.job_type)}
         <a class="button primary" href="${escapeHtml(detailHref)}">查看项目控制台</a>
         <a class="button" href="${escapeHtml(queueHref)}">查看队列</a>
         <a class="button" href="/webhook/novel-project-list">查看项目列表</a>
         <a class="button" href="/webhook/novel-center">返回工作台</a>
         <a class="button" href="/webhook/novel-project-new">继续创建</a>
       </div>
-      <div class="mode-note">“启动创作母本生成”会先领取任务并返回后台执行页；模型结果稍后可在项目控制台或队列状态中查看。其他查看入口只读，不会推进队列。</div>
+      <div class="mode-note">${autoStartTreatment ? '上传文档创建会自动领取创作母本任务并调用 GLM；模型结果稍后可在项目控制台或队列状态中查看。' : '“启动创作母本生成”会先领取任务并返回后台执行页；模型结果稍后可在项目控制台或队列状态中查看。其他查看入口只读，不会推进队列。'}</div>
     </section>
   </main>
   <script>
     (() => {
+      const autoStart = ${autoStartTreatment ? 'true' : 'false'};
+      const detailHref = '/webhook/novel-project-detail?project_id=${escapeHtml(encodeURIComponent(projectId))}';
+      const projectId = '${escapeHtml(projectId)}';
+      const autoStartLabel = document.querySelector('[data-auto-start-label]');
+      const toastFor = (title, message, isError = false) => {
+        const toast = document.createElement('div');
+        toast.className = 'action-toast' + (isError ? ' is-error' : '');
+        toast.setAttribute('role', 'status');
+        toast.setAttribute('aria-live', 'polite');
+        const strong = document.createElement('strong');
+        const span = document.createElement('span');
+        strong.textContent = title;
+        span.textContent = message;
+        toast.append(strong, span);
+        document.body.appendChild(toast);
+        return toast;
+      };
+      async function autoStartTreatmentJob() {
+        if (!autoStart || !projectId) return;
+        const body = new FormData();
+        body.append('project_id', projectId);
+        body.append('step', 'treatment');
+        try {
+          const response = await fetch('/webhook/novel-generate-treatment-now', {
+            method: 'POST',
+            body,
+            credentials: 'same-origin',
+            headers: {'X-Requested-With': 'fetch'},
+          });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          if (autoStartLabel) autoStartLabel.textContent = '创作母本生成已自动启动';
+          toastFor('后台任务已启动', '正在进入项目控制台...');
+          window.setTimeout(() => {
+            window.location.href = '/webhook/novel-project-detail?project_id=${escapeHtml(encodeURIComponent(projectId))}';
+          }, 700);
+        } catch (error) {
+          if (autoStartLabel) autoStartLabel.textContent = '自动启动失败，请到项目控制台手动启动';
+          toastFor('自动启动未完成', error.message || '请稍后重试。', true);
+        }
+      }
+      autoStartTreatmentJob();
+
       document.querySelectorAll('form[data-confirm]').forEach((form) => {
         form.addEventListener('submit', async (event) => {
           const message = form.dataset.confirm || '确认执行？';
@@ -181,14 +228,9 @@ const html = `<!doctype html>
             button.disabled = true;
             button.textContent = '正在启动后台任务...';
           }
-          const toast = document.createElement('div');
-          toast.className = 'action-toast';
-          toast.setAttribute('role', 'status');
-          toast.setAttribute('aria-live', 'polite');
-          const strong = document.createElement('strong');
-          const span = document.createElement('span');
-          toast.append(strong, span);
-          document.body.appendChild(toast);
+          const toast = toastFor('', '');
+          const strong = toast.querySelector('strong');
+          const span = toast.querySelector('span');
           try {
             const body = new FormData(form);
             const response = await fetch(form.action, {
@@ -201,7 +243,7 @@ const html = `<!doctype html>
             strong.textContent = '后台任务已启动';
             span.textContent = '正在进入项目控制台...';
             window.setTimeout(() => {
-              window.location.href = '${escapeHtml(detailHref)}';
+              window.location.href = '/webhook/novel-project-detail?project_id=${escapeHtml(encodeURIComponent(projectId))}';
             }, 450);
           } catch (error) {
             toast.classList.add('is-error');

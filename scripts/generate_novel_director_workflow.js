@@ -217,6 +217,38 @@ FROM claimed
 WHERE j.id = claimed.id
 RETURNING j.*;`;
 
+const claimDirectorByInputQuery = `-- Claim a pending PLAN_CHAPTER_DIRECTOR job from an async caller.
+WITH input AS (
+  SELECT
+    CASE
+      WHEN NULLIF($1::text, '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN ($1::text)::uuid
+      ELSE NULL::uuid
+    END AS job_id
+), claimed AS (
+  SELECT j.id
+  FROM novel_generation_jobs j
+  JOIN novel_projects p ON p.id = j.project_id
+  WHERE j.job_type = 'PLAN_CHAPTER_DIRECTOR'
+    AND j.status = 'PENDING'
+    AND j.attempt_count < j.max_attempts
+    AND p.status NOT IN ('PAUSED', 'ARCHIVED')
+    AND ((SELECT job_id FROM input) IS NULL OR j.id = (SELECT job_id FROM input))
+  ORDER BY j.chapter_no ASC NULLS LAST, j.created_at ASC
+  FOR UPDATE SKIP LOCKED
+  LIMIT 1
+)
+UPDATE novel_generation_jobs j
+SET
+  status = 'RUNNING',
+  started_at = NOW(),
+  attempt_count = attempt_count + 1,
+  error_message = NULL,
+  updated_at = NOW()
+FROM claimed
+WHERE j.id = claimed.id
+RETURNING j.*;`;
+
 const claimDirectorForProjectQuery = `-- Claim one pending PLAN_CHAPTER_DIRECTOR job for a specific project.
 WITH requested AS (
   SELECT $1::uuid AS project_id
@@ -278,7 +310,7 @@ WHERE NOT EXISTS (SELECT 1 FROM updated);`;
 const readDirectorContextQuery = `-- Read context for chapter director planning.
 SELECT
   p.id AS project_id,
-  p.title AS novel_title,
+  CASE WHEN COALESCE(p.title_in_prompt, TRUE) THEN p.title ELSE '' END AS novel_title,
   p.genre,
   p.audience,
   p.style,
@@ -688,6 +720,7 @@ WITH input AS (
       WHERE c.project_id = card.project_id
         AND c.chapter_no = card.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = card.outline_id)
     )
   RETURNING j.*
 ), chapter_job AS (
@@ -706,6 +739,7 @@ WITH input AS (
       WHERE c.project_id = card.project_id
         AND c.chapter_no = card.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = card.outline_id)
     )
     AND NOT EXISTS (SELECT 1 FROM pending_chapter_job)
   ON CONFLICT DO NOTHING
@@ -929,6 +963,7 @@ WITH input AS (
       WHERE c.project_id = inserted.project_id
         AND c.chapter_no = inserted.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = inserted.outline_id)
     )
   RETURNING j.*
 ), thread_values AS (
@@ -1127,6 +1162,7 @@ WITH input AS (
       WHERE c.project_id = card.project_id
         AND c.chapter_no = card.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = card.outline_id)
     )
   RETURNING j.*
 ), job AS (
@@ -1145,6 +1181,7 @@ WITH input AS (
       WHERE c.project_id = card.project_id
         AND c.chapter_no = card.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = card.outline_id)
     )
     AND NOT EXISTS (SELECT 1 FROM pending_job)
   ON CONFLICT DO NOTHING
@@ -1176,6 +1213,7 @@ SELECT
       FROM novel_chapters c
       JOIN card ON card.project_id = c.project_id AND card.chapter_no = c.chapter_no
       WHERE c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = card.outline_id)
     ) THEN 'ACTIVE_CHAPTER_JOB_BLOCKED'
     WHEN EXISTS (SELECT 1 FROM runnable_job) THEN 'DIRECTOR_CARD_CHAPTER_JOB_CREATED'
     ELSE 'ACTIVE_CHAPTER_JOB_BLOCKED'
@@ -1197,6 +1235,7 @@ SELECT
       FROM novel_chapters c
       JOIN card ON card.project_id = c.project_id AND card.chapter_no = c.chapter_no
       WHERE c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
+        AND (c.is_current = TRUE OR c.outline_id = card.outline_id)
     ) THEN '同章已有正文版本或候选稿，不能重复启动正文生成。'
     WHEN EXISTS (SELECT 1 FROM runnable_job) THEN '已按当前导演台创建或绑定正文生成任务。'
     ELSE '同章已有正文生成任务正在等待或运行。'
@@ -1213,6 +1252,13 @@ const directorWorkflow = workflowBase(
   [
     manualNode('manual-novel-director-13b', '手动触发', [-920, 0]),
     executeWorkflowTriggerNode('execute-trigger-director-worker-13b', '触发器 - 后台执行导演台规划', [-920, -180]),
+    postgresNode(
+      'postgres-claim-input-director-13b',
+      '数据库 - 领取指定PLAN_CHAPTER_DIRECTOR任务',
+      [-700, -180],
+      claimDirectorByInputQuery,
+      '={{ [ $json.job_id || $json.id || "" ] }}'
+    ),
     postgresNode('postgres-claim-director-13b', '数据库 - 领取PLAN_CHAPTER_DIRECTOR任务', [-700, 0], claimDirectorQuery),
     postgresNode(
       'postgres-read-director-context-13b',
@@ -1246,13 +1292,13 @@ const directorWorkflow = workflowBase(
 	      supersedeCurrentDirectorCardQuery,
 	      '={{ [ $("代码 - 解析导演台 GLM响应").first().json.project_id, $("代码 - 解析导演台 GLM响应").first().json.chapter_no ] }}'
 	    ),
-	    postgresNode(
-	      'postgres-mark-director-success-13b',
-	      '数据库 - 标记导演台任务成功',
-	      [1280, 0],
-	      markJobSucceededQuery,
-	      '={{ [ $("代码 - 解析导演台 GLM响应").first().json.job_id ] }}'
-	    ),
+    postgresNode(
+      'postgres-mark-director-success-13b',
+      '数据库 - 标记导演台任务成功',
+      [1280, 0],
+      markJobSucceededQuery,
+      '={{ [ $("代码 - 解析导演台 GLM响应").first().json.job_id ] }}'
+    ),
     webhookNode('webhook-front-generate-director-13b', 'Webhook - 前端立即生成导演台', [-920, 260], 'POST', 'novel-generate-director-now', 'novel-generate-director-now-13b'),
     codeNode('code-validate-front-director-13b', '代码 - 校验前端生成导演台', [-700, 260], code('n8n/code/novel_validate_project_generation_step.js')),
     postgresNode(
@@ -1311,7 +1357,8 @@ const directorWorkflow = workflowBase(
   ],
   {
     '手动触发': {main: [[{node: '数据库 - 领取PLAN_CHAPTER_DIRECTOR任务', type: 'main', index: 0}]]},
-    '触发器 - 后台执行导演台规划': {main: [[{node: '数据库 - 读取导演台上下文', type: 'main', index: 0}]]},
+    '触发器 - 后台执行导演台规划': {main: [[{node: '数据库 - 领取指定PLAN_CHAPTER_DIRECTOR任务', type: 'main', index: 0}]]},
+    '数据库 - 领取指定PLAN_CHAPTER_DIRECTOR任务': {main: [[{node: '数据库 - 读取导演台上下文', type: 'main', index: 0}]]},
     '数据库 - 领取PLAN_CHAPTER_DIRECTOR任务': {main: [[{node: '数据库 - 读取导演台上下文', type: 'main', index: 0}]]},
     '数据库 - 读取导演台上下文': {main: [[{node: '代码 - 构建导演台 GLM请求', type: 'main', index: 0}]]},
     '代码 - 构建导演台 GLM请求': {main: [[{node: 'HTTP请求 - 调用GLM生成导演台', type: 'main', index: 0}]]},

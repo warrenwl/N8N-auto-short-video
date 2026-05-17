@@ -211,15 +211,35 @@ const detailRow = {
 const detailOverviewText = visibleText(runListCodeNode('n8n/code/novel_render_project_detail_html.js', [detailRow])[0].json.response_html);
 const detailBibleHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'bible'}])[0].json.response_html;
 const detailBibleText = visibleText(detailBibleHtml);
+const detailBibleAppliedPatchHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  ...detailRow,
+  requested_view: 'bible',
+  bible_patches: JSON.stringify([
+    {
+      id: '19190000-0000-0000-0000-000000000032',
+      status: 'APPLIED',
+      expansion_request: '已合并商会线。',
+      expansion_scope: 'append_only',
+      patch_payload: {summary: '已合并进正式设定集。'},
+      created_at: '2026-05-03T01:20:00.000Z',
+    },
+  ]),
+}])[0].json.response_html;
 const detailOutlineText = visibleText(runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'outline'}])[0].json.response_html);
 const detailOpsHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{...detailRow, requested_view: 'ops'}])[0].json.response_html;
 const detailOpsText = visibleText(detailOpsHtml);
 const combinedDetailText = [detailOverviewText, detailBibleText, detailOutlineText, detailOpsText].join(' ');
 
-for (const expected of ['小说项目控制台', '项目目标与扩写计划', '暂停项目']) {
+for (const expected of ['小说项目控制台', '标题设置', '项目目标与扩写计划', '暂停项目']) {
   assert(detailOverviewText.includes(expected), `project console overview visible text should include: ${expected}`);
 }
 const detailOverviewHtml = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [detailRow])[0].json.response_html;
+assert(
+  detailOverviewHtml.indexOf('<summary><span>标题设置</span>') < detailOverviewHtml.indexOf('<summary><span>项目目标与扩写计划</span>'),
+  'project title controls should be isolated before project target controls'
+);
+assert(detailOverviewHtml.includes('<button type="submit">保存标题设置</button>'), 'project console should expose a separate title settings submit');
+assert(detailOverviewHtml.includes('项目标题请在“标题设置”里单独修改'), 'project target form should direct title edits to the separate title settings block');
 assert(detailOverviewHtml.includes('action="/webhook/novel-project-archive-toggle"'), 'project console should expose archive through POST form');
 assert(detailOverviewHtml.includes('data-confirm-title="第十九阶段项目"'), 'archive form should carry the exact title for client-side confirmation');
 assert(detailOverviewHtml.includes('name="confirm_title" autocomplete="off" required'), 'archive confirmation input should be required before submit');
@@ -227,6 +247,7 @@ assert(detailOverviewHtml.includes('必须完整输入项目名'), 'archive form
 assert(detailBibleHtml.includes('data-open-dialog="bible-edit-story-core"'), 'project console bible view should expose per-setting Bible edit buttons on cards');
 assert(detailBibleHtml.includes('class="side-dialog bible-field-edit-dialog"'), 'project console bible view should open per-setting Bible edit drawers');
 assert(detailBibleText.includes('扩写设定补丁待确认') && detailBibleHtml.includes('/webhook/novel-bible-patch-action'), 'project console Bible view should expose confirmable expansion Bible patches');
+assert(!detailBibleAppliedPatchHtml.includes('id="bible-patch-section"'), 'project console Bible view should not show historical applied patches above the current Bible');
 assert(detailOutlineText.includes('编辑本章大纲'), 'project console outline view should expose outline edit forms');
 for (const expected of ['项目操作记录', '设定集已编辑', '项目目标已修改']) {
   assert(detailOpsText.includes(expected), `project console ops view should include: ${expected}`);

@@ -125,13 +125,21 @@ for (const expected of ['创建新小说项目', '小说标题', 'AI标题', '�
   assert(createText.includes(expected), `create page visible text should include: ${expected}`);
 }
 assert(createHtml.includes('method="POST" action="/webhook/novel-project-create"'), 'create page should submit to POST action');
+assert(createHtml.includes('role="tablist"') && createHtml.includes('data-create-tab="manual"') && createHtml.includes('data-create-tab="upload"'), 'create page should split manual and upload creation into tabs');
+assert(createHtml.includes('data-create-form="manual"') && createHtml.includes('data-create-form="upload"'), 'create page should use separate forms for manual and upload creation');
+assert(createHtml.indexOf('data-create-form="upload"') > createHtml.indexOf('data-create-form="manual"'), 'upload form should be separated after the manual create form');
+assert(createText.includes('上传 txt / md 生成项目'), 'create page should expose upload-driven project creation');
+assert(createHtml.includes('accept=".txt,.md,.markdown,text/plain,text/markdown"'), 'create page upload should accept txt and markdown text');
+assert(createHtml.includes('name="source_document_text"') && createHtml.includes('data-source-file'), 'create page should submit uploaded text as a hidden form field');
+assert(createHtml.includes('file.text()') && createHtml.includes('自动启动创作母本生成'), 'create page should read text locally and explain auto-start behavior');
+assert(createHtml.includes('panel-upload-create') && createHtml.includes('hidden'), 'upload creation tab should be hidden until selected');
 assert(createHtml.includes('type="button" data-ai-title'), 'AI title helper should be a non-submit button');
 assert(createHtml.includes('type="button" data-ai-idea'), 'AI idea helper should be a non-submit button');
 assert(createHtml.includes('textarea name="creative_direction"'), 'create page should expose optional creative direction above premise');
 assert(createHtml.includes('/webhook/novel-project-ai-assist') && createHtml.includes('fetch(assistUrl'), 'create page AI buttons should call the GLM assist webhook');
 assert(!createHtml.includes('buildIdea()') && !createHtml.includes('buildTitle()'), 'create page should not fake AI with local title/idea builders');
 assert(createHtml.includes('data-ai-feedback'), 'create page should show GLM assist request feedback');
-assert(createHtml.includes('directionInput') && createHtml.includes('creative_direction') && createHtml.includes('assist_nonce') && createHtml.includes('previous_ai_title') && createHtml.includes('aiGenerated'), 'create page should send creative direction, vary GLM requests, and avoid anchoring on previous AI output');
+assert(createHtml.includes('payloadFor(form, assistType)') && createHtml.includes('creative_direction') && createHtml.includes('assist_nonce') && createHtml.includes('previous_ai_title') && createHtml.includes('aiGenerated'), 'create page should send creative direction, vary GLM requests, and avoid anchoring on previous AI output');
 assert(createAssistValidateCode.includes('creative_direction'), 'create-page AI assist validator should preserve creative direction');
 assert(createAssistBuildCode.includes('creativeDirection') && createAssistBuildCode.includes('【创意建议方向】') && createAssistBuildCode.includes('genreInstruction') && createAssistBuildCode.includes('diversityBrief') && createAssistBuildCode.includes('top_p'), 'create-page GLM assist prompt should inject optional direction and genre-specific diversity controls');
 const directedAssist = runCodeNode('n8n/code/novel_validate_project_ai_assist.js', [], {
@@ -172,6 +180,50 @@ for (const expected of [
   assert(createHtml.includes(expected), `create page should provide preset dropdown option: ${expected}`);
 }
 assert(!rawVisibleEnums.test(createText), `create page visible text should not expose internal enums: ${createText}`);
+
+const createValidationFromUpload = runCodeNode('n8n/code/novel_validate_project_create.js', [], {
+  body: {
+    title: '',
+    genre: '悬疑灵异',
+    audience: '中文网文读者',
+    style: '悬疑紧张、伏笔清晰、反转克制',
+    source_document_name: '红凶.md',
+    source_document_type: 'text/markdown',
+    source_document_size: '2048',
+    source_document_text: '第一章 红雨夜。'.repeat(80),
+  },
+})[0].json;
+assert.strictEqual(createValidationFromUpload.title, '红凶', 'upload creation should infer title from txt/md filename when title is empty');
+assert.strictEqual(createValidationFromUpload.create_mode, 'UPLOAD_SOURCE_DOCUMENT', 'upload creation should mark source document mode');
+assert(createValidationFromUpload.premise.includes('根据上传文档'), 'upload creation should synthesize premise fallback from source document');
+assert(createValidationFromUpload.source_document_text.includes('第一章'), 'upload validation should preserve source text for treatment generation');
+assert.throws(
+  () => runCodeNode('n8n/code/novel_validate_project_create.js', [], {body: {title: '空项目', genre: '都市逆袭'}}),
+  /核心创意 premise/,
+  'manual creation should still require a premise when no document is uploaded'
+);
+
+const uploadResultHtml = runCodeNode('n8n/code/novel_render_project_create_result_html.js', [{
+  success: true,
+  id: '11111111-1111-1111-1111-111111111112',
+  title: '红凶',
+  genre: '悬疑灵异',
+  status: 'CREATED',
+  target_total_chapters: 20,
+  target_words_per_chapter: 2000,
+  create_mode: 'UPLOAD_SOURCE_DOCUMENT',
+  source_document_name: '红凶.md',
+  source_document_char_count: 6400,
+  auto_start_treatment: true,
+  job_type: 'GENERATE_STORY_TREATMENT',
+  job_status: 'PENDING',
+}])[0].json.response_html;
+const uploadResultText = visibleText(uploadResultHtml);
+assert(uploadResultText.includes('上传文本已进入创作母本生成任务'), 'upload create result should explain source text treatment generation');
+assert(uploadResultText.includes('正在自动启动创作母本生成'), 'upload create result should not ask for a second manual treatment click');
+assert(uploadResultHtml.includes("fetch('/webhook/novel-generate-treatment-now'"), 'upload create result should auto-start story treatment generation through POST');
+assert(uploadResultHtml.includes("body.append('step', 'treatment')"), 'upload create result auto-start should request treatment generation');
+assert(!uploadResultHtml.includes('启动创作母本生成</span>'), 'upload create result should hide the second-click treatment button');
 
 const projectListHtml = runCodeNode('n8n/code/novel_render_project_list_html.js', projectRows)[0].json.response_html;
 const projectListText = visibleText(projectListHtml);

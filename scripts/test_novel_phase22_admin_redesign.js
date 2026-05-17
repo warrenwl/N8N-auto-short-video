@@ -44,7 +44,7 @@ function visibleText(html) {
 
 function assertNoGetWriteLinks(html, label) {
   assert(
-    !/href=["'][^"']*(novel-project-create|novel-project-continue|novel-project-regenerate|novel-generate-treatment-now|novel-generate-bible-now|novel-generate-outline-now|novel-generate-chapter-now|novel-chapter-rewrite-request|novel-rewrite-start|novel-review-remind|novel-bible-update|novel-outline-update|novel-project-targets-update|novel-project-status-toggle|novel-chapter-manual-edit|novel-project-archive-toggle|novel-archived-projects-cleanup|novel-project-fact-action|novel-stale-chapters-cleanup|novel-review-action|novel-review-manual-edit)/i.test(html),
+    !/href=["'][^"']*(novel-project-create|novel-project-continue|novel-project-regenerate|novel-generate-treatment-now|novel-generate-bible-now|novel-generate-outline-now|novel-generate-chapter-now|novel-chapter-rewrite-request|novel-job-recover|novel-review-remind|novel-bible-update|novel-outline-update|novel-project-targets-update|novel-project-status-toggle|novel-chapter-manual-edit|novel-project-archive-toggle|novel-archived-projects-cleanup|novel-project-fact-action|novel-stale-chapters-cleanup|novel-review-action|novel-review-manual-edit)/i.test(html),
     `${label} must not expose write actions as GET links`
   );
 }
@@ -268,10 +268,14 @@ for (const expected of ['project-actions-drawer', '项目操作抽屉', 'project
 for (const removed of ['project-action-summary', 'project-action-queue', '操作前确认', '推荐推进']) {
   assert(!detailOverviewHtml.includes(removed), `project operation drawer should not expose removed queue/confirmation section: ${removed}`);
 }
-for (const expected of ['项目目标与推进状态', '项目目标与扩写计划', '归档管理']) {
+for (const expected of ['项目目标与推进状态', '标题设置', '项目目标与扩写计划', '归档管理']) {
   assert(detailOverviewText.includes(expected), `project operation drawer should expose organized sections: ${expected}`);
 }
-for (const expected of ['action="/webhook/novel-rewrite-start"', '启动第 2 章重写', '恢复/重试模型调用', 'name="job_id"']) {
+assert(
+  detailOverviewHtml.indexOf('<summary><span>标题设置</span>') < detailOverviewHtml.indexOf('<summary><span>项目目标与扩写计划</span>'),
+  'project operation drawer should keep title settings separate from target and expansion planning'
+);
+for (const expected of ['action="/webhook/novel-job-recover"', '启动第 2 章重写', '恢复/重试模型调用', 'name="job_id"']) {
   assert(detailOverviewHtml.includes(expected), `project overview should expose pending rewrite recovery: ${expected}`);
 }
 assert(detailOverviewText.includes('第 2 章重写待执行'), 'project overview status badge should prioritize live pending rewrite state over base REVIEWING status');
@@ -285,6 +289,15 @@ const detailRunningRewriteHtml = runCodeNode('n8n/code/novel_render_project_deta
 for (const expected of ['第 2 章重写中', '检查并恢复第 2 章重写', '超时则重排并重试', '只有运行超过 6 分钟']) {
   assert(detailRunningRewriteHtml.includes(expected), `project overview should expose stale-running rewrite recovery: ${expected}`);
 }
+const detailRunningReviewHtml = runCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  ...detailRow,
+  jobs: JSON.stringify([
+    {id: '22000000-0000-0000-0000-000000000043', job_type: 'REVIEW_CHAPTER', status: 'RUNNING', chapter_no: 1, attempt_count: 1, max_attempts: 3, started_at: '2026-05-04T01:20:00.000Z', updated_at: '2026-05-04T01:20:00.000Z'},
+  ]),
+}])[0].json.response_html;
+for (const expected of ['检查并恢复第 1 章智能审稿', '/webhook/novel-job-recover', '超时则重排并重试', '只有运行超过 6 分钟']) {
+  assert(detailRunningReviewHtml.includes(expected), `project overview should expose stale-running review recovery: ${expected}`);
+}
 for (const expected of [
   'select name="target_words_per_chapter"',
   'textarea name="expansion_request"',
@@ -293,7 +306,7 @@ for (const expected of [
   '保留约束',
   '只追加新章节',
   '重排未写章节',
-  '高风险重排全部大纲',
+  '高风险重建：重新生成设定集 + 全大纲',
   '深度长章 4000 字',
   '字数越高，导演台分段数和生成耗时通常也会增加',
   'project-target-grid',

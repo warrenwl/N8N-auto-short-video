@@ -351,7 +351,7 @@ WHERE NOT EXISTS (SELECT 1 FROM updated);`;
 const readChapterContextQuery = `-- Read context for chapter generation.
 SELECT
   p.id AS project_id,
-  p.title AS novel_title,
+  CASE WHEN COALESCE(p.title_in_prompt, TRUE) THEN p.title ELSE '' END AS novel_title,
   p.genre,
   p.audience,
   p.style,
@@ -682,7 +682,7 @@ RETURNING j.*;`;
 const readReviewContextQuery = `-- Read context for AI chapter review.
 SELECT
   p.id AS project_id,
-  p.title AS novel_title,
+  CASE WHEN COALESCE(p.title_in_prompt, TRUE) THEN p.title ELSE '' END AS novel_title,
   p.genre,
   p.audience,
   p.style,

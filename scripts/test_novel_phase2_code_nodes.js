@@ -127,6 +127,26 @@ assert(
   'story treatment prompt should require a mystery stack, reveal ladder, and reader promise before Bible generation'
 );
 
+const builtTreatmentFromUpload = runCodeNode('n8n/code/novel_build_glm_request.js', {
+  json: {
+    ...buildInput,
+    run_type: 'GENERATE_STORY_TREATMENT',
+    title: '红凶',
+    premise: '根据上传文档识别故事内容并生成创作母本。',
+    source_document_name: '红凶.md',
+    source_document_char_count: 3600,
+    source_document_text: '第一章 红雨夜。纸钱贴在门上，女主发现旧案卷宗。'.repeat(20),
+  },
+  env: {NOVEL_GENERATION_CONFIG_PATH: configPath},
+})[0].json;
+assert(
+  builtTreatmentFromUpload.llm_request_body.messages[1].content.includes('【上传源文档识别】') &&
+    builtTreatmentFromUpload.llm_request_body.messages[1].content.includes('红凶.md') &&
+    builtTreatmentFromUpload.llm_request_body.messages[1].content.includes('第一章 红雨夜') &&
+    builtTreatmentFromUpload.llm_request_body.messages[1].content.includes('不要照抄原文'),
+  'story treatment prompt should include uploaded txt/md source document for GLM recognition'
+);
+
 const builtBible = runCodeNode('n8n/code/novel_build_glm_request.js', {
   json: {
     ...buildInput,
@@ -433,7 +453,7 @@ const builtRewrite = runCodeNode('n8n/code/novel_build_glm_request.js', {
     }],
     issues: [{type: '逻辑', description: '主角动机跳变', severity: 'medium'}],
     suggestions: ['补足主角决定冒险的心理转折。'],
-    human_comment: '',
+    human_comment: '重写时必须强化幻听压迫感，并删掉多余的背景解释，扩写到5000字以上。',
     director_card: {
       chapter_intent: '旧钟表店必须保留为本章核心场景，不能把线索改到医院。',
       causal_chain: {
@@ -456,11 +476,19 @@ assert.strictEqual(builtRewrite.prompt_key, 'rewrite');
 assert(
     rewritePrompt.includes('重写依据优先级') &&
     rewritePrompt.includes('必须逐条阅读并落实【审稿问题】和【修改建议】') &&
+    rewritePrompt.includes('重写时必须强化幻听压迫感，并删掉多余的背景解释，扩写到5000字以上。') &&
+    rewritePrompt.includes('【人工指定字数】5000') &&
+    rewritePrompt.includes('【本次目标字数】5000') &&
+    rewritePrompt.includes('【本次允许范围】4250-5750') &&
     rewritePrompt.includes('如果【人工意见】与智能审稿一致或为空') &&
     rewritePrompt.includes('高/中风险问题必须在新正文中明显修正') &&
     rewritePrompt.includes('【重写事实边界】') &&
     rewritePrompt.includes('审稿建议和人工意见是修法清单，不是新增设定来源'),
   'rewrite prompt should force AI review issues and suggestions as the rewrite checklist'
+);
+assert(
+  builtRewrite.llm_request_body.max_tokens >= 12000,
+  'rewrite prompt should allocate enough tokens for explicit human word-count expansion'
 );
 assert(
     rewritePrompt.includes('【导演台重写约束】') &&
@@ -1036,7 +1064,8 @@ const parsedChapter = runCodeNode('n8n/code/novel_parse_glm_json.js', {
 })[0].json;
 assert.strictEqual(parsedChapter.run_type, 'GENERATE_CHAPTER');
 assert.strictEqual(parsedChapter.chapter_title, '旧钟表店的第一声回响');
-assert.strictEqual(parsedChapter.word_count_estimate, 1280);
+assert.strictEqual(parsedChapter.word_count_estimate, 43);
+assert.strictEqual(parsedChapter.model_word_count_estimate, 1280);
 assert.strictEqual(parsedChapter.new_facts.length, 2);
 assert.strictEqual(parsedChapter.new_facts[0].fact_type, 'item');
 assert.strictEqual(parsedChapter.new_facts[1].fact_type, 'foreshadowing');

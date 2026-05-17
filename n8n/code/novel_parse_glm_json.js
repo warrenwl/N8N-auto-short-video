@@ -854,6 +854,7 @@ if (parsed.chapter_body || parsed.chapter_title || parsed.chapter_summary) {
   );
   const chapterBody = normalizeNovelParagraphs(parsed.chapter_body || parsed.body);
   const chapterSummary = text(parsed.chapter_summary || parsed.summary);
+  const systemWordCount = roughWordCount(chapterBody);
   const diagnosis = strayNarrativeDiagnosis(
     parsed,
     chapterPayloadKeys,
@@ -868,6 +869,8 @@ if (parsed.chapter_body || parsed.chapter_title || parsed.chapter_summary) {
     chapter_title: chapterTitle,
     chapter_body: chapterBody,
     chapter_summary: chapterSummary,
+    word_count_estimate: systemWordCount,
+    model_word_count_estimate: number(parsed.word_count_estimate || parsed.word_count, 0),
   };
   if (parsed.body !== undefined) chapterPayload.body = chapterBody;
   Object.assign(normalized, {
@@ -880,7 +883,8 @@ if (parsed.chapter_body || parsed.chapter_title || parsed.chapter_summary) {
     chapter_title_base64: base64Text(chapterTitle),
     chapter_body_base64: base64Text(chapterBody),
     chapter_summary_base64: base64Text(chapterSummary),
-    word_count_estimate: number(parsed.word_count_estimate || parsed.word_count, 0),
+    word_count_estimate: systemWordCount,
+    model_word_count_estimate: number(parsed.word_count_estimate || parsed.word_count, 0),
   });
 }
 

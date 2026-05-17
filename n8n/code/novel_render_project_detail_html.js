@@ -817,7 +817,7 @@ function generationRunForm(projectId, jobType, job = {}, options = {}) {
     },
     GENERATE_OUTLINE: {
       action: '/webhook/novel-generate-outline-now',
-      step: 'outline',
+      step: 'GENERATE_OUTLINE',
       label: '启动大纲生成',
       confirm: '这会启动后台模型任务；提交完成后会留在当前项目页并刷新状态。确认启动？',
     },
@@ -851,19 +851,23 @@ function generationRunForm(projectId, jobType, job = {}, options = {}) {
     </form>`;
 }
 
-function rewriteRunForm(projectId, job = {}) {
+function glmRecoverRunForm(projectId, job = {}) {
   if (!projectId || !job.id || !['PENDING', 'RUNNING'].includes(String(job.status || ''))) return '';
-  const chapterNo = job.chapter_no ? `第 ${job.chapter_no} 章` : '当前章节';
+  const chapterNo = job.chapter_no ? `第 ${job.chapter_no} 章` : '';
   const isRunning = job.status === 'RUNNING';
-  const labelText = isRunning ? `检查并恢复${chapterNo}重写` : `启动${chapterNo}重写`;
+  const jobName = label(jobTypeLabel, job.job_type, '模型任务');
+  const labelText = isRunning
+    ? `检查并恢复${chapterNo}${jobName}`
+    : `启动${chapterNo}${jobName}`;
   const helperText = isRunning ? '超时则重排并重试' : '恢复/重试模型调用';
   const confirmText = isRunning
-    ? '这会检查已运行的重写任务；只有运行超过 6 分钟的任务才会被恢复为待执行并重新启动，避免正常运行中的模型调用被重复触发。确认检查并恢复？'
-    : '这会立即领取已排队的重写任务；不会创建新章节，模型调用会在后台继续执行。确认启动？';
+    ? `这会检查已运行的${jobName}；只有运行超过 6 分钟的任务才会被恢复为待执行并重新启动，避免正常运行中的模型调用被重复触发。确认检查并恢复？`
+    : `这会立即领取已排队的${jobName}，模型调用会在后台继续执行。确认启动？`;
   return `
-    <form class="inline-form action-now rewrite-now-form" method="POST" action="/webhook/novel-rewrite-start" data-confirm="${escapeHtml(confirmText)}">
+    <form class="inline-form action-now glm-recover-form" method="POST" action="/webhook/novel-job-recover" data-confirm="${escapeHtml(confirmText)}">
       ${formHidden('project_id', projectId)}
       ${formHidden('job_id', job.id)}
+      ${formHidden('job_type', job.job_type || '')}
       ${formHidden('reviewer', 'local_user')}
       <button class="primary" type="submit"><span>${escapeHtml(labelText)}</span><small>${escapeHtml(helperText)}</small></button>
     </form>`;
@@ -973,15 +977,65 @@ function storyTreatmentRegenerateRunForm(projectId) {
     </dialog>`;
 }
 
+function titleInPromptEnabled(row) {
+  return row.title_in_prompt !== false && row.title_in_prompt !== 'false' && row.title_in_prompt !== '0';
+}
+
+function preserveTitleSettingsFields(row) {
+  return `
+        ${formHidden('title', row.title || '')}
+        ${titleInPromptEnabled(row) ? formHidden('title_in_prompt', 'true') : ''}`;
+}
+
+function preserveProjectTargetsFields(row, defaultExpansionConstraints) {
+  return `
+        ${formHidden('target_total_chapters', row.target_total_chapters || 20)}
+        ${formHidden('target_words_per_chapter', row.target_words_per_chapter || 2000)}
+        ${formHidden('expansion_request', row.expansion_request || '')}
+        ${formHidden('expansion_scope', row.expansion_scope || 'append_only')}
+        ${formHidden('expansion_constraints', defaultExpansionConstraints)}`;
+}
+
+function projectTitleSettingsForm(row) {
+  const defaultExpansionConstraints = row.expansion_constraints || '已批准正文不改；已激活事实不破坏；新增剧情优先承接现有大纲和连续性事实。';
+  const titleInPrompt = row.title_in_prompt !== false && row.title_in_prompt !== 'false' && row.title_in_prompt !== '0';
+  return `
+    <details class="action-detail management-detail project-action-card">
+      <summary><span>标题设置</span><small>前端显示名和生成链路标题开关</small></summary>
+      <form method="POST" action="/webhook/novel-project-targets-update" data-confirm="确认保存标题设置？保存后页面会刷新显示最新标题。">
+        ${formHidden('project_id', row.id)}
+        ${formHidden('reviewer', 'local_user')}
+        ${preserveProjectTargetsFields(row, defaultExpansionConstraints)}
+        <p class="project-action-card-note">标题会用于页面识别；默认也会进入创作母本、设定集、大纲、导演台和正文提示词。关闭后，后续生成主要依赖核心创意、设定和大纲。</p>
+        <label>
+          <span>项目标题</span>
+          <input name="title" maxlength="80" required value="${escapeHtml(row.title || '')}" autocomplete="off" />
+          <small class="form-help">保存后刷新页面；不会改写已生成正文和章节标题。</small>
+        </label>
+        <label class="toggle-row">
+          <input name="title_in_prompt" type="checkbox" value="true"${titleInPrompt ? ' checked' : ''} />
+          <span>让项目标题影响后续链路生成</span>
+          <small class="form-help">关闭后，标题仍用于前端显示、导出文件名和归档确认，但不再作为小说名传入后续模型提示词。</small>
+        </label>
+        <label>
+          <span>修改说明</span>
+          <textarea name="comment" placeholder="例如：标题改为正式书名；后续生成不再引用项目标题…"></textarea>
+        </label>
+        <button type="submit">保存标题设置</button>
+      </form>
+    </details>`;
+}
+
 function projectTargetsForm(row) {
   const defaultExpansionConstraints = row.expansion_constraints || '已批准正文不改；已激活事实不破坏；新增剧情优先承接现有大纲和连续性事实。';
   return `
     <details class="action-detail management-detail project-action-card">
       <summary><span>项目目标与扩写计划</span><small>章节、字数和新增剧情要求</small></summary>
-      <form method="POST" action="/webhook/novel-project-targets-update" data-confirm="确认保存项目目标与扩写计划？如果目标章节数增加，后续继续写作可能会先补齐大纲。">
+      <form method="POST" action="/webhook/novel-project-targets-update" data-confirm="确认保存项目目标与扩写计划？保存后页面会刷新显示最新设置。">
         ${formHidden('project_id', row.id)}
         ${formHidden('reviewer', 'local_user')}
-        <p class="project-action-card-note">后续大纲和导演台会读取扩写计划；已经批准的正文不会被自动改写。</p>
+        ${preserveTitleSettingsFields(row)}
+        <p class="project-action-card-note">这里只调整写作目标和扩写方向；项目标题请在“标题设置”里单独修改。</p>
         <div class="form-grid project-target-grid">
           <label>
             <span>目标章节数</span>
@@ -1002,7 +1056,7 @@ function projectTargetsForm(row) {
         <label>
           <span>扩写范围</span>
           <select name="expansion_scope">${renderExpansionScopeOptions(row.expansion_scope)}</select>
-          <small class="form-help">“只追加新章节”最稳；重排未写章节会覆盖未生成/未批准的大纲；全大纲重排风险最高。</small>
+          <small class="form-help">只追加会保留旧设定/旧大纲/旧章节；重排未写会保留已批准正文；高风险重建会重新生成设定集和全大纲，并让旧导演台、章节与AI事实退出当前链路。</small>
         </label>
         <label>
           <span>保留约束</span>
@@ -1012,7 +1066,7 @@ function projectTargetsForm(row) {
           <span>修改说明</span>
           <textarea name="comment" placeholder="例如：第一季扩展到三十章，并追加新反派线…"></textarea>
         </label>
-        <button type="submit">保存目标与扩写计划</button>
+        <button type="submit">保存项目设置</button>
       </form>
     </details>`;
 }
@@ -1157,7 +1211,9 @@ function biblePatchCard(patch) {
 }
 
 function biblePatchSectionHtml(patches, pendingJob, runningJob) {
-  const visiblePatches = patches.slice().sort((a, b) =>
+  const visiblePatches = patches
+    .filter((patch) => ['PENDING', 'APPROVED', 'FAILED'].includes(String(patch.status || 'PENDING')))
+    .sort((a, b) =>
     new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
   );
   if (!visiblePatches.length && !pendingJob && !runningJob) return '';
@@ -1179,9 +1235,9 @@ function biblePatchSectionHtml(patches, pendingJob, runningJob) {
 function renderExpansionScopeOptions(selectedValue) {
   const selected = String(selectedValue || 'append_only');
   return renderOptions([
-    ['append_only', '只追加新章节'],
-    ['rewrite_unwritten', '重排未写章节'],
-    ['regenerate_outline', '高风险重排全部大纲'],
+    ['append_only', '只追加新章节：追加设定补丁 + 补新章大纲'],
+    ['rewrite_unwritten', '重排未写章节：追加设定补丁 + 重排未批准大纲'],
+    ['regenerate_outline', '高风险重建：重新生成设定集 + 全大纲'],
   ], selected);
 }
 
@@ -1533,7 +1589,8 @@ function directorMiniLink(card, outline, activeJob) {
 }
 
 function outlineCard(outline, chaptersByNo, projectId, directorByNo = new Map(), directorJobsByNo = new Map()) {
-  const chapters = chaptersByNo.get(Number(outline.chapter_no)) || [];
+  const chapters = (chaptersByNo.get(Number(outline.chapter_no)) || [])
+    .filter((chapter) => chapterBelongsToOutline(chapter, outline));
   const director = directorByNo.get(Number(outline.chapter_no)) || null;
   const directorJob = directorJobsByNo.get(Number(outline.chapter_no)) || null;
   const latest = chapters.slice().sort((a, b) => {
@@ -1561,7 +1618,7 @@ function outlineCard(outline, chaptersByNo, projectId, directorByNo = new Map(),
     <details class="catalog-item catalog-panel${directorBlocked ? ' is-blocked' : ''}${!hasBody ? ' is-unwritten' : ''}" id="catalog-${escapeHtml(outline.chapter_no || '')}" data-chapter-values="${escapeHtml(filterValues.join(' '))}"${shouldOpen ? ' open' : ''}>
       <summary class="catalog-panel-summary">
         <div class="catalog-summary-text">
-          <strong>${escapeHtml(chapterHeading(outline.chapter_no, latest?.title || outline.title || '未命名章节'))}</strong>
+          <strong>${escapeHtml(chapterHeading(outline.chapter_no, outline.title || latest?.title || '未命名章节'))}</strong>
           <span>第 ${escapeHtml(outline.volume_no || 1)} 卷 · 场景 ${escapeHtml(sceneBeatCount)} 个 · 追问 ${escapeHtml(readerQuestionCount)} 个 · ${escapeHtml(excerpt(outline.summary || outline.chapter_goal || '', 72))}</span>
         </div>
         <div class="badge-row">${directorCardBadge(director, directorJob)}${latest ? badge(latest.status, chapterStatusLabel) : badge(outline.status, outlineStatusLabel)}</div>
@@ -1587,7 +1644,23 @@ function outlineCard(outline, chaptersByNo, projectId, directorByNo = new Map(),
 }
 
 function isStaleChapter(chapter) {
-  return chapter.is_stale === true || String(chapter.is_stale || '').toLowerCase() === 'true';
+  return chapter.is_stale === true
+    || String(chapter.is_stale || '').toLowerCase() === 'true'
+    || (chapter.status === 'SUPERSEDED' && chapter.is_current !== true);
+}
+
+function isCurrentChapterCandidate(chapter) {
+  return !isStaleChapter(chapter)
+    && chapter.status !== 'REWRITE_REQUESTED';
+}
+
+function chapterBelongsToOutline(chapter, outline) {
+  if (!chapter || !outline) return false;
+  if (outline.id) {
+    if (chapter.outline_id) return String(chapter.outline_id) === String(outline.id);
+    return Number(chapter.chapter_no || 0) === Number(outline.chapter_no || 0);
+  }
+  return Number(chapter.chapter_no || 0) === Number(outline.chapter_no || 0);
 }
 
 function reviewReportBlock(chapter) {
@@ -2306,7 +2379,7 @@ if (!found) {
 const projectId = row.id;
 const storyTreatment = parseObject(row.story_treatment);
 const bible = parseObject(row.bible);
-const outlines = parseArray(row.outlines).sort((a, b) => Number(a.chapter_no || 0) - Number(b.chapter_no || 0));
+const rawOutlines = parseArray(row.outlines).sort((a, b) => Number(a.chapter_no || 0) - Number(b.chapter_no || 0));
 const directorCards = parseArray(row.director_cards)
   .sort((a, b) => {
     const chapterDiff = Number(a.chapter_no || 0) - Number(b.chapter_no || 0);
@@ -2320,7 +2393,7 @@ const allChapters = parseArray(row.chapters)
     if (chapterDiff !== 0) return chapterDiff;
     return Number(b.generation_version || 0) - Number(a.generation_version || 0);
   });
-const chapters = allChapters.filter((chapter) => !isStaleChapter(chapter));
+const chapters = allChapters.filter((chapter) => isCurrentChapterCandidate(chapter));
 const staleChapters = allChapters.filter((chapter) => isStaleChapter(chapter));
 const facts = parseArray(row.facts);
 const plotThreads = parseArray(row.plot_threads);
@@ -2377,20 +2450,12 @@ function rejectedRetryLabel(chapterNo) {
   return chapterNo ? `第 ${chapterNo} 章` : '当前章节';
 }
 
-const syntheticOutlines = outlines.length
-  ? outlines
-  : latestChapters.map((chapter) => ({
-    chapter_no: chapter.chapter_no,
-    volume_no: 1,
-    title: chapter.title,
-    summary: chapter.summary,
-    status: 'READY',
-  }));
-
 const writtenVersionCount = chapters.filter((chapter) => chapter.body).length;
 const writtenCount = latestChapters.filter((chapter) => chapter.body).length;
 const currentCount = latestChapters.filter((chapter) => chapter.is_current).length;
 const reviewCount = latestChapters.filter((chapter) => chapter.status === 'NEED_REVIEW').length;
+const reviewPendingCount = reviewCount || (String(row.status || '') === 'REVIEWING' && !nextRejectedChapter ? 1 : 0);
+const hasPendingManualReview = reviewPendingCount > 0;
 function isActionableQueueJob(job) {
   const status = String(job?.status || '');
   if (!['PENDING', 'RUNNING'].includes(status)) return false;
@@ -2414,25 +2479,84 @@ const pendingTreatmentJob = jobs.find((job) => job.job_type === 'GENERATE_STORY_
 const pendingBibleJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE' && job.status === 'PENDING');
 const pendingBiblePatchJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE_PATCH' && job.status === 'PENDING');
 const pendingOutlineJob = jobs.find((job) => job.job_type === 'GENERATE_OUTLINE' && job.status === 'PENDING');
-const pendingDirectorJob = jobs.find((job) => job.job_type === 'PLAN_CHAPTER_DIRECTOR' && job.status === 'PENDING');
+function queueJobTime(job, fallback = 0) {
+  const value = new Date(job?.created_at || job?.updated_at || fallback).getTime();
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function queueJobChapterNo(job) {
+  const value = Number(job?.chapter_no || 0);
+  return value > 0 ? value : Number.MAX_SAFE_INTEGER;
+}
+
+function compareChapterQueueJobs(a, b) {
+  const chapterDiff = queueJobChapterNo(a) - queueJobChapterNo(b);
+  if (chapterDiff !== 0) return chapterDiff;
+  const timeDiff = queueJobTime(a) - queueJobTime(b);
+  if (timeDiff !== 0) return timeDiff;
+  return String(a?.id || '').localeCompare(String(b?.id || ''));
+}
+
+function pickChapterJob(jobType, status, predicate = () => true) {
+  return jobs
+    .filter((job) => job.job_type === jobType && job.status === status && predicate(job))
+    .sort(compareChapterQueueJobs)[0] || null;
+}
+
+const pendingDirectorJob = pickChapterJob('PLAN_CHAPTER_DIRECTOR', 'PENDING');
 const chapterJobHasReadyDirector = (job) => {
   const card = currentDirectorByNo.get(Number(job.chapter_no || 0));
   return Boolean(card && card.status === 'READY');
 };
-const pendingChapterJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'PENDING' && chapterJobHasReadyDirector(job));
-const pendingChapterWithoutReadyDirectorJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'PENDING' && !chapterJobHasReadyDirector(job));
+const pendingChapterJob = pickChapterJob('GENERATE_CHAPTER', 'PENDING', chapterJobHasReadyDirector);
+const pendingChapterWithoutReadyDirectorJob = pickChapterJob('GENERATE_CHAPTER', 'PENDING', (job) => !chapterJobHasReadyDirector(job));
 const runningTreatmentJob = jobs.find((job) => job.job_type === 'GENERATE_STORY_TREATMENT' && job.status === 'RUNNING');
 const runningBibleJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE' && job.status === 'RUNNING');
 const runningBiblePatchJob = jobs.find((job) => job.job_type === 'GENERATE_BIBLE_PATCH' && job.status === 'RUNNING');
 const runningOutlineJob = jobs.find((job) => job.job_type === 'GENERATE_OUTLINE' && job.status === 'RUNNING');
+const outlineRebuildJob = [runningOutlineJob, pendingOutlineJob].find((job) => {
+  const payload = parseObject(job?.payload);
+  return payload.full_chain_regenerate === true
+    || payload.full_outline_regenerate === true
+    || payload.full_chain_regenerate === 'true'
+    || payload.full_outline_regenerate === 'true'
+    || payload.expansion_scope === 'regenerate_outline';
+}) || null;
+const outlines = outlineRebuildJob ? [] : rawOutlines;
+const syntheticOutlines = outlineRebuildJob
+  ? []
+  : (outlines.length
+    ? outlines
+    : latestChapters.map((chapter) => ({
+      chapter_no: chapter.chapter_no,
+      volume_no: 1,
+      title: chapter.title,
+      summary: chapter.summary,
+      status: 'READY',
+    })));
 const runningProjectGenerationJob = runningTreatmentJob || runningBibleJob || runningBiblePatchJob || runningOutlineJob;
-const runningDirectorJob = jobs.find((job) => job.job_type === 'PLAN_CHAPTER_DIRECTOR' && job.status === 'RUNNING');
-const runningChapterJob = jobs.find((job) => job.job_type === 'GENERATE_CHAPTER' && job.status === 'RUNNING');
+const runningDirectorJob = pickChapterJob('PLAN_CHAPTER_DIRECTOR', 'RUNNING');
+const runningChapterJob = pickChapterJob('GENERATE_CHAPTER', 'RUNNING');
 const activeQueueJobs = jobs
   .filter(isActionableQueueJob)
   .sort((a, b) => {
     if (a.status !== b.status) return a.status === 'RUNNING' ? -1 : 1;
-    return new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime();
+    const chapterDiff = queueJobChapterNo(a) - queueJobChapterNo(b);
+    if (chapterDiff !== 0) return chapterDiff;
+    const stageRank = {
+      GENERATE_STORY_TREATMENT: 0,
+      GENERATE_BIBLE: 1,
+      GENERATE_BIBLE_PATCH: 2,
+      GENERATE_OUTLINE: 3,
+      PLAN_CHAPTER_DIRECTOR: 4,
+      GENERATE_CHAPTER: 5,
+      REWRITE_CHAPTER: 6,
+      REVIEW_CHAPTER: 7,
+      NOTIFY_REVIEW: 8,
+    };
+    const stageDiff = (stageRank[a.job_type] ?? 99) - (stageRank[b.job_type] ?? 99);
+    if (stageDiff !== 0) return stageDiff;
+    return queueJobTime(a) - queueJobTime(b);
   });
 const pendingReviewJob = activeQueueJobs.find((job) => job.job_type === 'REVIEW_CHAPTER' && job.status === 'PENDING');
 const runningReviewJob = activeQueueJobs.find((job) => job.job_type === 'REVIEW_CHAPTER' && job.status === 'RUNNING');
@@ -2449,6 +2573,30 @@ const chapterJobsByNo = new Map(activeQueueJobs
 const needsReviewDirector = directorCards
   .filter((card) => card.is_current !== false && card.status === 'NEEDS_REVIEW')
   .sort((a, b) => Number(a.chapter_no || 0) - Number(b.chapter_no || 0))[0] || null;
+function compareChapterFlowItems(a, b) {
+  const chapterDiff = queueJobChapterNo(a.job || a.card) - queueJobChapterNo(b.job || b.card);
+  if (chapterDiff !== 0) return chapterDiff;
+  const rank = {
+    runningDirector: 0,
+    pendingDirector: 1,
+    needsReviewDirector: 2,
+    runningChapter: 3,
+    pendingChapter: 4,
+    pendingChapterWithoutReadyDirector: 5,
+  };
+  const rankDiff = (rank[a.kind] ?? 99) - (rank[b.kind] ?? 99);
+  if (rankDiff !== 0) return rankDiff;
+  return queueJobTime(a.job || a.card) - queueJobTime(b.job || b.card);
+}
+
+const primaryChapterFlowItem = [
+  runningDirectorJob ? {kind: 'runningDirector', job: runningDirectorJob} : null,
+  pendingDirectorJob ? {kind: 'pendingDirector', job: pendingDirectorJob} : null,
+  needsReviewDirector ? {kind: 'needsReviewDirector', card: needsReviewDirector} : null,
+  runningChapterJob ? {kind: 'runningChapter', job: runningChapterJob} : null,
+  pendingChapterJob ? {kind: 'pendingChapter', job: pendingChapterJob} : null,
+  pendingChapterWithoutReadyDirectorJob ? {kind: 'pendingChapterWithoutReadyDirector', job: pendingChapterWithoutReadyDirectorJob} : null,
+].filter(Boolean).sort(compareChapterFlowItems)[0] || null;
 const readyDirectorCount = directorCards.filter((card) => card.is_current !== false && card.status === 'READY').length;
 const needsReviewDirectorCount = directorCards.filter((card) => card.is_current !== false && card.status === 'NEEDS_REVIEW').length;
 const pendingBiblePatch = biblePatches.find((patch) => patch.status === 'PENDING' || patch.status === 'APPROVED');
@@ -2460,7 +2608,7 @@ const hasOutlineAsset = syntheticOutlines.length > 0;
 const canShowContinueForm = !hasFrontStartJob
   && activeQueueCount === 0
   && failedJobs.length === 0
-  && reviewCount === 0
+  && !hasPendingManualReview
   && !pendingBiblePatch
   && !['ARCHIVED', 'PAUSED', 'COMPLETED'].includes(String(row.status || ''));
 const bibleRegenerateControl = pendingBibleJob
@@ -2500,25 +2648,27 @@ function liveProjectStatusInfo() {
   if (pendingBiblePatch) return withBase('PENDING', '扩写设定补丁待确认');
   if (runningOutlineJob) return withBase('RUNNING', '大纲生成中');
   if (pendingOutlineJob) return withBase('PENDING', '大纲待启动');
-  if (runningDirectorJob) {
-    return withBase('RUNNING', isRejectedRetryDirectorJob(runningDirectorJob)
-      ? `${chapterLabel(runningDirectorJob)}重写规划中`
-      : `${chapterLabel(runningDirectorJob)}导演台规划中`);
+  if (primaryChapterFlowItem?.kind === 'runningDirector') {
+    const job = primaryChapterFlowItem.job;
+    return withBase('RUNNING', isRejectedRetryDirectorJob(job)
+      ? `${chapterLabel(job)}重写规划中`
+      : `${chapterLabel(job)}导演台规划中`);
   }
-  if (pendingDirectorJob) {
-    return withBase('PENDING', isRejectedRetryDirectorJob(pendingDirectorJob)
-      ? `${chapterLabel(pendingDirectorJob)}待继续重写`
-      : `${chapterLabel(pendingDirectorJob)}导演台待启动`);
+  if (primaryChapterFlowItem?.kind === 'pendingDirector') {
+    const job = primaryChapterFlowItem.job;
+    return withBase('PENDING', isRejectedRetryDirectorJob(job)
+      ? `${chapterLabel(job)}待继续重写`
+      : `${chapterLabel(job)}导演台待启动`);
   }
-  if (needsReviewDirector) return withBase('NEEDS_REVIEW', `第 ${needsReviewDirector.chapter_no} 章导演台需调整`);
-  if (pendingChapterWithoutReadyDirectorJob) return withBase('PENDING', `${chapterLabel(pendingChapterWithoutReadyDirectorJob)}等待导演台`);
-  if (runningChapterJob) return withBase('RUNNING', `${chapterLabel(runningChapterJob)}生成中`);
-  if (pendingChapterJob) return withBase('PENDING', `${chapterLabel(pendingChapterJob)}待启动`);
+  if (primaryChapterFlowItem?.kind === 'needsReviewDirector') return withBase('NEEDS_REVIEW', `第 ${primaryChapterFlowItem.card.chapter_no} 章导演台需调整`);
+  if (primaryChapterFlowItem?.kind === 'pendingChapterWithoutReadyDirector') return withBase('PENDING', `${chapterLabel(primaryChapterFlowItem.job)}等待导演台`);
+  if (primaryChapterFlowItem?.kind === 'runningChapter') return withBase('RUNNING', `${chapterLabel(primaryChapterFlowItem.job)}生成中`);
+  if (primaryChapterFlowItem?.kind === 'pendingChapter') return withBase('PENDING', `${chapterLabel(primaryChapterFlowItem.job)}待启动`);
   if (runningRewriteJob) return withBase('RUNNING', `${chapterLabel(runningRewriteJob)}重写中`);
   if (pendingRewriteJob) return withBase('PENDING', `${chapterLabel(pendingRewriteJob)}重写待执行`);
   if (runningReviewJob) return withBase('RUNNING', `${chapterLabel(runningReviewJob)}智能审稿中`);
   if (pendingReviewJob) return withBase('PENDING', `${chapterLabel(pendingReviewJob)}等待智能审稿`);
-  if (reviewCount > 0) return withBase('NEED_REVIEW', pendingHumanReviewChapter?.chapter_no ? `第 ${pendingHumanReviewChapter.chapter_no} 章待人工审核` : '待人工审核');
+  if (hasPendingManualReview) return withBase('NEED_REVIEW', pendingHumanReviewChapter?.chapter_no ? `第 ${pendingHumanReviewChapter.chapter_no} 章待人工审核` : '待人工审核');
   if (runningNotifyJob) return withBase('RUNNING', `${chapterLabel(runningNotifyJob)}提醒发送中`);
   if (pendingNotifyJob) return withBase('PENDING', `${chapterLabel(pendingNotifyJob)}提醒待发送`);
   if (failedJobs.length > 0) return withBase('FAILED', '有失败任务');
@@ -2526,7 +2676,17 @@ function liveProjectStatusInfo() {
 }
 
 const liveProjectStatus = liveProjectStatusInfo();
-const activeRewriteActionJob = pendingRewriteJob || runningRewriteJob;
+const recoverableGlmJobTypes = new Set([
+  'GENERATE_STORY_TREATMENT',
+  'GENERATE_BIBLE',
+  'GENERATE_BIBLE_PATCH',
+  'GENERATE_OUTLINE',
+  'PLAN_CHAPTER_DIRECTOR',
+  'GENERATE_CHAPTER',
+  'REVIEW_CHAPTER',
+  'REWRITE_CHAPTER',
+]);
+const activeRecoverableGlmJob = activeQueueJobs.find((job) => recoverableGlmJobTypes.has(String(job.job_type || ''))) || null;
 
 const viewConfig = {
   overview: {label: '总览', title: '项目总览', description: '只保留当前建议、关键资产入口和最近待处理项。'},
@@ -2582,13 +2742,13 @@ function recommendationState() {
   };
   if (pendingBibleJob) return {
     title: '启动设定集生成',
-    body: `设定集任务已排队，但设定内容还没有生成。点击“启动设定集生成”会在当前页提交并刷新状态，模型调用在后台继续执行。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，但当前应先完成重跑链路。` : ''}`,
+    body: `设定集任务已排队，但设定内容还没有生成。点击“启动设定集生成”会在当前页提交并刷新状态，模型调用在后台继续执行。${hasPendingManualReview ? `旧待审章节仍保留 ${reviewPendingCount} 个，但当前应先完成重跑链路。` : ''}`,
     intent: '生成项目设定',
     mode: '后台执行',
   };
   if (runningBibleJob) return {
     title: '设定集正在生成',
-    body: `请稍后刷新项目控制台，或到队列状态页观察任务是否完成。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，等新设定和大纲完成后再决定是否处理。` : ''}`,
+    body: `请稍后刷新项目控制台，或到队列状态页观察任务是否完成。${hasPendingManualReview ? `旧待审章节仍保留 ${reviewPendingCount} 个，等新设定和大纲完成后再决定是否处理。` : ''}`,
     intent: '观察进度',
     mode: '后台运行中',
   };
@@ -2612,66 +2772,81 @@ function recommendationState() {
   };
   if (pendingOutlineJob) return {
     title: '启动大纲生成',
-    body: `大纲任务已排队，但章节目录还没有生成。点击“启动大纲生成”会在当前页提交并刷新状态，模型调用在后台继续执行。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，但当前应先完成新大纲。` : ''}`,
+    body: `大纲任务已排队，但章节目录还没有生成。点击“启动大纲生成”会在当前页提交并刷新状态，模型调用在后台继续执行。${hasPendingManualReview ? `旧待审章节仍保留 ${reviewPendingCount} 个，但当前应先完成新大纲。` : ''}`,
     intent: '生成章节目录',
     mode: '后台执行',
   };
   if (runningOutlineJob) return {
     title: '大纲正在生成',
-    body: `请稍后刷新项目控制台，或到队列状态页观察任务是否完成。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，等新大纲完成后再决定是否处理。` : ''}`,
+    body: `请稍后刷新项目控制台，或到队列状态页观察任务是否完成。${hasPendingManualReview ? `旧待审章节仍保留 ${reviewPendingCount} 个，等新大纲完成后再决定是否处理。` : ''}`,
     intent: '观察进度',
     mode: '后台运行中',
   };
-  if (pendingDirectorJob) return {
-    title: isRejectedRetryDirectorJob(pendingDirectorJob)
-      ? `继续重写${rejectedRetryLabel(pendingDirectorJob.chapter_no)}`
-      : (pendingDirectorJob.chapter_no ? `启动第 ${pendingDirectorJob.chapter_no} 章导演台` : '启动导演台'),
-    body: isRejectedRetryDirectorJob(pendingDirectorJob)
-      ? `上一稿已拒绝，${rejectedRetryLabel(pendingDirectorJob.chapter_no)}不会被跳过。点击“继续重写${rejectedRetryLabel(pendingDirectorJob.chapter_no)}”后，系统会先跑导演台检查因果链、人物动机、连续性约束和伏笔账本；通过后再自动排正文生成。`
-      : (pendingDirectorJob.chapter_no
-        ? `第 ${pendingDirectorJob.chapter_no} 章导演台任务已排队。点击“启动第 ${pendingDirectorJob.chapter_no} 章导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。`
-        : '导演台任务已排队。点击“启动导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。'),
-    intent: isRejectedRetryDirectorJob(pendingDirectorJob) ? '继续重写章节' : '生成导演台规划',
-    mode: '后台执行',
-  };
-  if (runningDirectorJob) return {
-    title: isRejectedRetryDirectorJob(runningDirectorJob)
-      ? `${rejectedRetryLabel(runningDirectorJob.chapter_no)}重写规划中`
-      : (runningDirectorJob.chapter_no ? `第 ${runningDirectorJob.chapter_no} 章导演台规划中` : '导演台规划中'),
-    body: isRejectedRetryDirectorJob(runningDirectorJob)
-      ? '重写规划正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。'
-      : '导演台模型调用正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。',
-    intent: isRejectedRetryDirectorJob(runningDirectorJob) ? '观察重写规划' : '观察导演台',
-    mode: '后台运行中',
-  };
-  if (needsReviewDirector) return {
-    title: `第 ${needsReviewDirector.chapter_no} 章导演台需调整`,
+  if (primaryChapterFlowItem?.kind === 'runningDirector') {
+    const job = primaryChapterFlowItem.job;
+    return {
+      title: isRejectedRetryDirectorJob(job)
+        ? `${rejectedRetryLabel(job.chapter_no)}重写规划中`
+        : (job.chapter_no ? `第 ${job.chapter_no} 章导演台规划中` : '导演台规划中'),
+      body: isRejectedRetryDirectorJob(job)
+        ? '重写规划正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。'
+        : '导演台模型调用正在后台执行。完成后若通过质量闸门会自动排正文任务；若存在突兀或断裂风险，会停在导演台视图等待调整。',
+      intent: isRejectedRetryDirectorJob(job) ? '观察重写规划' : '观察导演台',
+      mode: '后台运行中',
+    };
+  }
+  if (primaryChapterFlowItem?.kind === 'pendingDirector') {
+    const job = primaryChapterFlowItem.job;
+    return {
+      title: isRejectedRetryDirectorJob(job)
+        ? `继续重写${rejectedRetryLabel(job.chapter_no)}`
+        : (job.chapter_no ? `启动第 ${job.chapter_no} 章导演台` : '启动导演台'),
+      body: isRejectedRetryDirectorJob(job)
+        ? `上一稿已拒绝，${rejectedRetryLabel(job.chapter_no)}不会被跳过。点击“继续重写${rejectedRetryLabel(job.chapter_no)}”后，系统会先跑导演台检查因果链、人物动机、连续性约束和伏笔账本；通过后再自动排正文生成。`
+        : (job.chapter_no
+          ? `第 ${job.chapter_no} 章导演台任务已排队。点击“启动第 ${job.chapter_no} 章导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。`
+          : '导演台任务已排队。点击“启动导演台”会先检查因果链、人物动机、连续性约束和伏笔账本；通过后才会自动排正文生成。'),
+      intent: isRejectedRetryDirectorJob(job) ? '继续重写章节' : '生成导演台规划',
+      mode: '后台执行',
+    };
+  }
+  if (primaryChapterFlowItem?.kind === 'needsReviewDirector') return {
+    title: `第 ${primaryChapterFlowItem.card.chapter_no} 章导演台需调整`,
     body: '当前导演台的质量闸门未通过，正文生成已暂停。进入导演台视图查看阻断问题，手动修正 JSON 后再按此导演台生成正文。',
     intent: '修正导演台',
     mode: '不会调用模型',
   };
-  if (pendingChapterWithoutReadyDirectorJob) return {
-    title: pendingChapterWithoutReadyDirectorJob.chapter_no
-      ? `第 ${pendingChapterWithoutReadyDirectorJob.chapter_no} 章等待导演台`
-      : '章节等待导演台',
-    body: '检测到旧流程遗留的正文生成任务，但这一章还没有 READY 导演台。正文启动入口会先隐藏，避免跳过因果、人物动机、连续性和伏笔检查；自动恢复会补建导演台任务，出现“启动导演台”后再推进。',
-    intent: '补齐导演台',
-    mode: '等待调度',
-  };
-  if (pendingChapterJob) return {
-    title: pendingChapterJob.chapter_no ? `启动第 ${pendingChapterJob.chapter_no} 章生成` : '启动章节生成',
-    body: pendingChapterJob.chapter_no
-      ? `第 ${pendingChapterJob.chapter_no} 章任务已排队。点击“启动第 ${pendingChapterJob.chapter_no} 章生成”会领取这个任务，模型调用在后台继续；生成候选稿后会进入智能审稿队列。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，当前优先生成新候选稿。` : '审稿完成后再到审核中心处理。'}`
-      : `章节生成任务已排队。点击“启动章节生成”会领取这个任务，模型调用在后台继续；生成候选稿后会进入智能审稿队列。${reviewCount ? `旧待审章节仍保留 ${reviewCount} 个，当前优先生成新候选稿。` : '审稿完成后再到审核中心处理。'}`,
-    intent: '生成章节正文',
-    mode: '后台执行',
-  };
-  if (runningChapterJob) return {
-    title: runningChapterJob.chapter_no ? `第 ${runningChapterJob.chapter_no} 章正在生成` : '章节正在生成',
-    body: '章节模型调用正在后台执行。请到队列状态页观察运行结果；完成后会出现候选稿和后续审稿任务。',
-    intent: '观察进度',
-    mode: '后台运行中',
-  };
+  if (primaryChapterFlowItem?.kind === 'pendingChapterWithoutReadyDirector') {
+    const job = primaryChapterFlowItem.job;
+    return {
+      title: job.chapter_no
+        ? `第 ${job.chapter_no} 章等待导演台`
+        : '章节等待导演台',
+      body: '检测到旧流程遗留的正文生成任务，但这一章还没有 READY 导演台。正文启动入口会先隐藏，避免跳过因果、人物动机、连续性和伏笔检查；自动恢复会补建导演台任务，出现“启动导演台”后再推进。',
+      intent: '补齐导演台',
+      mode: '等待调度',
+    };
+  }
+  if (primaryChapterFlowItem?.kind === 'runningChapter') {
+    const job = primaryChapterFlowItem.job;
+    return {
+      title: job.chapter_no ? `第 ${job.chapter_no} 章正在生成` : '章节正在生成',
+      body: '章节模型调用正在后台执行。请到队列状态页观察运行结果；完成后会出现候选稿和后续审稿任务。',
+      intent: '观察进度',
+      mode: '后台运行中',
+    };
+  }
+  if (primaryChapterFlowItem?.kind === 'pendingChapter') {
+    const job = primaryChapterFlowItem.job;
+    return {
+      title: job.chapter_no ? `启动第 ${job.chapter_no} 章生成` : '启动章节生成',
+      body: job.chapter_no
+        ? `第 ${job.chapter_no} 章任务已排队。点击“启动第 ${job.chapter_no} 章生成”会领取这个任务，模型调用在后台继续；生成候选稿后会进入智能审稿队列。${hasPendingManualReview ? `旧待审章节仍保留 ${reviewPendingCount} 个，当前优先生成新候选稿。` : '审稿完成后再到审核中心处理。'}`
+        : `章节生成任务已排队。点击“启动章节生成”会领取这个任务，模型调用在后台继续；生成候选稿后会进入智能审稿队列。${hasPendingManualReview ? `旧待审章节仍保留 ${reviewPendingCount} 个，当前优先生成新候选稿。` : '审稿完成后再到审核中心处理。'}`,
+      intent: '生成章节正文',
+      mode: '后台执行',
+    };
+  }
   if (runningRewriteJob || pendingRewriteJob) {
     const job = runningRewriteJob || pendingRewriteJob;
     const isRunning = job.status === 'RUNNING';
@@ -2696,16 +2871,16 @@ function recommendationState() {
       mode: isRunning ? '后台运行中' : '等待调度',
     };
   }
+  if (hasPendingManualReview) return {
+    title: '先处理人工审核',
+    body: `有 ${reviewPendingCount} 个章节待人工审核。通过后才会成为正式版本，并继续保持上下文顺序。`,
+    intent: '人工决策',
+    mode: '不会调用模型',
+  };
   if (failedJobs.length > 0) return {
     title: '先查看失败任务',
     body: `有 ${failedJobs.length} 个失败任务。先复制错误或打开队列上下文，再决定是否重试、修正文档或恢复任务。`,
     intent: '排查异常',
-    mode: '不会调用模型',
-  };
-  if (reviewCount > 0) return {
-    title: '先处理人工审核',
-    body: `有 ${reviewCount} 个章节待人工审核。通过后才会成为正式版本，并继续保持上下文顺序。`,
-    intent: '人工决策',
     mode: '不会调用模型',
   };
   if (runningNotifyJob || pendingNotifyJob) {
@@ -2760,7 +2935,7 @@ function executionLabel(info) {
 }
 
 function commandExecutionHint(info) {
-  if (hasFrontStartJob || activeRewriteActionJob) return '启动后台任务';
+  if (hasFrontStartJob || activeRecoverableGlmJob) return '启动后台任务';
   if (activeQueueCount > 0) return '队列观察';
   if (canShowContinueForm) return '排队下一步';
   return executionLabel(info);
@@ -2824,7 +2999,9 @@ const catalogHtml = outlineVolumeGroups.length
         </div>
         <div class="catalog-grid">${volumeOutlines.map((outline) => outlineCard(outline, chaptersByNo, projectId, currentDirectorByNo, directorJobsByNo)).join('')}</div>
       </section>`).join('')
-  : '<article class="empty">暂无章节目录。生成大纲后会出现在这里。</article>';
+  : (outlineRebuildJob
+    ? '<article class="empty">全量大纲正在重建，旧大纲已退出当前展示；任务完成后这里会只显示新生成的大纲。</article>'
+    : '<article class="empty">暂无章节目录。生成大纲后会出现在这里。</article>');
 
 const writtenHtml = latestChapters.length
   ? latestChapters.map((chapter) => chapterCard(chapter, {
@@ -2872,13 +3049,13 @@ function projectPrimaryAction() {
   if (pendingBiblePatch) return commandLink(projectViewHref('bible', '#bible-patch-section'), '确认设定补丁', '先合并新增设定');
   if (pendingOutlineJob) return generationRunForm(projectId, 'GENERATE_OUTLINE');
   if (runningProjectGenerationJob) return commandLink(`/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`, runningBiblePatchJob ? '查看补丁生成' : '查看队列', '观察后台');
-  if (pendingDirectorJob) return generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', pendingDirectorJob);
-  if (pendingChapterJob) return generationRunForm(projectId, 'GENERATE_CHAPTER', pendingChapterJob);
-  if (activeRewriteActionJob) return rewriteRunForm(projectId, activeRewriteActionJob);
-  if (needsReviewDirector) return commandLink(projectViewHref('director', `#director-${encodeURIComponent(needsReviewDirector.chapter_no || '')}`), '处理导演台', '查看阻断');
-  if (pendingChapterWithoutReadyDirectorJob) return commandLink(projectViewHref('director'), '查看导演台', '补齐规划');
+  if (primaryChapterFlowItem?.kind === 'pendingDirector') return generationRunForm(projectId, 'PLAN_CHAPTER_DIRECTOR', primaryChapterFlowItem.job);
+  if (primaryChapterFlowItem?.kind === 'pendingChapter') return generationRunForm(projectId, 'GENERATE_CHAPTER', primaryChapterFlowItem.job);
+  if (activeRecoverableGlmJob) return glmRecoverRunForm(projectId, activeRecoverableGlmJob);
+  if (primaryChapterFlowItem?.kind === 'needsReviewDirector') return commandLink(projectViewHref('director', `#director-${encodeURIComponent(primaryChapterFlowItem.card.chapter_no || '')}`), '处理导演台', '查看阻断');
+  if (primaryChapterFlowItem?.kind === 'pendingChapterWithoutReadyDirector') return commandLink(projectViewHref('director'), '查看导演台', '补齐规划');
+  if (hasPendingManualReview) return commandLink('/webhook/novel-review-list', '处理审核', '人工决策');
   if (failedJobs.length) return commandLink(projectViewHref('ops', '#ops-section'), '排查失败', '查看日志');
-  if (reviewCount) return commandLink('/webhook/novel-review-list', '处理审核', '人工决策');
   if (activeQueueCount) return commandLink(`/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`, '查看队列', '观察后台');
   if (canShowContinueForm) return continueForm(projectId, rejectedRetryContinueOptions || {});
   if (row.status === 'PAUSED' || row.status === 'ARCHIVED') return commandDialogButton('project-actions-drawer', '项目操作', '恢复/管理');
@@ -2895,14 +3072,14 @@ const treatmentAssetState = hasStoryTreatmentAsset ? '已生成' : (runningTreat
 const outlineAssetState = syntheticOutlines.length ? `${syntheticOutlines.length} 章` : (runningOutlineJob ? '生成中' : (pendingOutlineJob ? '待启动' : '待生成'));
 const directorAssetState = needsReviewDirectorCount ? `${needsReviewDirectorCount} 阻断` : `${readyDirectorCount}/${syntheticOutlines.length || 0}`;
 const directorTone = needsReviewDirectorCount ? 'warn' : (readyDirectorCount ? 'good' : '');
-const reviewTone = reviewCount ? 'warn' : 'good';
+const reviewTone = hasPendingManualReview ? 'warn' : 'good';
 const commandAssetHtml = [
   commandAssetCard('创作母本', treatmentAssetState, hasStoryTreatmentAsset ? '主题与真相阶梯' : '等待生成', projectViewHref('treatment'), hasStoryTreatmentAsset ? 'good' : 'warn'),
   commandAssetCard('设定集', bibleAssetState, hasBibleAsset ? '可查看/编辑' : '等待生成', projectViewHref('bible'), hasBibleAsset ? 'good' : 'warn'),
   commandAssetCard('大纲', outlineAssetState, syntheticOutlines.length ? '章节规划' : '等待目录', projectViewHref('outline'), syntheticOutlines.length ? 'good' : 'warn'),
   commandAssetCard('导演台', directorAssetState, needsReviewDirectorCount ? '需调整' : '质量闸门', projectViewHref('director'), directorTone),
   commandAssetCard('章节', `${writtenCount}/${row.target_total_chapters || 0}`, `${currentCount} 正式`, projectViewHref('chapters'), writtenCount ? 'good' : ''),
-  commandAssetCard('审核', `${reviewCount} 待审`, reviewCount ? '先决策' : '无阻塞', '/webhook/novel-review-list', reviewTone),
+  commandAssetCard('审核', `${reviewPendingCount} 待审`, hasPendingManualReview ? '先决策' : '无阻塞', '/webhook/novel-review-list', reviewTone),
   commandAssetCard('事实', `${activeFacts}/${facts.length}`, '连续性记忆', projectViewHref('facts'), activeFacts ? 'good' : ''),
   commandAssetCard('运行', queueSummary, failedJobs.length ? '需排查' : (activeQueueCount ? '观察中' : '可推进'), projectViewHref('ops'), queueTone),
 ].join('');
@@ -2925,6 +3102,7 @@ const projectCommandCenterHtml = `
           <p class="command-premise">${escapeHtml(row.premise || '暂无核心创意')}</p>
         </div>
         <div class="command-actions">
+          ${activeRecoverableGlmJob ? glmRecoverRunForm(projectId, activeRecoverableGlmJob) : ''}
           ${commandDialogButton('project-actions-drawer', '项目操作')}
           ${commandLink(`/webhook/novel-queue-status?project_id=${encodeURIComponent(projectId)}`, '查看队列')}
           ${commandLink(projectViewHref('export'), '导出')}
@@ -2962,8 +3140,9 @@ const projectActionsDrawerHtml = `
             <div class="project-action-section-head">
               <p class="ops-kicker">管理设置</p>
               <h3>项目目标与推进状态</h3>
-              <p class="muted">目标修改和暂停恢复都只影响后续推进；需要填写原因的动作默认折叠，打开后再提交。</p>
+              <p class="muted">标题、目标修改和暂停恢复都只影响后续推进；需要填写原因的动作默认折叠，打开后再提交。</p>
             </div>
+            ${projectTitleSettingsForm(row)}
             ${projectTargetsForm(row)}
             ${projectPauseForms(row)}
           </section>
@@ -3010,7 +3189,7 @@ const overviewHtml = `
         ${overviewCard('设定集', Object.keys(bible).length ? '已生成' : '待生成', Object.keys(bible).length ? '世界观、人物、卖点和文风规则已可查看。' : '设定集还未生成，先启动或排队这一步。', projectViewHref('bible'), '查看设定')}
         ${overviewCard('大纲', `${syntheticOutlines.length} 章`, syntheticOutlines.length ? '查看章节规划、已写状态和待审章节。' : '大纲还未生成，完成设定集后会创建大纲任务。', projectViewHref('outline'), '查看大纲')}
         ${overviewCard('导演台', `${readyDirectorCount}/${syntheticOutlines.length || 0}`, needsReviewDirectorCount ? `${needsReviewDirectorCount} 章导演台需调整，正文生成会先暂停。` : '查看因果链、连续性约束、伏笔操作和分段计划。', projectViewHref('director'), '查看导演台')}
-        ${overviewCard('章节', `${writtenCount}/${row.target_total_chapters || 0}`, `当前正式版本 ${currentCount} 个，待人工审核 ${reviewCount} 个。`, projectViewHref('chapters'), '查看章节')}
+        ${overviewCard('章节', `${writtenCount}/${row.target_total_chapters || 0}`, `当前正式版本 ${currentCount} 个，待人工审核 ${reviewPendingCount} 个。`, projectViewHref('chapters'), '查看章节')}
         ${overviewCard('事实库', `${activeFacts} 条`, `共 ${facts.length} 条事实，包含激活、待确认和失效记录。`, projectViewHref('facts'), '查看事实')}
         ${overviewCard('运行', `${failedJobs.length} 失败`, `队列中 ${activeQueueCount} 个任务，失败任务建议先看日志和上下文。`, projectViewHref('ops'), '查看日志')}
         ${overviewCard('导出', markdownExport ? '可导出' : '暂无正文', markdownExport ? '已批准的正式章节可导出 Markdown。' : '需要先有已批准正文才能导出全文。', projectViewHref('export'), '打开导出')}
@@ -3019,7 +3198,7 @@ const overviewHtml = `
     <section aria-label="关键风险和资产完成度">
       <div class="section-title"><h2>关键风险与资产完成度</h2><p class="muted">先看项目是否卡住，再决定进入哪个二级视图。</p></div>
       <div class="risk-grid">
-        ${riskItem('人工审核', `${reviewCount} 待审`, reviewCount ? '先处理待审章节，避免续写上下文阻塞。' : '当前没有人工审核阻塞。', reviewCount ? 'warn' : 'good')}
+        ${riskItem('人工审核', `${reviewPendingCount} 待审`, hasPendingManualReview ? '先处理待审章节，避免续写上下文阻塞。' : '当前没有人工审核阻塞。', hasPendingManualReview ? 'warn' : 'good')}
         ${riskItem('失败任务', `${failedJobs.length} 失败`, failedJobs.length ? '进入运行视图查看错误、最近任务和模型调用。' : '当前没有失败任务。', failedJobs.length ? 'bad' : 'good')}
         ${riskItem('队列推进', `${activeQueueCount} 个`, activeQueueCount ? '队列仍在推进，先观察再重复操作。' : '队列空闲，可根据下一步动作推进。', activeQueueCount ? 'warn' : 'good')}
       </div>
@@ -3598,6 +3777,9 @@ const html = `<!doctype html>
     .project-action-card.danger-detail > summary::after { border-color: #f2b8b5; color: var(--danger); }
     .project-actions-panel .project-action-card form { display: grid; gap: 10px; margin: 0; padding: 12px; }
     .project-actions-panel .project-action-card label { display: grid; gap: 6px; margin: 0; color: var(--ink); font-weight: 700; }
+    .project-actions-panel .project-action-card .toggle-row { grid-template-columns: 20px minmax(0, 1fr); align-items: start; column-gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfd; }
+    .project-actions-panel .project-action-card .toggle-row input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--accent); }
+    .project-actions-panel .project-action-card .toggle-row .form-help { grid-column: 2; margin: -2px 0 0; }
     .project-action-card-note { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
     .project-actions-panel .project-action-card button[type="submit"] { min-height: 40px; justify-content: center; font-weight: 800; }
     .field-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }

@@ -93,6 +93,14 @@ assert(
   '14 should claim jobs with FOR UPDATE SKIP LOCKED'
 );
 assert(
+  chapter.connections['触发器 - 后台执行章节生成']?.main?.[0]?.[0]?.node === '数据库 - 读取章节生成上下文',
+  '14 async trigger branch should reuse upstream claimed job context directly instead of re-claiming'
+);
+assert(
+  !chapterNodes.has('数据库 - 领取指定GENERATE_CHAPTER任务'),
+  '14 should not include an async re-claim node that can double-claim the same job'
+);
+assert(
   chapterNodes.get('数据库 - 领取GENERATE_CHAPTER任务').parameters.query.includes('GENERATE_CHAPTER'),
   '14 should claim GENERATE_CHAPTER'
 );
@@ -199,7 +207,7 @@ assert.strictEqual(
 assert.deepStrictEqual(
   (chapter.connections?.['触发器 - 后台执行章节生成']?.main?.[0] || []).map((connection) => connection.node),
   ['数据库 - 读取章节生成上下文'],
-  '14 async chapter worker should continue from the claimed job context'
+  '14 async chapter worker should reuse the upstream claimed job directly'
 );
 assert.deepStrictEqual(
   (chapter.connections?.['HTTP请求 - 调用GLM生成章节第1段']?.main?.[1] || []).map((connection) => connection.node),

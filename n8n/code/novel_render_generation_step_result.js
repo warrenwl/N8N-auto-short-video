@@ -61,7 +61,7 @@ const claimReasonLabel = {
 };
 const title = claimSuccess
   ? (isTreatment ? '创作母本生成已启动' : (isBible ? '设定集生成已启动' : (isBiblePatch ? '扩写设定补丁生成已启动' : (isOutline ? '大纲生成已启动' : (isDirector ? (isRejectedRetry ? `${chapterNo}继续重写已启动` : `${chapterNo}导演台已启动`) : (isChapter ? `${chapterNo}生成已启动` : '生成任务已启动'))))))
-  : '未开始模型调用';
+  : (isChapter ? `${chapterNo}生成未启动` : '未开始模型调用');
 const summary = claimSuccess
   ? (isTreatment
     ? '创作母本任务已领取，模型会先生成主题内核、读者承诺、悬念栈、真相阶梯和情绪弧线；完成后会自动创建设定集生成任务。'

@@ -22,4 +22,4 @@ ENV OUTPUT_ROOT=/data/output
 ENV TTS_BASE_URL=http://host.docker.internal:8010
 ENV TZ=Asia/Shanghai
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8100"]

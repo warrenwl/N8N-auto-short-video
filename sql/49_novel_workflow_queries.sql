@@ -342,7 +342,7 @@ FROM project;
 -- $2 chapter_no
 SELECT
   p.id AS project_id,
-  p.title AS novel_title,
+  CASE WHEN COALESCE(p.title_in_prompt, TRUE) THEN p.title ELSE '' END AS novel_title,
   p.genre,
   p.audience,
   p.style,

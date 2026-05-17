@@ -59,8 +59,9 @@ services:
     build: ./worker
     container_name: n8n-video-worker
     restart: unless-stopped
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8100"]
     ports:
-      - "8000:8000"
+      - "8100:8100"
     environment:
       DATA_DIR: /data
       OUTPUT_ROOT: /data/output

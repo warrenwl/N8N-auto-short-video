@@ -114,6 +114,27 @@ function stringifyForPrompt(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function extractRequestedWordTarget(value) {
+  const text = String(value || '').replace(/[,，]/g, '').trim();
+  if (!text) return null;
+  const patterns = [
+    /(?:重写为|扩写到|写到|至少|不少于|不低于|达到|改成|控制在)\s*(\d{3,5})\s*(?:字|中文字|中文字符)?\s*(?:以上|左右)?/,
+    /(\d{3,5})\s*(?:字|中文字|中文字符)\s*(?:以上|起步|左右|上下)?/,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const words = Number(match[1]);
+    if (Number.isFinite(words) && words >= 300 && words <= 50000) return Math.round(words);
+  }
+  return null;
+}
+
+function promptTitle(value, fallback = '未使用项目标题') {
+  const title = String(value ?? '').trim();
+  return title || fallback;
+}
+
 function jsonArray(value) {
   if (Array.isArray(value)) return value;
   if (value === undefined || value === null || value === '') return [];
@@ -166,6 +187,20 @@ function buildStoryTreatmentInstruction(runType) {
     'mystery_stack 必须区分 reader_question、misdirection、truth、payoff_hint。',
     'reveal_ladder 每一项必须包含 chapter_range、visible_clue、misread、truth_progress、emotional_payoff、do_not_reveal。',
     'symbolic_motifs 要写清 motif、meaning、first_use、payoff_use。',
+  ].join('\n');
+}
+
+function buildSourceDocumentInstruction(runType, values) {
+  if (runType !== 'GENERATE_STORY_TREATMENT' || isBlankPromptValue(values.source_document_text)) return '';
+  return [
+    '【上传源文档识别】',
+    `文件名：${values.source_document_name || '未记录'}`,
+    `字符数：${values.source_document_char_count || '未记录'}${values.source_document_truncated ? '（已截取前段用于识别）' : ''}`,
+    '下面是用户上传的 txt/md 文本。你必须优先从文本中识别已有故事素材、人物关系、世界观、冲突、章节/场景线索和叙事风格，再生成创作母本。',
+    '如果文本已经像正文或大纲，不要照抄原文；要提炼成可继续生成设定集、大纲、导演台和章节正文的 Story Treatment。',
+    '如果用户同时填写了核心创意/补充方向，需作为改编方向使用，但不得忽略上传文本中的关键人物、情节和情绪承诺。',
+    '【上传文本】',
+    values.source_document_text,
   ].join('\n');
 }
 
@@ -452,6 +487,11 @@ function buildExpansionInstruction(runType, values) {
   if (runType === 'GENERATE_OUTLINE') {
     const targetTotal = Number(values.target_total_chapters || 0);
     const scope = String(values.expansion_scope || 'append_only');
+    const isFullRegenerate = scope === 'regenerate_outline'
+      || values.full_outline_regenerate === true
+      || values.full_chain_regenerate === true
+      || values.full_outline_regenerate === 'true'
+      || values.full_chain_regenerate === 'true';
     const approvedMax = maxChapterNo(values.approved_chapters_raw);
     const existingMax = maxChapterNo(values.existing_outlines_raw);
     const outlineRequestComment = String(values.outline_request_comment || '').trim();
@@ -474,12 +514,16 @@ function buildExpansionInstruction(runType, values) {
       ...shared,
       outlineRequestComment ? `本次大纲请求备注：${outlineRequestComment}` : '',
       coverageRule,
-      `已有大纲：${values.existing_outlines || '[]'}`,
-      `已批准章节摘要：${values.approved_chapters || '[]'}`,
+      isFullRegenerate
+        ? '全量重建模式：不要沿用旧大纲、旧章节标题、旧章节开篇结构或旧章节顺序；本次必须从当前创作母本、正式设定集和最新扩写要求重新规划第 1 章到最后一章。'
+        : `已有大纲：${values.existing_outlines || '[]'}`,
+      isFullRegenerate
+        ? '全量重建模式：旧已批准正文只保留为历史版本，不作为本次大纲约束；不得为了兼容旧正文而复用旧章节标题。'
+        : `已批准章节摘要：${values.approved_chapters || '[]'}`,
       '扩写执行规则：',
       '1. 如果扩写范围是“只追加新章节”，必须保留已有大纲的章节编号、标题和已批准章节事实；新增章节从现有大纲之后自然延展，不要重写已经存在的章节。',
       '2. 如果扩写范围是“重排未写章节”，可以调整尚未生成/尚未批准章节的大纲，但必须把已批准章节当作硬事实。',
-      '3. 如果扩写范围是“高风险重排全部大纲”，也不能要求修改已批准正文；需要把已批准正文转化为新大纲的既定前史。',
+      '3. 如果扩写范围是“高风险重排全部大纲”，必须重写完整章节设计；旧正文和旧大纲是历史版本，不得作为必须保留的既定前史。',
       '4. 新增剧情要求必须具体落到章节 summary、chapter_goal、conflict_point、emotional_point 或 hook 中，不要只在总述里提到。',
       '5. 重大秘密、身世、幕后真相、感情确认、反派底牌等信息必须按“新增剧情要求”和“本次大纲请求备注”里的节奏分层释放；如果用户要求缓慢揭示、后期揭露或先甜后虐，前段只能安排线索、误导、局部证据和情绪铺垫，不得直接写成“真相大白/身份大白/全部揭露”。',
       '6. 当最新项目扩写要求与旧大纲、旧扩写备注或设定建议冲突时，以最新项目扩写要求和本次大纲请求备注为准；旧内容只作为连续性参考。',
@@ -508,11 +552,18 @@ const key = promptKey(runType);
 const startedAt = new Date().toISOString();
 const chapterBody = String(source.chapter_body || source.body || '');
 const chapterWordCount = Number(source.chapter_word_count ?? source.word_count ?? source.word_count_estimate);
-const targetWords = Number(source.target_words_per_chapter || defaults.target_words_per_chapter || 0);
+const humanComment = String(source.human_comment || '');
+const requestedRewriteWords = runType === 'REWRITE_CHAPTER'
+  ? extractRequestedWordTarget(humanComment)
+  : null;
+const targetWords = Number(requestedRewriteWords || source.target_words_per_chapter || defaults.target_words_per_chapter || 0);
 const directorCardText = stringifyForPrompt(source.director_card || source.director_card_payload || source.card_payload);
 const baseValues = {
   ...defaults,
   ...source,
+  target_words_per_chapter: targetWords || source.target_words_per_chapter || defaults.target_words_per_chapter,
+  title: promptTitle(source.title),
+  novel_title: promptTitle(source.novel_title),
   blocked_topics: Array.isArray(config.blocked_topics) ? config.blocked_topics.join('、') : String(config.blocked_topics || ''),
   main_character: stringifyForPrompt(source.main_character),
   supporting_characters: stringifyForPrompt(source.supporting_characters),
@@ -524,6 +575,12 @@ const baseValues = {
   expansion_notes: String(source.expansion_notes || ''),
   selling_points: stringifyForPrompt(source.selling_points),
   story_treatment: stringifyForPrompt(source.story_treatment),
+  source_document_name: String(source.source_document_name || ''),
+  source_document_type: String(source.source_document_type || ''),
+  source_document_size: Number(source.source_document_size || 0),
+  source_document_char_count: Number(source.source_document_char_count || 0),
+  source_document_truncated: source.source_document_truncated === true || source.source_document_truncated === 'true',
+  source_document_text: String(source.source_document_text || '').slice(0, 80000),
   scene_beats: stringifyForPrompt(source.scene_beats || source.outline_scene_beats),
   reader_questions: stringifyForPrompt(source.reader_questions || source.outline_reader_questions),
   existing_outlines: stringifyForPrompt(source.existing_outlines),
@@ -531,7 +588,7 @@ const baseValues = {
   approved_chapters: stringifyForPrompt(source.approved_chapters),
   approved_chapters_raw: source.approved_chapters,
   expansion_request: String(source.expansion_request || ''),
-  expansion_scope: String(source.expansion_scope || 'append_only'),
+  expansion_scope: String(source.effective_expansion_scope || source.expansion_scope || 'append_only'),
   expansion_constraints: String(source.expansion_constraints || ''),
   continuity_facts: stringifyForPrompt(source.continuity_facts || source.facts),
   director_repair_context: stringifyForPrompt(source.director_repair_context),
@@ -541,6 +598,8 @@ const baseValues = {
   novel_bible: stringifyForPrompt(source.novel_bible || source.bible),
   issues: stringifyForPrompt(source.issues),
   suggestions: stringifyForPrompt(source.suggestions),
+  human_comment: humanComment,
+  requested_rewrite_words: requestedRewriteWords || '',
   chapter_word_count: Number.isFinite(chapterWordCount) && chapterWordCount > 0
     ? Math.round(chapterWordCount)
     : Array.from(chapterBody).filter((char) => !/\s/.test(char)).length,
@@ -563,13 +622,19 @@ if (runType === 'PLAN_CHAPTER_DIRECTOR' && source.max_tokens === undefined) {
   } else if (segmentTotal >= 4) {
     maxTokens = Math.max(Number(maxTokens) || 0, 3200);
   }
+} else if (runType === 'REWRITE_CHAPTER' && source.max_tokens === undefined && targetWords > 0) {
+  maxTokens = Math.max(Number(maxTokens) || 0, Math.min(16000, Math.ceil(targetWords * 2.4)));
 }
 const userPromptWithBrief = renderedUserPrompt.includes('【创作约束】')
   ? renderedUserPrompt
   : `${renderedUserPrompt}\n\n${values.creative_brief}`;
 const userPromptWithTreatment = appendInstructionOnce(
   appendInstructionOnce(
-    userPromptWithBrief,
+    appendInstructionOnce(
+      userPromptWithBrief,
+      '【上传源文档识别】',
+      buildSourceDocumentInstruction(runType, values)
+    ),
     '【创作母本规则】',
     buildStoryTreatmentInstruction(runType)
   ),

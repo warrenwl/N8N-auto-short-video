@@ -196,7 +196,7 @@ function detailHref(row, view = '') {
 
 function reviewAction(row) {
   const href = reviewHref(row);
-  if (!href) return '<span class="disabled-action">暂无待审</span>';
+  if (!href) return '<a href="/webhook/novel-review-list">去审核 审核中心</a>';
   const title = row.need_review_chapter_no ? `第 ${escapeHtml(row.need_review_chapter_no)} 章` : '待审章节';
   return `<a href="${href}">去审核 ${title}</a>`;
 }
@@ -243,7 +243,9 @@ function queueSummary(row) {
 }
 
 function hasReview(row) {
-  return Boolean(row.need_review_chapter_id && row.need_review_token) || Number(row.need_review_count || 0) > 0;
+  return Boolean(row.need_review_chapter_id && row.need_review_token)
+    || Number(row.need_review_count || 0) > 0
+    || (String(row.status || '') === 'REVIEWING' && !hasQueue(row));
 }
 
 function hasIssue(row) {
@@ -262,9 +264,11 @@ function canContinue(row) {
 }
 
 function nextAction(row) {
-  if (hasReview(row)) return {label: '处理审核', detail: row.need_review_chapter_no ? `第 ${row.need_review_chapter_no} 章待审` : '有章节等待人工判断', tone: 'warn', href: reviewHref(row)};
-  if (hasIssue(row)) return {label: '排查失败', detail: '先看队列和运行日志，确认失败原因', tone: 'bad', href: detailHref(row, 'ops')};
+  if (hasReview(row)) return {label: '处理审核', detail: row.need_review_chapter_no ? `第 ${row.need_review_chapter_no} 章待审` : '项目处于待人工审核', tone: 'warn', href: reviewHref(row) || '/webhook/novel-review-list'};
+  // Keep live queue progress ahead of historical failures so users can
+  // follow the active chapter flow first, then handle legacy errors.
   if (hasQueue(row)) return {label: '观察队列', detail: queueSummary(row), tone: 'queued', href: queueHref(row)};
+  if (hasIssue(row)) return {label: '排查失败', detail: '先看队列和运行日志，确认失败原因', tone: 'bad', href: detailHref(row, 'ops')};
   if (canContinue(row)) return {label: '继续写作', detail: '没有待审、失败或队列阻塞', tone: 'good', href: detailHref(row)};
   if (row.status === 'PAUSED') return {label: '已暂停', detail: '恢复后才会继续进入队列', tone: 'muted', href: detailHref(row)};
   if (row.status === 'ARCHIVED') return {label: '已归档', detail: '需要恢复归档后再处理', tone: 'muted', href: detailHref(row)};

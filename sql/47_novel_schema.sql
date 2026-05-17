@@ -14,6 +14,7 @@ $$ LANGUAGE plpgsql;
 CREATE TABLE IF NOT EXISTS novel_projects (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   title TEXT NOT NULL,
+  title_in_prompt BOOLEAN NOT NULL DEFAULT TRUE,
   genre TEXT NOT NULL,
   audience TEXT,
   style TEXT,
@@ -772,6 +773,9 @@ ALTER TABLE novel_projects
 
 ALTER TABLE novel_projects
   ADD COLUMN IF NOT EXISTS expansion_constraints TEXT;
+
+ALTER TABLE novel_projects
+  ADD COLUMN IF NOT EXISTS title_in_prompt BOOLEAN NOT NULL DEFAULT TRUE;
 
 ALTER TABLE novel_projects
   DROP CONSTRAINT IF EXISTS novel_projects_status_check;

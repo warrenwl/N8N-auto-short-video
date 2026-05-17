@@ -24,10 +24,26 @@ function positiveInt(value, label) {
   return parsed;
 }
 
+function optionalProjectTitle(value) {
+  const normalized = text(value).replace(/\s+/g, ' ');
+  if (!normalized) return '';
+  if (normalized.length > 80) {
+    throw new Error('项目标题不能超过 80 个字符。');
+  }
+  return normalized;
+}
+
+function checkboxBoolean(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return ['1', 'true', 'on', 'yes', 'y', 'enabled', '启用', '是'].includes(raw);
+}
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const projectId = text(body.project_id || body.id);
 const reviewer = text(body.reviewer || 'local_user') || 'local_user';
 const comment = text(body.comment || body.note);
+const projectTitle = optionalProjectTitle(body.title || body.project_title);
+const titleInPrompt = checkboxBoolean(body.title_in_prompt);
 const expansionRequest = text(body.expansion_request || body.expansion_plan || body.plot_expansion_request);
 const expansionConstraints = text(body.expansion_constraints || body.keep_constraints);
 
@@ -60,6 +76,8 @@ return [{
     project_id: projectId,
     target_total_chapters: positiveInt(body.target_total_chapters, '目标章节数'),
     target_words_per_chapter: positiveInt(body.target_words_per_chapter || 2000, '每章目标字数'),
+    title: projectTitle,
+    title_in_prompt: titleInPrompt,
     expansion_request: expansionRequest,
     expansion_scope: normalizeExpansionScope(body.expansion_scope),
     expansion_constraints: expansionConstraints,

@@ -122,7 +122,7 @@ const userPrompt = [
   `目标章字数：${source.target_words_per_chapter || defaults.target_words_per_chapter || '未设置'}`,
   '',
   '【章节信息】',
-  `项目：${source.novel_title || source.project_title || '未命名项目'}`,
+  `项目：${source.novel_title || source.project_title || '未使用项目标题'}`,
   `章节：第 ${source.chapter_no || ''} 章 ${source.chapter_title || ''}`,
   `处理方式：${actionLabel[source.action_type] || source.action_type || '定向修改'}`,
   `修改范围锁：${rangeLockLabel[source.range_lock] || source.range_lock || '只改选中内容'}`,

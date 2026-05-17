@@ -216,22 +216,32 @@ assert(
     centerNodes.get('执行子流程 - 异步重写正式章节').parameters.workflowId === 'novelRewriteNotifyV1Workflow17',
   '11 approved-current rewrite requests should immediately launch workflow 17 asynchronously'
 );
-assert.strictEqual(centerNodes.get('Webhook - 小说重写任务启动').parameters.httpMethod, 'POST');
-assert.strictEqual(centerNodes.get('Webhook - 小说重写任务启动').parameters.path, 'novel-rewrite-start');
+assert.strictEqual(centerNodes.get('Webhook - 小说模型任务检查并恢复').parameters.httpMethod, 'POST');
+assert.strictEqual(centerNodes.get('Webhook - 小说模型任务检查并恢复').parameters.path, 'novel-job-recover');
 assert(
-  centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes("j.job_type = 'REWRITE_CHAPTER'") &&
-    centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes("j.status IN ('PENDING', 'RUNNING')") &&
-    centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes("status = 'PENDING'") &&
-    centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes("INTERVAL '6 minutes'") &&
-    centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes('REWRITE_WORKER_RECOVERED') &&
-    centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes('REWRITE_JOB_STILL_RUNNING') &&
-    centerNodes.get('数据库 - 校验待执行重写任务').parameters.query.includes('REWRITE_WORKER_START_REQUESTED'),
-  '11 should expose a POST-only recovery action for pending or stale running rewrite jobs'
+  centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes("GENERATE_STORY_TREATMENT") &&
+    centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes("REWRITE_CHAPTER") &&
+    centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes("j.status IN ('PENDING', 'RUNNING', 'FAILED')") &&
+    centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes("INTERVAL '6 minutes'") &&
+    centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes('GLM_JOB_RECOVERED') &&
+    centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes('GLM_JOB_STILL_RUNNING') &&
+    centerNodes.get('数据库 - 校验并恢复模型任务').parameters.query.includes('GLM_JOB_START_REQUESTED'),
+  '11 should expose a POST-only generic recovery action for pending/running/failed GLM jobs'
 );
 assert(
-  centerNodes.has('执行子流程 - 异步启动待执行重写') &&
-    centerNodes.get('执行子流程 - 异步启动待执行重写').parameters.workflowId === 'novelRewriteNotifyV1Workflow17',
-  '11 pending rewrite recovery should launch workflow 17 asynchronously'
+  centerNodes.has('执行子流程 - 异步启动工作流12') &&
+    centerNodes.get('执行子流程 - 异步启动工作流12').parameters.workflowId === 'novelBibleV1Workflow12' &&
+    centerNodes.has('执行子流程 - 异步启动工作流13') &&
+    centerNodes.get('执行子流程 - 异步启动工作流13').parameters.workflowId === 'novelOutlineV1Workflow13' &&
+    centerNodes.has('执行子流程 - 异步启动工作流13B') &&
+    centerNodes.get('执行子流程 - 异步启动工作流13B').parameters.workflowId === 'novelDirectorV1Workflow13B' &&
+    centerNodes.has('执行子流程 - 异步启动工作流14') &&
+    centerNodes.get('执行子流程 - 异步启动工作流14').parameters.workflowId === 'novelChapterV1Workflow14' &&
+    centerNodes.has('执行子流程 - 异步启动工作流15') &&
+    centerNodes.get('执行子流程 - 异步启动工作流15').parameters.workflowId === 'novelAiReviewV1Workflow15' &&
+    centerNodes.has('执行子流程 - 异步启动工作流17') &&
+    centerNodes.get('执行子流程 - 异步启动工作流17').parameters.workflowId === 'novelRewriteNotifyV1Workflow17',
+  '11 generic GLM recovery should route to all worker workflows asynchronously'
 );
 assert(
   centerNodes.get('数据库 - 查询小说项目详情').parameters.query.includes("'is_stale'") &&
@@ -267,6 +277,14 @@ assert(
 const bible = workflows['n8n/workflow/12_novel_bible_workflow.json'];
 const bibleNodes = nodesByName(bible);
 assert(nodesByType(bible, 'n8n-nodes-base.manualTrigger').length >= 3, '12 should have manual triggers for story treatment, Bible, and Bible patch queues');
+assert(
+  bibleNodes.get('数据库 - 领取指定GENERATE_STORY_TREATMENT任务').parameters.query.includes("j.job_type = 'GENERATE_STORY_TREATMENT'") &&
+    bibleNodes.get('数据库 - 领取指定GENERATE_STORY_TREATMENT任务').parameters.query.includes('j.id = (SELECT job_id FROM input)') &&
+    bibleNodes.get('数据库 - 领取指定GENERATE_STORY_TREATMENT任务').parameters.query.includes('FOR UPDATE SKIP LOCKED') &&
+    bibleNodes.get('数据库 - 领取指定GENERATE_BIBLE任务').parameters.query.includes("j.job_type = 'GENERATE_BIBLE'") &&
+    bibleNodes.get('数据库 - 领取指定GENERATE_BIBLE_PATCH任务').parameters.query.includes("j.job_type = 'GENERATE_BIBLE_PATCH'"),
+  '12 should support Execute Workflow trigger claiming by job_id for treatment/Bible/Bible patch'
+);
 assert(
   bibleNodes.get('数据库 - 领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('FOR UPDATE SKIP LOCKED') &&
     bibleNodes.get('数据库 - 领取GENERATE_STORY_TREATMENT任务').parameters.query.includes('GENERATE_STORY_TREATMENT'),
@@ -325,6 +343,12 @@ assert(
   '12 should persist generated organizations, locations, plot constraints, and expansion notes into Bible'
 );
 assert(
+  bibleNodes.get('数据库 - 写入创作母本并创建Bible任务').parameters.query.includes('full_chain_regenerate') &&
+    bibleNodes.get('数据库 - 写入Bible并创建大纲任务').parameters.query.includes('full_outline_regenerate') &&
+    bibleNodes.get('数据库 - 写入Bible并创建大纲任务').parameters.options.queryReplacement.includes('job_expansion_scope'),
+  '12 should propagate full-chain and expansion-scope strategy from treatment/Bible jobs to downstream outline jobs'
+);
+assert(
   bibleNodes.get('数据库 - 标记Bible任务成功').parameters.query.includes('SUCCEEDED'),
   '12 should mark job succeeded'
 );
@@ -349,6 +373,12 @@ const outline = workflows['n8n/workflow/13_novel_outline_workflow.json'];
 const outlineNodes = nodesByName(outline);
 assert(nodesByType(outline, 'n8n-nodes-base.manualTrigger').length >= 1, '13 should have manual trigger');
 assert(
+  outlineNodes.get('数据库 - 领取指定GENERATE_OUTLINE任务').parameters.query.includes("j.job_type = 'GENERATE_OUTLINE'") &&
+    outlineNodes.get('数据库 - 领取指定GENERATE_OUTLINE任务').parameters.query.includes('j.id = (SELECT job_id FROM input)') &&
+    outlineNodes.get('数据库 - 领取指定GENERATE_OUTLINE任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
+  '13 should support Execute Workflow trigger claiming by job_id'
+);
+assert(
   outlineNodes.get('数据库 - 领取GENERATE_OUTLINE任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
   '13 should claim jobs with FOR UPDATE SKIP LOCKED'
 );
@@ -366,7 +396,9 @@ assert(
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('reader_questions') &&
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('organizations') &&
     outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('plot_constraints') &&
-    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('outline_request_comment'),
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('outline_request_comment') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('effective_expansion_scope') &&
+    outlineNodes.get('数据库 - 读取大纲生成上下文').parameters.query.includes('full_outline_regenerate'),
   '13 should pass expansion plan, new Bible fields, existing outlines, and approved chapter summaries into outline generation'
 );
 assert(
@@ -398,9 +430,11 @@ assert(
 );
 assert(
   outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('expansion_scope') &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('full_outline_regenerate') &&
     outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("i.expansion_scope <> 'append_only'") &&
-    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("approved.status IN ('APPROVED', 'PUBLISHED')"),
-  '13 should prevent append-only expansion from overwriting existing outlines or approved chapters'
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes("approved.status IN ('APPROVED', 'PUBLISHED')") &&
+    outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.options.queryReplacement.includes('full_outline_regenerate'),
+  '13 should route append-only, rewrite-unwritten, and full-outline regeneration into distinct outline write strategies'
 );
 assert(
   outlineNodes.get('数据库 - 写入大纲并创建第1章任务').parameters.query.includes('PLAN_CHAPTER_DIRECTOR'),
@@ -424,6 +458,12 @@ assert(
 const director = workflows['n8n/workflow/13b_novel_director_workflow.json'];
 const directorNodes = nodesByName(director);
 assert(nodesByType(director, 'n8n-nodes-base.manualTrigger').length >= 1, '13B should have manual trigger');
+assert(
+  directorNodes.get('数据库 - 领取指定PLAN_CHAPTER_DIRECTOR任务').parameters.query.includes("j.job_type = 'PLAN_CHAPTER_DIRECTOR'") &&
+    directorNodes.get('数据库 - 领取指定PLAN_CHAPTER_DIRECTOR任务').parameters.query.includes('j.id = (SELECT job_id FROM input)') &&
+    directorNodes.get('数据库 - 领取指定PLAN_CHAPTER_DIRECTOR任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
+  '13B should support Execute Workflow trigger claiming by job_id'
+);
 assert(
   directorNodes.get('数据库 - 领取PLAN_CHAPTER_DIRECTOR任务').parameters.query.includes('FOR UPDATE SKIP LOCKED'),
   '13B should claim jobs with FOR UPDATE SKIP LOCKED'

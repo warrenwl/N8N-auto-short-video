@@ -144,7 +144,7 @@ const userPrompt = [
   selectedText || '无',
   '',
   '【项目/章节】',
-  `项目：${source.novel_title || '未命名项目'}`,
+  `项目：${source.novel_title || '未使用项目标题'}`,
   `类型/读者/文风：${source.genre || '未设置'} / ${source.audience || '未设置'} / ${source.style || '未设置'}`,
   `章节：第 ${source.chapter_no || ''} 章 ${source.chapter_title || ''}`,
   `摘要：${source.chapter_summary || '未记录'}`,

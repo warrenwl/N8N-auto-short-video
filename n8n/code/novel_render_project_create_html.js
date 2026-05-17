@@ -128,6 +128,18 @@ const html = `<!doctype html>
     section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
     .guide { padding: 16px; background: var(--accent-soft); border-color: #b9e3d4; }
     .guide p { margin: 0; color: #225447; line-height: 1.7; }
+    .create-tabs { display: flex; gap: 8px; padding: 12px 12px 0; background: #fff; border-bottom: 1px solid var(--line); }
+    .create-tab { min-height: 40px; border: 1px solid var(--line); border-bottom: 0; border-radius: 8px 8px 0 0; padding: 0 14px; background: #f9fafb; color: #344054; font: inherit; font-weight: 800; cursor: pointer; touch-action: manipulation; }
+    .create-tab[aria-selected="true"] { background: #fff; color: var(--accent); border-color: #b9e3d4; box-shadow: inset 0 3px 0 var(--accent); }
+    .create-panel[hidden] { display: none !important; }
+    .source-upload { grid-column: 1 / -1; display: grid; gap: 12px; border: 1px solid #b9e3d4; border-radius: 8px; padding: 14px; background: #fbfefd; }
+    .source-upload-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .source-upload-head strong { display: block; font-size: 15px; }
+    .source-upload-head span { display: block; margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .source-upload input[type="file"] { border-style: dashed; background: #fff; }
+    .source-status { min-height: 20px; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .source-status.is-error { color: var(--danger); }
+    .source-status.is-success { color: var(--accent); }
     form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; }
     label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
     .field-head { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -158,9 +170,12 @@ const html = `<!doctype html>
       .side-nav a, .side-nav span { white-space: nowrap; }
       .side-primary { display: none; }
       header, form { display: block; }
+      .create-tabs { overflow-x: auto; padding-bottom: 0; }
+      .create-tab { white-space: nowrap; }
       nav { margin-top: 12px; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
       label { margin-bottom: 12px; }
       .field-head { align-items: flex-start; }
+      .source-upload-head { display: block; }
       .actions { margin-top: 8px; }
     }
   </style>
@@ -184,52 +199,109 @@ const html = `<!doctype html>
     </section>
 
     <section>
-      <form method="POST" action="/webhook/novel-project-create" autocomplete="off">
-        <label>
-          <span class="field-head"><span>小说标题</span><button class="ai-assist" type="button" data-ai-title>AI标题</button></span>
-          <input name="title" required placeholder="例如：逆光回响…" autocomplete="off" />
-        </label>
-        <label>类型<select name="genre" required>${renderOptions(genreOptions, '都市逆袭')}</select></label>
-        <label>目标读者<select name="audience">${renderOptions(audienceOptions, '中文网文读者')}</select></label>
-        <label>文风<select name="style">${renderOptions(styleOptions, '节奏快、冲突强、章末留钩子')}</select></label>
-        <label>章节数<input name="target_total_chapters" type="number" inputmode="numeric" min="1" max="500" value="20" autocomplete="off" /></label>
-        <label>每章字数<select name="target_words_per_chapter">${renderOptions(wordCountOptions, '2000')}</select></label>
-        <label class="wide">
-          <span class="field-head"><span>创意建议方向</span></span>
-          <textarea name="creative_direction" placeholder="可选。比如：一女主三男主、甜宠开头虐恋结尾、女主身世缓慢揭示、增加商会/家族/势力线…" autocomplete="off"></textarea>
-        </label>
-        <label class="wide">
-          <span class="field-head"><span>核心创意</span><button class="ai-assist" type="button" data-ai-idea>AI创意</button></span>
-          <textarea name="premise" required placeholder="例如：主角、目标、主要冲突和爽点…" autocomplete="off"></textarea>
-        </label>
-        <p class="ai-feedback" data-ai-feedback aria-live="polite"></p>
-        <div class="actions">
-          <button type="submit">提交创建</button>
-          <a class="secondary" href="/webhook/novel-center">返回工作台</a>
-          <a class="secondary" href="/webhook/novel-project-list">查看项目列表</a>
-        </div>
-      </form>
+      <div class="create-tabs" role="tablist" aria-label="创建方式">
+        <button class="create-tab" type="button" role="tab" id="tab-manual-create" aria-controls="panel-manual-create" aria-selected="true" data-create-tab="manual">手动创建</button>
+        <button class="create-tab" type="button" role="tab" id="tab-upload-create" aria-controls="panel-upload-create" aria-selected="false" data-create-tab="upload">上传文档创建</button>
+      </div>
+      <div class="create-panel" id="panel-manual-create" role="tabpanel" aria-labelledby="tab-manual-create" data-create-panel="manual">
+        <form method="POST" action="/webhook/novel-project-create" autocomplete="off" data-create-form="manual">
+          <label>
+            <span class="field-head"><span>小说标题</span><button class="ai-assist" type="button" data-ai-title>AI标题</button></span>
+            <input name="title" required placeholder="例如：逆光回响…" autocomplete="off" />
+          </label>
+          <label>类型<select name="genre" required>${renderOptions(genreOptions, '都市逆袭')}</select></label>
+          <label>目标读者<select name="audience">${renderOptions(audienceOptions, '中文网文读者')}</select></label>
+          <label>文风<select name="style">${renderOptions(styleOptions, '节奏快、冲突强、章末留钩子')}</select></label>
+          <label>章节数<input name="target_total_chapters" type="number" inputmode="numeric" min="1" max="500" value="20" autocomplete="off" /></label>
+          <label>每章字数<select name="target_words_per_chapter">${renderOptions(wordCountOptions, '2000')}</select></label>
+          <label class="wide">
+            <span class="field-head"><span>创意建议方向</span></span>
+            <textarea name="creative_direction" placeholder="可选。比如：一女主三男主、甜宠开头虐恋结尾、女主身世缓慢揭示、增加商会/家族/势力线…" autocomplete="off"></textarea>
+          </label>
+          <label class="wide">
+            <span class="field-head"><span>核心创意</span><button class="ai-assist" type="button" data-ai-idea>AI创意</button></span>
+            <textarea name="premise" required placeholder="例如：主角、目标、主要冲突和爽点…" autocomplete="off"></textarea>
+          </label>
+          <p class="ai-feedback" data-ai-feedback aria-live="polite"></p>
+          <div class="actions">
+            <button type="submit">提交创建</button>
+            <a class="secondary" href="/webhook/novel-center">返回工作台</a>
+            <a class="secondary" href="/webhook/novel-project-list">查看项目列表</a>
+          </div>
+        </form>
+      </div>
+      <div class="create-panel" id="panel-upload-create" role="tabpanel" aria-labelledby="tab-upload-create" data-create-panel="upload" hidden>
+        <form method="POST" action="/webhook/novel-project-create" autocomplete="off" data-create-form="upload">
+          <label>
+            <span class="field-head"><span>小说标题</span></span>
+            <input name="title" placeholder="可选；未填写时使用文件名" autocomplete="off" />
+          </label>
+          <label>类型<select name="genre" required>${renderOptions(genreOptions, '悬疑灵异')}</select></label>
+          <label>目标读者<select name="audience">${renderOptions(audienceOptions, '中文网文读者')}</select></label>
+          <label>文风<select name="style">${renderOptions(styleOptions, '悬疑紧张、伏笔清晰、反转克制')}</select></label>
+          <label>章节数<input name="target_total_chapters" type="number" inputmode="numeric" min="1" max="500" value="20" autocomplete="off" /></label>
+          <label>每章字数<select name="target_words_per_chapter">${renderOptions(wordCountOptions, '2000')}</select></label>
+          <div class="source-upload" data-source-upload>
+            <div class="source-upload-head">
+              <div>
+                <strong>上传 txt / md 生成项目</strong>
+                <span>选择已有小说、梗概或设定文档后，会把文本内容交给 GLM 生成创作母本；创建成功后自动启动母本生成，不再二次提醒。</span>
+              </div>
+            </div>
+            <label>
+              <span>源文档</span>
+              <input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" data-source-file />
+            </label>
+            <input type="hidden" name="source_document_name" data-source-name />
+            <input type="hidden" name="source_document_type" data-source-type />
+            <input type="hidden" name="source_document_size" data-source-size />
+            <textarea name="source_document_text" data-source-text hidden></textarea>
+            <p class="source-status" data-source-status>未选择文档。</p>
+          </div>
+          <label class="wide">
+            <span class="field-head"><span>补充方向</span></span>
+            <textarea name="premise" placeholder="可选。例如：保留原作人物关系，强化悬疑线；或把已有正文整理成长篇网文项目…" autocomplete="off"></textarea>
+          </label>
+          <p class="ai-feedback" data-ai-feedback aria-live="polite"></p>
+          <div class="actions">
+            <button type="submit">上传并创建</button>
+            <a class="secondary" href="/webhook/novel-center">返回工作台</a>
+            <a class="secondary" href="/webhook/novel-project-list">查看项目列表</a>
+          </div>
+        </form>
+      </div>
     </section>
   </main>
   </div>
   <script>
     (() => {
-      const form = document.querySelector('form[action="/webhook/novel-project-create"]');
-      if (!form) return;
-      const titleInput = form.querySelector('[name="title"]');
-      const directionInput = form.querySelector('[name="creative_direction"]');
-      const premiseInput = form.querySelector('[name="premise"]');
-      const genreSelect = form.querySelector('[name="genre"]');
-      const audienceSelect = form.querySelector('[name="audience"]');
-      const styleSelect = form.querySelector('[name="style"]');
-      const titleButton = form.querySelector('[data-ai-title]');
-      const ideaButton = form.querySelector('[data-ai-idea]');
-      const feedback = form.querySelector('[data-ai-feedback]');
+      const manualForm = document.querySelector('[data-create-form="manual"]');
+      const uploadForm = document.querySelector('[data-create-form="upload"]');
+      if (!manualForm || !uploadForm) return;
+      const tabs = Array.from(document.querySelectorAll('[data-create-tab]'));
+      const panels = Array.from(document.querySelectorAll('[data-create-panel]'));
       const assistUrl = '/webhook/novel-project-ai-assist';
 
       function valueOf(node) {
         return String(node && node.value ? node.value : '').trim();
       }
+
+      function activateTab(name) {
+        tabs.forEach((tab) => {
+          const active = tab.dataset.createTab === name;
+          tab.setAttribute('aria-selected', active ? 'true' : 'false');
+          tab.tabIndex = active ? 0 : -1;
+        });
+        panels.forEach((panel) => {
+          panel.hidden = panel.dataset.createPanel !== name;
+        });
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => activateTab(tab.dataset.createTab || 'manual'));
+      });
+
+      if (window.location.hash === '#upload') activateTab('upload');
 
       function markUserEdited(input) {
         if (!input) return;
@@ -238,9 +310,6 @@ const html = `<!doctype html>
           delete input.dataset.aiGenerated;
         });
       }
-
-      markUserEdited(titleInput);
-      markUserEdited(premiseInput);
 
       function setValue(input, value, options = {}) {
         if (!input || !value) return;
@@ -256,14 +325,17 @@ const html = `<!doctype html>
         input.focus();
       }
 
-      function setFeedback(message, state) {
+      function setFeedback(form, message, state) {
+        const feedback = form.querySelector('[data-ai-feedback]');
         if (!feedback) return;
         feedback.textContent = message || '';
         feedback.classList.toggle('is-error', state === 'error');
         feedback.classList.toggle('is-success', state === 'success');
       }
 
-      function setBusy(button, busy) {
+      function setBusy(form, button, busy) {
+        const titleButton = form.querySelector('[data-ai-title]');
+        const ideaButton = form.querySelector('[data-ai-idea]');
         for (const item of [titleButton, ideaButton]) {
           if (!item) continue;
           item.disabled = busy;
@@ -274,7 +346,13 @@ const html = `<!doctype html>
         button.textContent = busy ? '生成中' : button.dataset.idleText;
       }
 
-      function payloadFor(assistType) {
+      function payloadFor(form, assistType) {
+        const titleInput = form.querySelector('[name="title"]');
+        const directionInput = form.querySelector('[name="creative_direction"]');
+        const premiseInput = form.querySelector('[name="premise"]');
+        const genreSelect = form.querySelector('[name="genre"]');
+        const audienceSelect = form.querySelector('[name="audience"]');
+        const styleSelect = form.querySelector('[name="style"]');
         const wordCountSelect = form.querySelector('[name="target_words_per_chapter"]');
         const chapterInput = form.querySelector('[name="target_total_chapters"]');
         const titleIsAi = titleInput && titleInput.dataset.aiGenerated === 'true';
@@ -299,14 +377,16 @@ const html = `<!doctype html>
         };
       }
 
-      async function requestAssist(assistType, button) {
-        setBusy(button, true);
-        setFeedback('正在请求 GLM...', '');
+      async function requestAssist(form, assistType, button) {
+        const titleInput = form.querySelector('[name="title"]');
+        const premiseInput = form.querySelector('[name="premise"]');
+        setBusy(form, button, true);
+        setFeedback(form, '正在请求 GLM...', '');
         try {
           const response = await fetch(assistUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payloadFor(assistType)),
+            body: JSON.stringify(payloadFor(form, assistType)),
           });
           const data = await response.json().catch(() => ({}));
           if (!response.ok || !data.ok) {
@@ -318,25 +398,118 @@ const html = `<!doctype html>
           if (data.premise && (assistType === 'idea' || !valueOf(premiseInput))) {
             setValue(premiseInput, data.premise, {aiGenerated: true});
           }
-          setFeedback(data.message || 'GLM 已生成', 'success');
+          setFeedback(form, data.message || 'GLM 已生成', 'success');
         } catch (error) {
-          setFeedback(error && error.message ? error.message : 'GLM 生成失败，请稍后重试。', 'error');
+          setFeedback(form, error && error.message ? error.message : 'GLM 生成失败，请稍后重试。', 'error');
         } finally {
-          setBusy(button, false);
+          setBusy(form, button, false);
         }
       }
 
-      if (ideaButton) {
-        ideaButton.addEventListener('click', () => {
-          requestAssist('idea', ideaButton);
+      function wireManualForm(form) {
+        const titleInput = form.querySelector('[name="title"]');
+        const premiseInput = form.querySelector('[name="premise"]');
+        const titleButton = form.querySelector('[data-ai-title]');
+        const ideaButton = form.querySelector('[data-ai-idea]');
+        markUserEdited(titleInput);
+        markUserEdited(premiseInput);
+        form.addEventListener('submit', (event) => {
+          if (!valueOf(premiseInput)) {
+            event.preventDefault();
+            premiseInput?.focus();
+            setFeedback(form, '手动创建需要填写核心创意。', 'error');
+          }
+        });
+        ideaButton?.addEventListener('click', () => requestAssist(form, 'idea', ideaButton));
+        titleButton?.addEventListener('click', () => requestAssist(form, 'title', titleButton));
+      }
+
+      function wireUploadForm(form) {
+        const titleInput = form.querySelector('[name="title"]');
+        const sourceFileInput = form.querySelector('[data-source-file]');
+        const sourceNameInput = form.querySelector('[data-source-name]');
+        const sourceTypeInput = form.querySelector('[data-source-type]');
+        const sourceSizeInput = form.querySelector('[data-source-size]');
+        const sourceTextInput = form.querySelector('[data-source-text]');
+        const sourceStatus = form.querySelector('[data-source-status]');
+        markUserEdited(titleInput);
+
+        function setSourceStatus(message, state) {
+          if (!sourceStatus) return;
+          sourceStatus.textContent = message || '';
+          sourceStatus.classList.toggle('is-error', state === 'error');
+          sourceStatus.classList.toggle('is-success', state === 'success');
+        }
+
+        function clearSourceDocument(message = '未选择文档。') {
+          if (sourceNameInput) sourceNameInput.value = '';
+          if (sourceTypeInput) sourceTypeInput.value = '';
+          if (sourceSizeInput) sourceSizeInput.value = '';
+          if (sourceTextInput) sourceTextInput.value = '';
+          setSourceStatus(message, '');
+        }
+
+        sourceFileInput?.addEventListener('change', async () => {
+          const file = sourceFileInput.files && sourceFileInput.files[0];
+          if (!file) {
+            clearSourceDocument();
+            return;
+          }
+          const allowed = /\\.(txt|md|markdown)$/i.test(file.name) || /^text\\//i.test(file.type || '');
+          if (!allowed) {
+            sourceFileInput.value = '';
+            clearSourceDocument('只支持 txt、md、markdown 文本文档。');
+            setSourceStatus('只支持 txt、md、markdown 文本文档。', 'error');
+            return;
+          }
+          if (file.size > 2 * 1024 * 1024) {
+            sourceFileInput.value = '';
+            clearSourceDocument('文档过大，请控制在 2MB 内；可以先截取梗概、前几章或设定部分。');
+            setSourceStatus('文档过大，请控制在 2MB 内；可以先截取梗概、前几章或设定部分。', 'error');
+            return;
+          }
+          try {
+            setSourceStatus('正在读取文档...', '');
+            const text = await file.text();
+            const clean = String(text || '').replace(/\\u0000/g, '').trim();
+            if (clean.length < 120) {
+              sourceFileInput.value = '';
+              clearSourceDocument('文档内容过短，至少需要 120 个字符。');
+              setSourceStatus('文档内容过短，至少需要 120 个字符。', 'error');
+              return;
+            }
+            if (sourceNameInput) sourceNameInput.value = file.name;
+            if (sourceTypeInput) sourceTypeInput.value = file.type || 'text/plain';
+            if (sourceSizeInput) sourceSizeInput.value = String(file.size || clean.length);
+            if (sourceTextInput) sourceTextInput.value = clean.slice(0, 80000);
+            if (titleInput && !valueOf(titleInput)) {
+              setValue(titleInput, file.name.replace(/\\.(txt|md|markdown)$/i, ''), {aiGenerated: true});
+            }
+            setSourceStatus('已读取文档：' + file.name + '，约 ' + clean.length + ' 字符。提交后会自动启动创作母本生成。', 'success');
+          } catch (error) {
+            sourceFileInput.value = '';
+            clearSourceDocument('读取文档失败，请确认文件编码为 UTF-8 文本。');
+            setSourceStatus('读取文档失败，请确认文件编码为 UTF-8 文本。', 'error');
+          }
+        });
+
+        form.addEventListener('submit', (event) => {
+          if (!valueOf(sourceTextInput)) {
+            event.preventDefault();
+            sourceFileInput?.focus();
+            setFeedback(form, '请先选择 txt/md 文档。', 'error');
+            return;
+          }
+          if (!valueOf(titleInput) && !valueOf(sourceNameInput)) {
+            event.preventDefault();
+            titleInput?.focus();
+            setFeedback(form, '请填写小说标题；或上传可识别文件名的文档。', 'error');
+          }
         });
       }
 
-      if (titleButton) {
-        titleButton.addEventListener('click', () => {
-          requestAssist('title', titleButton);
-        });
-      }
+      wireManualForm(manualForm);
+      wireUploadForm(uploadForm);
     })();
   </script>
 </body>

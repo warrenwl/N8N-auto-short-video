@@ -732,6 +732,52 @@ assert(detailWithChapterJob.includes('操作已完成'), 'project console should
 assert(!detailWithChapterJob.includes('action="/webhook/novel-project-continue"'), 'project console should avoid queue enqueueing while chapter start is pending');
 assert(!/href=["'][^"']*novel-generate-chapter-now/i.test(detailWithChapterJob), 'project console chapter generation must not be GET link');
 
+const detailWithLaterDirectorJobs = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
+  is_empty: false,
+  id: projectId,
+  title: '第二十一阶段项目',
+  genre: '都市逆袭',
+  audience: '中文读者',
+  style: '节奏快',
+  premise: '验证章节任务优先级。',
+  target_total_chapters: 5,
+  target_words_per_chapter: 1600,
+  current_chapter_no: 1,
+  status: 'WRITING',
+  bible: JSON.stringify({story_core: '主角从低谷翻身。'}),
+  outlines: JSON.stringify([
+    {chapter_no: 2, title: '第二章', summary: '承接第一章', status: 'READY'},
+    {chapter_no: 3, title: '第三章', summary: '继续升级', status: 'READY'},
+    {chapter_no: 4, title: '第四章', summary: '中段爆点', status: 'READY'},
+  ]),
+  director_cards: JSON.stringify([{
+    id: '21000000-0000-0000-0000-000000000124',
+    chapter_no: 2,
+    version: 1,
+    is_current: true,
+    status: 'READY',
+    source: 'AI',
+    card_payload: {
+      quality_gate: {pass: true, blocking_issues: []},
+      segment_plan: [{segment_no: 1}],
+    },
+  }]),
+  chapters: JSON.stringify([]),
+  facts: JSON.stringify([]),
+  jobs: JSON.stringify([
+    {id: '21000000-0000-0000-0000-000000000024', job_type: 'GENERATE_CHAPTER', status: 'PENDING', chapter_no: 2, attempt_count: 0, created_at: '2026-05-04T01:10:00.000Z', updated_at: '2026-05-04T01:10:00.000Z'},
+    {id: '21000000-0000-0000-0000-000000000025', job_type: 'PLAN_CHAPTER_DIRECTOR', status: 'PENDING', chapter_no: 3, attempt_count: 0, created_at: '2026-05-04T01:11:00.000Z', updated_at: '2026-05-04T01:11:00.000Z'},
+    {id: '21000000-0000-0000-0000-000000000026', job_type: 'PLAN_CHAPTER_DIRECTOR', status: 'PENDING', chapter_no: 4, attempt_count: 0, created_at: '2026-05-04T01:12:00.000Z', updated_at: '2026-05-04T01:12:00.000Z'},
+  ]),
+  ai_runs: JSON.stringify([]),
+  project_events: JSON.stringify([]),
+}])[0].json.response_html;
+const detailWithLaterDirectorJobsText = visibleText(detailWithLaterDirectorJobs);
+assert(detailWithLaterDirectorJobsText.includes('下一步动作区：启动第 2 章生成'), 'ready earlier chapter should outrank later pending director jobs');
+assert(detailWithLaterDirectorJobsText.includes('第 2 章待启动'), 'live status should describe the earliest actionable chapter');
+assert(detailWithLaterDirectorJobs.includes('action="/webhook/novel-generate-chapter-now"'), 'primary action should start the earlier pending chapter generation');
+assert(!detailWithLaterDirectorJobsText.includes('下一步动作区：启动第 4 章导演台'), 'later pending director job must not become the primary next action');
+
 const detailWithReviewJob = runListCodeNode('n8n/code/novel_render_project_detail_html.js', [{
   is_empty: false,
   id: projectId,
@@ -910,18 +956,29 @@ assert(biblePatchResultText.includes('扩写设定补丁生成已启动'), 'gene
 assert(biblePatchResultText.includes('待确认补丁'), 'Bible patch result should explain the manual confirmation handoff');
 assert(!/\b(GENERATE_BIBLE_PATCH|SUCCEEDED|PENDING)\b/.test(biblePatchResultText), 'Bible patch result should not expose internal enums in visible text');
 
-const noClaimHtml = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
+const noClaimResult = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
   project_id: projectId,
   job_type: 'GENERATE_BIBLE',
   claim_success: false,
   claim_reason: 'JOB_NOT_FOUND_OR_ALREADY_CLAIMED',
-})[0].json.response_html;
+})[0].json;
+const noClaimHtml = noClaimResult.response_html;
 const noClaimText = visibleText(noClaimHtml);
-assert(noClaimText.includes('未开始模型调用'), 'no-claim generation result should clearly say no model call started');
 assert(noClaimText.includes('没有可立即执行的待处理任务'), 'no-claim generation result should explain missing or already-claimed job');
 assert(noClaimText.includes('未调用模型'), 'no-claim result should show non-mutating execution mode');
+assert.strictEqual(noClaimResult.response_status_code, 200, 'no-claim generation result should stay 200 so fetch-based forms can render the result page');
+assert(noClaimText.includes('未开始模型调用'), 'no-claim non-chapter result should show generic no-model-call title');
 assert(!noClaimHtml.includes('action="/webhook/novel-generate-outline-now"'), 'no-claim Bible result should not offer next model call');
 assert(!/\bJOB_NOT_FOUND_OR_ALREADY_CLAIMED\b/.test(noClaimText), 'no-claim visible text should not expose internal reason enum');
+
+const chapterNoClaimText = visibleText(runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
+  project_id: projectId,
+  job_type: 'GENERATE_CHAPTER',
+  chapter_no: 20,
+  claim_success: false,
+  claim_reason: 'JOB_NOT_FOUND_OR_ALREADY_CLAIMED',
+})[0].json.response_html);
+assert(chapterNoClaimText.includes('第 20 章生成未启动'), 'no-claim chapter result should show chapter-specific not-started title');
 
 const chapterResultHtml = runSingleCodeNode('n8n/code/novel_render_generation_step_result.js', {
   project_id: projectId,

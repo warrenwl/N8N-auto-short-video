@@ -275,7 +275,7 @@ RETURNING j.*;`;
 const readRewriteContextQuery = `-- Read context for chapter rewrite.
 SELECT
   p.id AS project_id,
-  p.title AS novel_title,
+  CASE WHEN COALESCE(p.title_in_prompt, TRUE) THEN p.title ELSE '' END AS novel_title,
   p.genre,
   p.audience,
   p.style,
@@ -683,11 +683,14 @@ WITH obsolete_notifications AS (
     AND EXISTS (
       SELECT 1
       FROM novel_chapters c
-      LEFT JOIN novel_chapter_outlines o ON o.id = c.outline_id
+      LEFT JOIN novel_chapter_director_cards d ON d.id = NULLIF(j.payload->>'director_card_id', '')::uuid
       WHERE c.project_id = j.project_id
         AND c.chapter_no = j.chapter_no
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
-        AND (o.id IS NULL OR c.created_at >= o.updated_at)
+        AND (
+          c.is_current = TRUE
+          OR (d.outline_id IS NOT NULL AND c.outline_id = d.outline_id)
+        )
     )
   RETURNING
     'OBSOLETE_CHAPTER_GENERATION_CANCELLED'::text AS event_type,
@@ -852,11 +855,15 @@ WITH missing_director AS (
     AND NOT EXISTS (
       SELECT 1
       FROM novel_chapters c
-      LEFT JOIN novel_chapter_outlines o ON o.id = c.outline_id
+      JOIN novel_chapter_director_cards d
+        ON d.project_id = p.id
+       AND d.chapter_no = p.current_chapter_no + 1
+       AND d.is_current = TRUE
+       AND d.status = 'READY'
       WHERE c.project_id = p.id
         AND c.chapter_no = p.current_chapter_no + 1
         AND c.status IN ('DRAFT_READY', 'AI_REVIEWED', 'NEED_REVIEW', 'APPROVED', 'PUBLISHED', 'REWRITE_REQUESTED')
-        AND (o.id IS NULL OR c.created_at >= o.updated_at)
+        AND (c.is_current = TRUE OR c.outline_id = d.outline_id)
     )
   ON CONFLICT DO NOTHING
   RETURNING *

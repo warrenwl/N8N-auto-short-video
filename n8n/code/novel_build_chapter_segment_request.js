@@ -293,7 +293,7 @@ const systemPrompt = [
 const userPrompt = [
   `请生成第 ${source.chapter_no || '?'} 章的第 ${segmentNo}/${totalSegments} 段正文。`,
   '',
-  `【小说标题】${text(source.novel_title)}`,
+  `【小说标题】${text(source.novel_title, '未使用项目标题')}`,
   `【世界观】${text(source.world_setting)}`,
   `【故事核心】${text(source.story_core)}`,
   `【主角设定】${jsonText(source.main_character)}`,

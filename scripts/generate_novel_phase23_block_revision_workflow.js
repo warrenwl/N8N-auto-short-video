@@ -274,7 +274,7 @@ FROM updated_job;`;
 const readBlockRevisionContextQuery = `-- Read context for one block revision.
 SELECT
   p.id AS project_id,
-  p.title AS novel_title,
+  CASE WHEN COALESCE(p.title_in_prompt, TRUE) THEN p.title ELSE '' END AS novel_title,
   p.genre,
   p.audience,
   p.style,
